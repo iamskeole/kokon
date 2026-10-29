@@ -10,13 +10,14 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::config::{AppConfig, ModelProfile, TextEncoderPlacement};
+use crate::config::{AppConfig, ExternalEngine, ModelProfile, TextEncoderPlacement};
 use crate::error::{AppError, ErrorCode, translate_startup_failure};
 use crate::sdcpp::{Capabilities, SdcppClient};
 
 // ---------------------------------------------------------------------------------------
 // Launch arguments
 // ---------------------------------------------------------------------------------------
+
 
 pub fn build_server_args(cfg: &AppConfig, profile: &ModelProfile) -> Vec<String> {
     if cfg.uses_mac_engine() {
@@ -465,10 +466,15 @@ impl ServerManager {
 
     /// Ensures a compatible sd-server is reachable: reuses a running one, otherwise
     /// launches it. Serialized so concurrent callers never start two instances.
+    /// With an external engine configured, never launches anything: the gateway behind
+    /// `{gateway}/{model}` loads the model on demand (see [`Self::ensure_external`]).
     pub async fn ensure_ready(&self, cfg: &AppConfig) -> Result<Capabilities, AppError> {
         let _guard = self.start_lock.lock().await;
         if let Some(why) = self.held.lock().unwrap().clone() {
             return Err(AppError::new(ErrorCode::ServerUnavailable, why).suggest("Wait for it to finish, or cancel it in Settings → Performance."));
+        }
+        if let Some(ext) = cfg.external_engine() {
+            return self.ensure_external(cfg, ext).await;
         }
         let profile = cfg.profile().clone();
         // Our server may run on a fallback port (see `launch_port`); otherwise the configured one.
@@ -515,6 +521,72 @@ impl ServerManager {
         }
 
         self.spawn_and_wait(cfg, &profile).await
+    }
+
+    /// The gateway's load can take a while (it may have to evict the current GPU tenant
+    /// first); long enough for a cold load of a large model, matching the router's own
+    /// health-check budget on the box that runs it.
+    const EXTERNAL_LOAD_TIMEOUT: Duration = Duration::from_secs(900);
+
+    /// External engine (config `externalEngine`): this app neither launches nor supervises
+    /// the inference server. A compatible engine already reachable at the gateway is adopted
+    /// as-is (it stays `owned = false`, so no lifecycle path in this app can touch it);
+    /// otherwise a single long request to the gateway triggers the load — the gateway holds
+    /// the request until the engine is ready, evicting whatever it must first — and the same
+    /// adoption happens on the answer. It never spawns, never opens a second port, and never
+    /// kills a server running a different model.
+    async fn ensure_external(&self, cfg: &AppConfig, ext: &ExternalEngine) -> Result<Capabilities, AppError> {
+        let client = SdcppClient::new_url(cfg.engine_base_url());
+        let compatible = |c: &Capabilities| c.model_matches(Path::new(&ext.model_name)) && c.supports_img_gen();
+        // Quick probe: if the right engine is already up, the answer comes in a few ms and
+        // the gateway is not even asked to load anything.
+        if let Ok(caps) = client.capabilities(Duration::from_secs(3)).await {
+            if compatible(&caps) {
+                self.adopt_external(&caps, cfg);
+                return Ok(caps);
+            }
+        }
+        match client.capabilities(Self::EXTERNAL_LOAD_TIMEOUT).await {
+            Ok(caps) if compatible(&caps) => {
+                self.adopt_external(&caps, cfg);
+                Ok(caps)
+            }
+            Ok(caps) => {
+                let e = AppError::new(
+                    ErrorCode::ServerUnavailable,
+                    format!(
+                        "The engine at {} is running a different model (\"{}\") than the requested \"{}\".",
+                        cfg.engine_base_url(),
+                        caps.model.name,
+                        ext.model_name
+                    ),
+                );
+                self.mark_lost(e.clone());
+                Err(e)
+            }
+            Err(e) => {
+                self.mark_lost(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    /// Registers a reachable external engine as the app's server without owning it.
+    fn adopt_external(&self, caps: &Capabilities, cfg: &AppConfig) {
+        self.set_state(|g| {
+            g.state = ServerState::Ready;
+            g.owned = false;
+            g.pid = None;
+            g.child = None;
+            g.port = cfg.server_port;
+            g.model = Some(caps.model.name.clone());
+            g.error = None;
+            g.caps = Some(caps.clone());
+            if g.started_at.is_none() {
+                g.started_at = Some(chrono::Utc::now());
+            }
+        });
+        tracing::info!("external engine ready at {} (model \"{}\"; not owned)", cfg.engine_base_url(), caps.model.name);
     }
 
     async fn spawn_and_wait(&self, cfg: &AppConfig, profile: &ModelProfile) -> Result<Capabilities, AppError> {
@@ -1189,5 +1261,103 @@ CPU	Apple M2 Pro
         assert_eq!(m.owned_alive(), Some(false), "try_wait sees the exit");
         assert!(!process_alive(pid), "and reaps it");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- External engine -------------------------------------------------------
+
+    /// A loopback server answering `/sdcpp/v1/capabilities` with the given model name, up to
+    /// `conns` connections (the quick probe and the long ensure each open one).
+    async fn caps_server(name: &str, conns: usize) -> (u16, tokio::sync::oneshot::Receiver<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let body = serde_json::json!({ "model": { "name": name }, "supported_modes": ["img_gen"] }).to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..conns {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    if n == 0 { break; }
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text.lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .unwrap_or(0);
+                        if req.len() >= end + 4 + len { break; }
+                    }
+                }
+                seen.push(String::from_utf8_lossy(&req).into_owned());
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                if sock.write_all(head.as_bytes()).await.is_err() { break; }
+                let _ = sock.flush().await;
+            }
+            let _ = tx.send(seen);
+        });
+        (port, rx)
+    }
+
+    fn external_cfg(gateway: String, model_name: &str) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.external_engine = Some(ExternalEngine {
+            gateway,
+            model: "kokon-turbo".into(),
+            model_name: model_name.into(),
+            sample: serde_json::json!({}),
+        });
+        cfg
+    }
+
+    #[tokio::test]
+    async fn external_engine_already_running_is_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = ServerManager::new(dir.path().to_path_buf());
+        let (port, _) = caps_server("qwen-image-2.1-turbo-Q4_K_M.gguf", 1).await;
+        let cfg = external_cfg(format!("http://127.0.0.1:{port}"), "qwen-image-2.1-turbo-Q4_K_M.gguf");
+        let caps = m.ensure_ready(&cfg).await.unwrap();
+        let st = m.status();
+        assert_eq!(st.state, ServerState::Ready);
+        assert!(!st.owned, "an external engine is never owned");
+        assert_eq!(st.model.as_deref(), Some("qwen-image-2.1-turbo-Q4_K_M.gguf"));
+        assert_eq!(caps.model.name, "qwen-image-2.1-turbo-Q4_K_M.gguf");
+        assert!(!m.record_path().exists(), "no process record for an external engine");
+        // stop() must not touch it either
+        assert!(!m.stop().await, "stop() is a no-op for an external engine");
+        assert_eq!(m.status().state, ServerState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn external_engine_wrong_model_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = ServerManager::new(dir.path().to_path_buf());
+        let (port, reqs) = caps_server("some-other-model.gguf", 2).await;
+        let cfg = external_cfg(format!("http://127.0.0.1:{port}"), "qwen-image-2.1-turbo-Q4_K_M.gguf");
+        let e = m.ensure_ready(&cfg).await.unwrap_err();
+        assert_eq!(e.code, ErrorCode::ServerUnavailable);
+        assert!(e.message.contains("some-other-model.gguf"), "the reply names what is actually loaded: {}", e.message);
+        assert_eq!(m.status().state, ServerState::Error);
+        // quick probe + long ensure, both on the gateway — nothing was spawned in between
+        let seen = reqs.await.unwrap();
+        assert_eq!(seen.len(), 2);
+        for r in &seen {
+            assert!(r.contains("/kokon-turbo/sdcpp/v1/capabilities"), "every probe goes through the gateway: {}", r);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_engine_down_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = ServerManager::new(dir.path().to_path_buf());
+        // A port nothing listens on (a live bind/release leaves it free right after).
+        let dead = free_port().unwrap();
+        let cfg = external_cfg(format!("http://127.0.0.1:{dead}"), "qwen-image-2.1-turbo-Q4_K_M.gguf");
+        let e = m.ensure_ready(&cfg).await.unwrap_err();
+        assert_eq!(e.code, ErrorCode::ServerUnavailable);
+        assert_eq!(m.status().state, ServerState::Error);
+        assert!(!m.record_path().exists(), "a failed load leaves no record behind");
     }
 }

@@ -567,6 +567,12 @@ pre.diag { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font
 .update-pill { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; border: 0; background: var(--bg); box-shadow: var(--lift); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; font-variant-numeric: tabular-nums; }
 .update-pill:hover:not(:disabled) { background: var(--surface); }
 .update-pill:disabled { cursor: default; color: var(--text-2); }
+/* The externally managed engine's flavors: a two-choice switch on the top bar. */
+.flavors { display: inline-flex; align-items: center; height: 30px; padding: 2px; border-radius: 999px; background: var(--bg); box-shadow: var(--lift); gap: 2px; }
+.flavor { height: 100%; padding: 0 12px; border-radius: 999px; border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 13px; cursor: pointer; }
+.flavor:hover:not(:disabled):not(.on) { color: var(--text); }
+.flavor.on { background: var(--invert-bg); color: var(--invert-text); }
+.flavor:disabled { cursor: default; }
 .setup { flex: 1; display: flex; justify-content: center; overflow-y: auto; padding: 40px 24px 0; }
 /* Bottom room inside the scroller (padding on the scroller itself is dropped by Chromium). */
 .setup-inner { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 72px; height: fit-content; }

@@ -20,7 +20,7 @@ use axum::{
 use futures_util::stream::Stream;
 use qls_core::{
     catalog,
-    config::{AppConfig, GpuBackend, OFFICIAL_PROFILE_ID, USER_PROFILE_ID},
+    config::{AppConfig, ExternalEngine, GpuBackend, OFFICIAL_PROFILE_ID, USER_PROFILE_ID},
     diagnostics,
     engine::{APP_VERSION, JobView, LoraPatch},
     error::{AppError, ErrorCode},
@@ -78,6 +78,7 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/models/use", post(models_use))
         .route("/models/vae", post(models_improve_vae))
         .route("/models/dit", post(models_new_dit))
+        .route("/models/flavor", post(models_flavor))
         .route("/upscalers", get(list_upscalers))
         .route("/upscalers/{name}/download", post(download_upscaler))
         .route("/config", get(get_config).put(put_config))
@@ -1638,4 +1639,26 @@ async fn models_use(State(s): St, Json(b): Json<UseBody>) -> ApiResult<Json<Valu
     }
     save_and_restart(&s, cfg).await?;
     models_status(State(s)).await
+}
+
+/// Switch which model of the external engine serves this UI (config `externalEngine`):
+/// the body carries the new model id, the diffusion file name it must report and any
+/// per-request sample overrides. The gateway's load runs in the background; clients poll
+/// `/status` (the server goes `starting` with the new model's name, then `ready`). Only
+/// available when the service runs with an external engine configured — the config file is
+/// the entry point into that mode, this endpoint only changes the flavor within it.
+async fn models_flavor(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult<Json<Value>> {
+    let mut cfg = s.engine.config();
+    if cfg.external_engine.is_none() {
+        return Err(AppError::invalid("This service has no external engine configured.").into());
+    }
+    cfg.external_engine = Some(b);
+    s.engine.set_config(cfg)?;
+    let engine = s.engine.clone();
+    tokio::spawn(async move {
+        let cfg = engine.config();
+        let _ = engine.server.ensure_ready(&cfg).await;
+        engine.emit_server();
+    });
+    Ok(Json(json!({ "requested": true })))
 }
