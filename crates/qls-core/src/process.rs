@@ -546,6 +546,14 @@ impl ServerManager {
                 return Ok(caps);
             }
         }
+        // The gateway holds a different model (or none) and is now loading ours: make the
+        // switch visible instead of pretending the old one is still the right one.
+        self.set_state(|g| {
+            g.state = ServerState::Starting;
+            g.owned = false;
+            g.model = Some(ext.model_name.clone());
+            g.error = None;
+        });
         match client.capabilities(Self::EXTERNAL_LOAD_TIMEOUT).await {
             Ok(caps) if compatible(&caps) => {
                 self.adopt_external(&caps, cfg);
@@ -1346,6 +1354,64 @@ CPU	Apple M2 Pro
         for r in &seen {
             assert!(r.contains("/kokon-turbo/sdcpp/v1/capabilities"), "every probe goes through the gateway: {}", r);
         }
+    }
+
+    /// A fake capabilities server that answers each connection only after `delay`:
+    /// the 3s quick probe times out, the long ensure waits it out.
+    async fn slow_caps_server(name: &str, delay: Duration, conns: usize) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let body = serde_json::json!({ "model": { "name": name }, "supported_modes": ["img_gen"] }).to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            for _ in 0..conns {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            let text = String::from_utf8_lossy(&req).to_string();
+                            if let Some(end) = text.find("\r\n\r\n") {
+                                let len = text.lines()
+                                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                                    .unwrap_or(0);
+                                if req.len() >= end + 4 + len { break; }
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(delay).await; // a load in flight at the gateway
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                if sock.write_all(head.as_bytes()).await.is_err() { break; }
+                let _ = sock.flush().await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn external_engine_load_is_visible_as_starting() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = ServerManager::new(dir.path().to_path_buf());
+        let name = "qwen-image-2.1-turbo-Q4_K_M.gguf";
+        let port = slow_caps_server(name, Duration::from_millis(3500), 2).await;
+        let cfg = external_cfg(format!("http://127.0.0.1:{port}"), name);
+        let mgr = m.clone();
+        let handle = tokio::spawn(async move { mgr.ensure_ready(&cfg).await });
+        // The quick probe (3s) has timed out; the long ensure is waiting on the "load".
+        tokio::time::sleep(Duration::from_millis(3600)).await;
+        let st = m.status();
+        assert_eq!(st.state, ServerState::Starting, "an in-flight gateway load shows as starting");
+        assert_eq!(st.model.as_deref(), Some(name), "... and names the model being loaded");
+        assert!(!st.owned);
+        let caps = handle.await.unwrap().unwrap();
+        assert_eq!(caps.model.name, name);
+        let st = m.status();
+        assert_eq!(st.state, ServerState::Ready);
+        assert!(!st.owned);
     }
 
     #[tokio::test]
