@@ -67,7 +67,10 @@ pub fn keeps_service(kind: &str, persistent: bool, forced_remote: bool) -> bool 
 
 /// Clients that keep the service running (see [`keeps_service`]).
 pub fn holding_clients(state: &AppState, leases: &HashMap<String, Lease>) -> usize {
-    leases.values().filter(|l| keeps_service(&l.kind, state.persistent, state.remote.forced)).count()
+    leases
+        .values()
+        .filter(|l| keeps_service(&l.kind, state.persistent, state.remote.forced))
+        .count()
 }
 
 /// Whether a client still holds its lease. Clients that sent their pid (the desktop app, the
@@ -89,7 +92,11 @@ fn load_or_create_token(dir: &std::path::Path) -> String {
             return t;
         }
     }
-    let t = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let t = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
     let _ = std::fs::write(&p, &t);
     t
 }
@@ -97,16 +104,24 @@ fn load_or_create_token(dir: &std::path::Path) -> String {
 /// The port of a kokon-service that answers its ping at the port recorded in service.json.
 async fn running_service() -> Option<u16> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let info: ServiceInfo = serde_json::from_str(&std::fs::read_to_string(service_info_path()).ok()?).ok()?;
+    let info: ServiceInfo =
+        serde_json::from_str(&std::fs::read_to_string(service_info_path()).ok()?).ok()?;
     let ping = async {
-        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", info.port)).await.ok()?;
-        s.write_all(b"GET /api/v1/ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").await.ok()?;
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", info.port))
+            .await
+            .ok()?;
+        s.write_all(b"GET /api/v1/ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .ok()?;
         let mut buf = vec![0u8; 256];
         let n = s.read(&mut buf).await.ok()?;
         let head = String::from_utf8_lossy(&buf[..n]);
         (head.starts_with("HTTP/1.") && head.split(' ').nth(1) == Some("200")).then_some(info.port)
     };
-    tokio::time::timeout(Duration::from_secs(2), ping).await.ok().flatten()
+    tokio::time::timeout(Duration::from_secs(2), ping)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// A line for whoever started the service in a terminal (or `docker logs`); the log file has the
@@ -135,7 +150,10 @@ fn init_logging(dir: &std::path::Path) -> tracing_appender::non_blocking::Worker
     tracing_subscriber::fmt()
         .with_writer(nb)
         .with_ansi(false)
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("QLS_LOG").unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("QLS_LOG")
+                .unwrap_or_else(|_| "info".into()),
+        )
         .init();
     guard
 }
@@ -230,7 +248,9 @@ fn set_password_cli() -> i32 {
     let _ = std::fs::create_dir_all(&dir);
     match qls_core::remote::set_password(&qls_core::remote::password_file(&dir), &password) {
         Ok(_) => {
-            println!("Password saved. Browsers sign in again; a running kokon-service uses it within a few seconds.");
+            println!(
+                "Password saved. Browsers sign in again; a running kokon-service uses it within a few seconds."
+            );
             0
         }
         Err(e) => {
@@ -248,7 +268,10 @@ async fn run(args: Vec<String>) {
     let _ = std::fs::create_dir_all(&dir);
     // Rotate the service log at startup (keep one previous).
     let log_file = dir.join("logs").join("service.log");
-    if std::fs::metadata(&log_file).map(|m| m.len() > 5_000_000).unwrap_or(false) {
+    if std::fs::metadata(&log_file)
+        .map(|m| m.len() > 5_000_000)
+        .unwrap_or(false)
+    {
         let _ = std::fs::rename(&log_file, dir.join("logs").join("service.prev.log"));
     }
     let _guard = init_logging(&dir);
@@ -262,28 +285,39 @@ async fn run(args: Vec<String>) {
         .unwrap_or(cfg.service_port);
 
     // Single instance: a kokon-service answering at the port in service.json. Loopback only.
-    let listener = match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await {
+    let listener = match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
+        .await
+    {
         Ok(l) => l,
         Err(e) => {
             if let Some(other) = running_service().await {
-                tracing::info!("port {port} busy ({e}); kokon-service is already running on port {other} — exiting");
+                tracing::info!(
+                    "port {port} busy ({e}); kokon-service is already running on port {other} — exiting"
+                );
                 return;
             }
             // Reserved by Windows (Hyper-V/WSL/Docker excluded ranges, "access denied") or taken
             // by another program: any free port. Clients find it in service.json.
             match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await {
                 Ok(l) => {
-                    tracing::warn!("port {port} cannot be opened ({e}); using {}", l.local_addr().map(|a| a.port()).unwrap_or(0));
+                    tracing::warn!(
+                        "port {port} cannot be opened ({e}); using {}",
+                        l.local_addr().map(|a| a.port()).unwrap_or(0)
+                    );
                     l
                 }
                 Err(e2) => {
-                    tracing::error!("port {port} cannot be opened ({e}) and no free port either ({e2}) — exiting");
+                    tracing::error!(
+                        "port {port} cannot be opened ({e}) and no free port either ({e2}) — exiting"
+                    );
                     return;
                 }
             }
         }
     };
-    let addr = listener.local_addr().unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], port)));
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], port)));
     let port = addr.port();
 
     let engine = match Engine::new(cfg, &dir) {
@@ -304,9 +338,20 @@ async fn run(args: Vec<String>) {
     engine.remove_unused_original_vae();
     engine.remove_unused_old_dit();
     let token = load_or_create_token(&dir);
-    let info = ServiceInfo { port, token: token.clone(), pid: std::process::id(), version: APP_VERSION.into() };
-    let _ = std::fs::write(service_info_path(), serde_json::to_string_pretty(&info).unwrap());
-    tracing::info!("kokon-service {APP_VERSION} listening on http://{addr} (pid {})", info.pid);
+    let info = ServiceInfo {
+        port,
+        token: token.clone(),
+        pid: std::process::id(),
+        version: APP_VERSION.into(),
+    };
+    let _ = std::fs::write(
+        service_info_path(),
+        serde_json::to_string_pretty(&info).unwrap(),
+    );
+    tracing::info!(
+        "kokon-service {APP_VERSION} listening on http://{addr} (pid {})",
+        info.pid
+    );
 
     let state = Arc::new(AppState {
         engine: engine.clone(),
@@ -330,8 +375,14 @@ async fn run(args: Vec<String>) {
     if forced_remote && !state.remote.password_set() {
         let msg = "--remote: no password is set yet, so other devices cannot connect. Run `kokon-service --set-password` (Docker: `docker exec -it kokon kokon-service --set-password`); it applies without a restart.";
         tracing::warn!("{msg}");
-        let cmd = if in_container() { "docker exec -it kokon kokon-service --set-password" } else { "kokon-service --set-password" };
-        say(&format!("  Other devices:     not yet, set a password first: {cmd}"));
+        let cmd = if in_container() {
+            "docker exec -it kokon kokon-service --set-password"
+        } else {
+            "kokon-service --set-password"
+        };
+        say(&format!(
+            "  Other devices:     not yet, set a password first: {cmd}"
+        ));
     } else if !forced_remote && !cfg_now.remote_access {
         say("  Other devices:     off (start with --remote, or turn it on in the desktop app)");
     }
@@ -346,7 +397,8 @@ async fn run(args: Vec<String>) {
 
     let app = api::router(state.clone(), false).into_make_service_with_connect_info::<SocketAddr>();
     let st = state.clone();
-    let serve = axum::serve(listener, app).with_graceful_shutdown(async move { st.shutdown.notified().await });
+    let serve = axum::serve(listener, app)
+        .with_graceful_shutdown(async move { st.shutdown.notified().await });
     if let Err(e) = serve.await {
         tracing::error!("http server error: {e}");
     }
@@ -380,7 +432,9 @@ async fn stop_on_signal(state: Arc<AppState>) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let Ok(mut term) = signal(SignalKind::terminate()) else { return };
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            return;
+        };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = term.recv() => {}
@@ -412,12 +466,17 @@ async fn lifecycle(state: Arc<AppState>) {
             remote::sync_listener(&state);
         }
         if resumed {
-            tracing::info!("resumed after {} s (computer asleep?): waiting for clients to check in", gap.as_secs());
+            tracing::info!(
+                "resumed after {} s (computer asleep?): waiting for clients to check in",
+                gap.as_secs()
+            );
         }
         let (n_leases, has_ui, has_window, lost) = {
             let mut leases = state.leases.lock().unwrap();
             if resumed {
-                leases.values_mut().for_each(|l| l.last_seen = Instant::now());
+                leases
+                    .values_mut()
+                    .for_each(|l| l.last_seen = Instant::now());
             }
             let mut lost = Vec::new();
             leases.retain(|id, l| {
@@ -428,7 +487,12 @@ async fn lifecycle(state: Arc<AppState>) {
                 alive
             });
             // A browser tab keeps the model loaded like the desktop window does.
-            (holding_clients(&state, &leases), leases.values().any(|l| l.kind == "ui"), leases.values().any(|l| l.kind == "ui" || l.kind == "web"), lost)
+            (
+                holding_clients(&state, &leases),
+                leases.values().any(|l| l.kind == "ui"),
+                leases.values().any(|l| l.kind == "ui" || l.kind == "web"),
+                lost,
+            )
         };
         for (id, kind) in &lost {
             tracing::info!("client {id} ({kind}) is gone");
@@ -440,12 +504,19 @@ async fn lifecycle(state: Arc<AppState>) {
         } else if !state.persistent {
             // Nobody is left to use the model: free the GPU now, exit after the grace.
             let st = state.engine.server.status();
-            if st.owned && st.state != ServerState::Stopped && !state.engine.config().keep_server_running {
+            if st.owned
+                && st.state != ServerState::Stopped
+                && !state.engine.config().keep_server_running
+            {
                 tracing::info!("no clients — unloading model");
                 state.engine.server.stop().await;
                 state.engine.emit_server();
             }
-            let grace = if state.quick_exit.load(std::sync::atomic::Ordering::Relaxed) { 3 } else { 60 };
+            let grace = if state.quick_exit.load(std::sync::atomic::Ordering::Relaxed) {
+                3
+            } else {
+                60
+            };
             let mut d = state.exit_deadline.lock().unwrap();
             match *d {
                 None => *d = Some(Instant::now() + Duration::from_secs(grace)),
@@ -467,7 +538,10 @@ async fn lifecycle(state: Arc<AppState>) {
             && st.owned
             && state.engine.idle_for() > Duration::from_secs(cfg.idle_unload_minutes as u64 * 60)
         {
-            tracing::info!("idle for {} min without the desktop app — unloading model", cfg.idle_unload_minutes);
+            tracing::info!(
+                "idle for {} min without the desktop app — unloading model",
+                cfg.idle_unload_minutes
+            );
             state.engine.server.stop().await;
             state.engine.emit_server();
         }
@@ -487,7 +561,9 @@ pub fn client_left(state: &AppState, kind: &str, ui_remaining: bool, remaining: 
         let _ = state.engine.clear_private();
     }
     if remaining == 0 {
-        state.quick_exit.store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .quick_exit
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -496,11 +572,17 @@ async fn server_watch(state: Arc<AppState>) {
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
         let st = state.engine.server.status();
-        if st.state == ServerState::Ready && st.owned && state.engine.server.owned_alive() == Some(false) {
-            state.engine.server.mark_lost(qls_core::error::AppError::new(
-                qls_core::error::ErrorCode::ServerCrashed,
-                "The inference server stopped unexpectedly.",
-            ));
+        if st.state == ServerState::Ready
+            && st.owned
+            && state.engine.server.owned_alive() == Some(false)
+        {
+            state
+                .engine
+                .server
+                .mark_lost(qls_core::error::AppError::new(
+                    qls_core::error::ErrorCode::ServerCrashed,
+                    "The inference server stopped unexpectedly.",
+                ));
             state.engine.emit_server();
         }
     }
@@ -508,7 +590,7 @@ async fn server_watch(state: Arc<AppState>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cli_meta, keeps_service, APP_VERSION};
+    use super::{APP_VERSION, cli_meta, keeps_service};
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -516,10 +598,21 @@ mod tests {
 
     #[test]
     fn version_and_help_answer_without_starting() {
-        assert_eq!(cli_meta(&args("--version")).unwrap(), format!("kokon-service {APP_VERSION}"));
+        assert_eq!(
+            cli_meta(&args("--version")).unwrap(),
+            format!("kokon-service {APP_VERSION}")
+        );
         for flag in ["--help", "-h"] {
             let help = cli_meta(&args(flag)).unwrap();
-            for needle in ["--port", "--persistent", "--remote", "--set-password", "QLS_DATA_DIR", "QLS_CONFIG_DIR", "QLS_LOG"] {
+            for needle in [
+                "--port",
+                "--persistent",
+                "--remote",
+                "--set-password",
+                "QLS_DATA_DIR",
+                "QLS_CONFIG_DIR",
+                "QLS_LOG",
+            ] {
                 assert!(help.contains(needle), "{flag} does not mention {needle}");
             }
         }
@@ -530,7 +623,10 @@ mod tests {
     fn a_browser_tab_keeps_only_a_server_running() {
         assert!(keeps_service("ui", false, false));
         assert!(keeps_service("mcp", false, false));
-        assert!(!keeps_service("web", false, false), "closing the desktop app ends the service");
+        assert!(
+            !keeps_service("web", false, false),
+            "closing the desktop app ends the service"
+        );
         assert!(keeps_service("web", true, false));
         assert!(keeps_service("web", false, true));
     }

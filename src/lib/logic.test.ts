@@ -13,6 +13,7 @@ import {
   planPipeline, remainingSeconds, sizeForWidth, timeAgo, upscaleRequest, upscaleTargets, versionLabels, type JobClock, type Ref,
   neighbourAfterRemoval, pageOutdated, previewIndex, starPromptDue, STAR_PROMPT_AFTER, formatBytes, formatDuration, installItemShort, installItemText, installProgress, installStep, installTimeLeft, timelineLinks, undoTarget, aspectLabel, parseRatio, sizeForRatio, sizeForLongSide, expandToRatio, expandToSize, arcLayout,
   goneVersions, PREVIEW_SIDE, stageFitsPreview, viewerWantsFull,
+  flavorRequest, flavorForModel,
 } from "./logic";
 import type { GenerationRecord, InstallItem, JobView, LoraItem, Plan } from "./types";
 
@@ -801,4 +802,34 @@ describe("Layers lab status lines", () => {
     expect(downloadIsFor({ running: false, preset: "matting" }, "matting")).toBe(false);
     expect(downloadIsFor(null, "segment")).toBe(false);
   });
+});
+
+describe("flavorRequest", () => {
+  const external = { gateway: "http://127.0.0.1:8080/engine", model: "a", modelName: "a.gguf", sample: { steps: 8 } };
+  const flavor = { label: "Fast", model: "a", modelName: "a.gguf", sample: { steps: 8, cfg: 1.0 } };
+  it("keeps the configured gateway, takes the model details from the flavor", () => {
+    const r = flavorRequest(external, flavor);
+    expect(r.gateway).toBe("http://127.0.0.1:8080/engine");
+    expect(r.model).toBe("a");
+    expect(r.modelName).toBe("a.gguf");
+    expect(r.sample).toEqual({ steps: 8, cfg: 1.0 });
+  });
+  it("a flavor without overrides sends none", () => {
+    expect(flavorRequest(external, { label: "X", model: "b", modelName: "b.gguf" }).sample).toBeUndefined();
+  });
+});
+
+describe("flavorForModel", () => {
+  const flavors = [
+    { label: "Turbo", model: "a", modelName: "m-turbo.gguf" },
+    { label: "Full", model: "b", modelName: "m-full.gguf" },
+  ];
+  it("matches on the full recorded name", () => expect(flavorForModel(flavors, "m-turbo.gguf")?.label).toBe("Turbo"));
+  it("matches on the stem when one side drops the extension", () => expect(flavorForModel(flavors, "m-full")?.label).toBe("Full"));
+  it("is null for no match, or an empty name", () => {
+    expect(flavorForModel(flavors, "other.gguf")).toBeNull();
+    expect(flavorForModel(flavors, "")).toBeNull();
+    expect(flavorForModel(flavors, null)).toBeNull();
+  });
+  it("is null when there are no flavors", () => expect(flavorForModel([], "m-turbo.gguf")).toBeNull());
 });

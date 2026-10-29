@@ -43,8 +43,13 @@ pub struct Lut {
 }
 
 fn floats<const N: usize>(rest: &str, line: usize) -> Result<[f32; N], String> {
-    let v: Vec<f32> = rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().map_err(|_| format!("line {line}: expected {N} numbers"))?;
-    v.try_into().map_err(|_| format!("line {line}: expected {N} numbers"))
+    let v: Vec<f32> = rest
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("line {line}: expected {N} numbers"))?;
+    v.try_into()
+        .map_err(|_| format!("line {line}: expected {N} numbers"))
 }
 
 impl Lut {
@@ -55,11 +60,21 @@ impl Lut {
         for b in 0..size {
             for g in 0..size {
                 for r in 0..size {
-                    table.push(f([r as f32 / top, g as f32 / top, b as f32 / top]).map(|v| v.clamp(0.0, 1.0)));
+                    table.push(
+                        f([r as f32 / top, g as f32 / top, b as f32 / top])
+                            .map(|v| v.clamp(0.0, 1.0)),
+                    );
                 }
             }
         }
-        Lut { title: Some(title.into()), kind: LutKind::ThreeD, size, domain_min: [0.0; 3], domain_max: [1.0; 3], table }
+        Lut {
+            title: Some(title.into()),
+            kind: LutKind::ThreeD,
+            size,
+            domain_min: [0.0; 3],
+            domain_max: [1.0; 3],
+            table,
+        }
     }
 
     /// Parses a `.cube` file. Errors are short, user-facing reasons.
@@ -74,10 +89,18 @@ impl Lut {
             if l.is_empty() || l.starts_with('#') {
                 continue;
             }
-            let (key, rest) = l.split_once(char::is_whitespace).map(|(k, r)| (k, r.trim())).unwrap_or((l, ""));
-            let size = |r: &str| r.parse::<usize>().map_err(|_| format!("line {line}: bad size"));
+            let (key, rest) = l
+                .split_once(char::is_whitespace)
+                .map(|(k, r)| (k, r.trim()))
+                .unwrap_or((l, ""));
+            let size = |r: &str| {
+                r.parse::<usize>()
+                    .map_err(|_| format!("line {line}: bad size"))
+            };
             match key {
-                "TITLE" => title = Some(rest.trim_matches('"').to_string()).filter(|t| !t.is_empty()),
+                "TITLE" => {
+                    title = Some(rest.trim_matches('"').to_string()).filter(|t| !t.is_empty())
+                }
                 "LUT_1D_SIZE" => size1 = Some(size(rest)?),
                 "LUT_3D_SIZE" => size3 = Some(size(rest)?),
                 "DOMAIN_MIN" => dmin = floats::<3>(rest, line)?,
@@ -92,7 +115,9 @@ impl Lut {
             }
         }
         let (kind, size) = match (size1, size3) {
-            (Some(_), Some(_)) => return Err("LUTs with both a 1D and a 3D table are not supported".into()),
+            (Some(_), Some(_)) => {
+                return Err("LUTs with both a 1D and a 3D table are not supported".into());
+            }
             (None, None) => return Err("not a .cube LUT (no LUT_3D_SIZE or LUT_1D_SIZE)".into()),
             (Some(n), None) => (LutKind::OneD, n),
             (None, Some(n)) => (LutKind::ThreeD, n),
@@ -105,12 +130,22 @@ impl Lut {
             return Err(format!("unsupported table size {size}"));
         }
         if table.len() != want {
-            return Err(format!("the table has {} entries instead of {want}", table.len()));
+            return Err(format!(
+                "the table has {} entries instead of {want}",
+                table.len()
+            ));
         }
         if (0..3).any(|c| dmax[c] <= dmin[c]) {
             return Err("DOMAIN_MAX must be above DOMAIN_MIN".into());
         }
-        Ok(Lut { title, kind, size, domain_min: dmin, domain_max: dmax, table })
+        Ok(Lut {
+            title,
+            kind,
+            size,
+            domain_min: dmin,
+            domain_max: dmax,
+            table,
+        })
     }
 
     /// The LUT's output for one colour (components 0-1), clamped to 0-1.
@@ -119,7 +154,9 @@ impl Lut {
         let top = (n - 1) as f32;
         let mut x = [0.0f32; 3];
         for c in 0..3 {
-            x[c] = ((rgb[c] - self.domain_min[c]) / (self.domain_max[c] - self.domain_min[c])).clamp(0.0, 1.0) * top;
+            x[c] = ((rgb[c] - self.domain_min[c]) / (self.domain_max[c] - self.domain_min[c]))
+                .clamp(0.0, 1.0)
+                * top;
         }
         let out = match self.kind {
             LutKind::OneD => {
@@ -132,9 +169,15 @@ impl Lut {
                 o
             }
             LutKind::ThreeD => {
-                let (r, g, b) = ((x[0] as usize).min(n - 2), (x[1] as usize).min(n - 2), (x[2] as usize).min(n - 2));
+                let (r, g, b) = (
+                    (x[0] as usize).min(n - 2),
+                    (x[1] as usize).min(n - 2),
+                    (x[2] as usize).min(n - 2),
+                );
                 let (fr, fg, fb) = (x[0] - r as f32, x[1] - g as f32, x[2] - b as f32);
-                let at = |dr: usize, dg: usize, db: usize| self.table[(r + dr) + (g + dg) * n + (b + db) * n * n];
+                let at = |dr: usize, dg: usize, db: usize| {
+                    self.table[(r + dr) + (g + dg) * n + (b + db) * n * n]
+                };
                 let c000 = at(0, 0, 0);
                 let c111 = at(1, 1, 1);
                 // Tetrahedral: the cube splits into six tetrahedra along its diagonal; the
@@ -156,7 +199,10 @@ impl Lut {
                 };
                 let mut o = [0.0f32; 3];
                 for c in 0..3 {
-                    o[c] = c000[c] + fa * (a[c] - c000[c]) + fb2 * (b2[c] - a[c]) + fc * (c111[c] - b2[c]);
+                    o[c] = c000[c]
+                        + fa * (a[c] - c000[c])
+                        + fb2 * (b2[c] - a[c])
+                        + fc * (c111[c] - b2[c]);
                 }
                 o
             }
@@ -172,14 +218,21 @@ impl Lut {
         if t == 0.0 {
             return out;
         }
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(16);
         let row = img.width() as usize * 4;
         let rows_per = (img.height() as usize).div_ceil(threads).max(1);
         std::thread::scope(|s| {
             for chunk in out.chunks_mut(rows_per * row.max(1)) {
                 s.spawn(move || {
                     for p in chunk.as_chunks_mut::<4>().0 {
-                        let src = [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0];
+                        let src = [
+                            p[0] as f32 / 255.0,
+                            p[1] as f32 / 255.0,
+                            p[2] as f32 / 255.0,
+                        ];
                         let m = self.map(src);
                         for c in 0..3 {
                             p[c] = ((src[c] + t * (m[c] - src[c])) * 255.0).round() as u8;
@@ -223,7 +276,11 @@ fn luma([r, g, b]: [f32; 3]) -> f32 {
 fn tint(c: [f32; 3], gains: [f32; 3]) -> [f32; 3] {
     let t = [c[0] * gains[0], c[1] * gains[1], c[2] * gains[2]];
     let (l0, l1) = (luma(c), luma(t));
-    if l1 <= 1e-6 { t } else { t.map(|v| v * l0 / l1) }
+    if l1 <= 1e-6 {
+        t
+    } else {
+        t.map(|v| v * l0 / l1)
+    }
 }
 
 fn saturate(c: [f32; 3], s: f32) -> [f32; 3] {
@@ -247,23 +304,60 @@ fn fade(c: [f32; 3], lift: f32, roll: f32) -> [f32; 3] {
 /// Kokon's presets, in the order the picker shows them.
 pub const PRESETS: &[Preset] = &[
     // Qwen-Image tends to a warm, yellowish cast: pull it back towards neutral.
-    Preset { key: "neutral", title: "Neutral (less yellow)", look: |c| tint(c, [0.97, 0.985, 1.08]) },
-    Preset { key: "warm", title: "Warm", look: |c| tint(c, [1.06, 1.0, 0.9]) },
-    Preset { key: "cool", title: "Cool", look: |c| tint(c, [0.93, 0.995, 1.09]) },
+    Preset {
+        key: "neutral",
+        title: "Neutral (less yellow)",
+        look: |c| tint(c, [0.97, 0.985, 1.08]),
+    },
+    Preset {
+        key: "warm",
+        title: "Warm",
+        look: |c| tint(c, [1.06, 1.0, 0.9]),
+    },
+    Preset {
+        key: "cool",
+        title: "Cool",
+        look: |c| tint(c, [0.93, 0.995, 1.09]),
+    },
     Preset {
         key: "teal-orange",
         title: "Teal & Orange",
         look: |c| {
             let l = luma(c);
             let (sh, hi) = ((1.0 - l) * (1.0 - l), l * l);
-            let t = [c[0] - 0.05 * sh + 0.05 * hi, c[1] + 0.01 * sh + 0.01 * hi, c[2] + 0.06 * sh - 0.06 * hi];
+            let t = [
+                c[0] - 0.05 * sh + 0.05 * hi,
+                c[1] + 0.01 * sh + 0.01 * hi,
+                c[2] + 0.06 * sh - 0.06 * hi,
+            ];
             contrast(saturate(t, 1.08), 0.12)
         },
     },
-    Preset { key: "vivid", title: "Vivid", look: |c| contrast(saturate(c, 1.3), 0.2) },
-    Preset { key: "soft-film", title: "Soft Film", look: |c| tint(fade(saturate(contrast(c, 0.15), 0.9), 0.04, 0.03), [1.02, 1.0, 0.97]) },
-    Preset { key: "matte", title: "Matte", look: |c| fade(saturate(c, 0.85), 0.08, 0.04) },
-    Preset { key: "black-white", title: "Black & White", look: |c| contrast([luma(c); 3], 0.2) },
+    Preset {
+        key: "vivid",
+        title: "Vivid",
+        look: |c| contrast(saturate(c, 1.3), 0.2),
+    },
+    Preset {
+        key: "soft-film",
+        title: "Soft Film",
+        look: |c| {
+            tint(
+                fade(saturate(contrast(c, 0.15), 0.9), 0.04, 0.03),
+                [1.02, 1.0, 0.97],
+            )
+        },
+    },
+    Preset {
+        key: "matte",
+        title: "Matte",
+        look: |c| fade(saturate(c, 0.85), 0.08, 0.04),
+    },
+    Preset {
+        key: "black-white",
+        title: "Black & White",
+        look: |c| contrast([luma(c); 3], 0.2),
+    },
 ];
 
 fn preset(name: &str) -> Option<&'static Preset> {
@@ -283,7 +377,17 @@ const KEEP: usize = 30;
 /// A file name kept as the user wrote it (it is shown in the list), minus characters no file
 /// system allows.
 fn display_name(stem: &str) -> String {
-    let s: String = stem.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { '-' } else { c }).take(100).collect();
+    let s: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_control() || r#"/\:*?"<>|"#.contains(c) {
+                '-'
+            } else {
+                c
+            }
+        })
+        .take(100)
+        .collect();
     let s = s.trim().trim_matches('.').trim().to_string();
     if s.is_empty() { "LUT".into() } else { s }
 }
@@ -298,7 +402,11 @@ impl LutLibrary {
     }
 
     fn path(&self, name: &str) -> AppResult<PathBuf> {
-        if name.is_empty() || name.len() > 120 || name.contains(['/', '\\', ':']) || name.starts_with('.') {
+        if name.is_empty()
+            || name.len() > 120
+            || name.contains(['/', '\\', ':'])
+            || name.starts_with('.')
+        {
             return Err(invalid(format!("Not a LUT name: {name}")));
         }
         Ok(self.dir.join(format!("{name}.cube")))
@@ -310,9 +418,14 @@ impl LutLibrary {
             .flatten()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")))
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("cube"))
+            })
             .map(|p| {
-                let t = std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                let t = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
                 (p, t)
             })
             .collect();
@@ -326,9 +439,21 @@ impl LutLibrary {
         let own = self.files().into_iter().filter_map(|(p, _)| {
             let name = p.file_stem()?.to_string_lossy().into_owned();
             let lut = Lut::parse(&std::fs::read_to_string(&p).ok()?).ok()?;
-            Some(LutEntry { name, title: lut.title, kind: lut.kind, size: lut.size, builtin: false })
+            Some(LutEntry {
+                name,
+                title: lut.title,
+                kind: lut.kind,
+                size: lut.size,
+                builtin: false,
+            })
         });
-        let presets = PRESETS.iter().map(|p| LutEntry { name: format!("{PRESET_PREFIX}{}", p.key), title: Some(p.title.into()), kind: LutKind::ThreeD, size: PRESET_SIZE, builtin: true });
+        let presets = PRESETS.iter().map(|p| LutEntry {
+            name: format!("{PRESET_PREFIX}{}", p.key),
+            title: Some(p.title.into()),
+            kind: LutKind::ThreeD,
+            size: PRESET_SIZE,
+            builtin: true,
+        });
         own.chain(presets).collect()
     }
 
@@ -340,9 +465,14 @@ impl LutLibrary {
         }
         let bytes = std::fs::read(src).map_err(|e| AppError::io("read the LUT", src, e))?;
         let text = String::from_utf8_lossy(&bytes);
-        let lut = Lut::parse(&text).map_err(|why| invalid(format!("This LUT can't be used: {why}.")))?;
-        std::fs::create_dir_all(&self.dir).map_err(|e| AppError::io("create the LUT folder", &self.dir, e))?;
-        let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let lut =
+            Lut::parse(&text).map_err(|why| invalid(format!("This LUT can't be used: {why}.")))?;
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| AppError::io("create the LUT folder", &self.dir, e))?;
+        let stem = src
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let base = display_name(&stem);
         let mut name = base.clone();
         for i in 2.. {
@@ -358,7 +488,13 @@ impl LutLibrary {
         }
         self.touch(&name);
         self.prune();
-        Ok(LutEntry { name, title: lut.title, kind: lut.kind, size: lut.size, builtin: false })
+        Ok(LutEntry {
+            name,
+            title: lut.title,
+            kind: lut.kind,
+            size: lut.size,
+            builtin: false,
+        })
     }
 
     pub fn load(&self, name: &str) -> AppResult<Lut> {
@@ -366,7 +502,12 @@ impl LutLibrary {
             return Ok(Lut::from_fn(p.title, PRESET_SIZE, p.look));
         }
         let p = self.path(name)?;
-        let text = std::fs::read_to_string(&p).map_err(|_| AppError::new(ErrorCode::NotFound, format!("The LUT \"{name}\" is no longer in Kokon's LUT list.")))?;
+        let text = std::fs::read_to_string(&p).map_err(|_| {
+            AppError::new(
+                ErrorCode::NotFound,
+                format!("The LUT \"{name}\" is no longer in Kokon's LUT list."),
+            )
+        })?;
         Lut::parse(&text).map_err(|why| invalid(format!("This LUT can't be used: {why}.")))
     }
 
@@ -424,13 +565,26 @@ mod tests {
     #[test]
     fn identity_and_linear_luts_are_exact() {
         let id = Lut::parse(&cube3(17, |c| c)).unwrap();
-        assert_eq!((id.kind, id.size, id.title.as_deref()), (LutKind::ThreeD, 17, Some("test")));
+        assert_eq!(
+            (id.kind, id.size, id.title.as_deref()),
+            (LutKind::ThreeD, 17, Some("test"))
+        );
         let lin = Lut::parse(&cube3(5, |[r, g, b]| [0.5 * r + 0.25 * g, g, 1.0 - b])).unwrap();
-        for c in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.3, 0.7, 0.1], [0.91, 0.12, 0.55], [0.5, 0.5, 0.5]] {
+        for c in [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.3, 0.7, 0.1],
+            [0.91, 0.12, 0.55],
+            [0.5, 0.5, 0.5],
+        ] {
             assert!(close(id.map(c), c), "{c:?}");
             // Tetrahedral interpolation reproduces any linear map exactly, between grid points too.
             let [r, g, b] = c;
-            assert!(close(lin.map(c), [0.5 * r + 0.25 * g, g, 1.0 - b]), "{c:?} -> {:?}", lin.map(c));
+            assert!(
+                close(lin.map(c), [0.5 * r + 0.25 * g, g, 1.0 - b]),
+                "{c:?} -> {:?}",
+                lin.map(c)
+            );
         }
     }
 
@@ -438,14 +592,24 @@ mod tests {
     fn tetrahedral_interpolation_follows_the_diagonal() {
         // 2³ table, black everywhere except white at (1,1,1): along the grey axis the output
         // rises linearly (trilinear would give t³).
-        let lut = Lut::parse(&cube3(2, |[r, g, b]| if r + g + b > 2.5 { [1.0; 3] } else { [0.0; 3] })).unwrap();
+        let lut = Lut::parse(&cube3(
+            2,
+            |[r, g, b]| if r + g + b > 2.5 { [1.0; 3] } else { [0.0; 3] },
+        ))
+        .unwrap();
         assert!(close(lut.map([0.5, 0.5, 0.5]), [0.5; 3]));
-        assert!(close(lut.map([0.8, 0.2, 0.2]), [0.2; 3]), "the smallest fraction sets the white share");
+        assert!(
+            close(lut.map([0.8, 0.2, 0.2]), [0.2; 3]),
+            "the smallest fraction sets the white share"
+        );
     }
 
     #[test]
     fn one_d_luts_and_domains() {
-        let lut = Lut::parse("LUT_1D_SIZE 3\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n0 0 0\n0.5 0.5 1\n1 1 1\n").unwrap();
+        let lut = Lut::parse(
+            "LUT_1D_SIZE 3\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n0 0 0\n0.5 0.5 1\n1 1 1\n",
+        )
+        .unwrap();
         assert_eq!(lut.kind, LutKind::OneD);
         // Input 1.0 is the middle of a 0-2 domain.
         assert!(close(lut.map([1.0, 0.5, 1.0]), [0.5, 0.25, 1.0]));
@@ -456,24 +620,45 @@ mod tests {
     #[test]
     fn bad_files_say_why() {
         assert!(Lut::parse("hello").unwrap_err().contains("not a .cube"));
-        assert!(Lut::parse("LUT_3D_SIZE 2\n0 0 0\n").unwrap_err().contains("1 entries instead of 8"));
-        assert!(Lut::parse("LUT_3D_SIZE 2\n0 0\n").unwrap_err().contains("line 2"));
-        assert!(Lut::parse("LUT_3D_SIZE 1000\n").unwrap_err().contains("size"));
+        assert!(
+            Lut::parse("LUT_3D_SIZE 2\n0 0 0\n")
+                .unwrap_err()
+                .contains("1 entries instead of 8")
+        );
+        assert!(
+            Lut::parse("LUT_3D_SIZE 2\n0 0\n")
+                .unwrap_err()
+                .contains("line 2")
+        );
+        assert!(
+            Lut::parse("LUT_3D_SIZE 1000\n")
+                .unwrap_err()
+                .contains("size")
+        );
         assert!(Lut::parse("LUT_1D_SIZE 2\nLUT_3D_SIZE 2\n").is_err());
-        assert!(Lut::parse("LUT_1D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n0 0 0\n1 1 1\n").is_err());
+        assert!(
+            Lut::parse("LUT_1D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n0 0 0\n1 1 1\n")
+                .is_err()
+        );
     }
 
     #[test]
     fn apply_blends_by_intensity_and_keeps_alpha() {
         let invert = Lut::parse(&cube3(9, |[r, g, b]| [1.0 - r, 1.0 - g, 1.0 - b])).unwrap();
-        let img = RgbaImage::from_fn(37, 23, |x, y| image::Rgba([(x * 7) as u8, (y * 11) as u8, 200, (x + y) as u8]));
+        let img = RgbaImage::from_fn(37, 23, |x, y| {
+            image::Rgba([(x * 7) as u8, (y * 11) as u8, 200, (x + y) as u8])
+        });
         let full = invert.apply(&img, 1.0);
         let half = invert.apply(&img, 0.5);
         assert_eq!(invert.apply(&img, 0.0), img);
         for (x, y, p) in img.enumerate_pixels() {
             let f = full.get_pixel(x, y);
             assert_eq!([f[0], f[1], f[2], f[3]], [255 - p[0], 255 - p[1], 55, p[3]]);
-            assert!(half.get_pixel(x, y).0[..3].iter().all(|&v| (127..=128).contains(&v)));
+            assert!(
+                half.get_pixel(x, y).0[..3]
+                    .iter()
+                    .all(|&v| (127..=128).contains(&v))
+            );
         }
     }
 
@@ -482,8 +667,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let lib = LutLibrary::new(dir.path().join("luts"));
         let list = lib.list();
-        assert_eq!(list.len(), PRESETS.len(), "presets even with no LUT folder yet");
-        assert!(list.iter().all(|e| e.builtin && e.name.starts_with("kokon:") && e.title.is_some()));
+        assert_eq!(
+            list.len(),
+            PRESETS.len(),
+            "presets even with no LUT folder yet"
+        );
+        assert!(
+            list.iter()
+                .all(|e| e.builtin && e.name.starts_with("kokon:") && e.title.is_some())
+        );
         let grey = [0.5, 0.5, 0.5];
         let get = |k: &str| lib.load(&format!("kokon:{k}")).unwrap();
         let n = get("neutral").map([0.8, 0.75, 0.55]);
@@ -498,10 +690,19 @@ mod tests {
         for p in PRESETS {
             let lut = get(p.key);
             for v in [[0.0; 3], [1.0; 3], [0.2, 0.6, 0.9], grey] {
-                assert!(lut.map(v).iter().all(|x| (0.0..=1.0).contains(x)), "{}", p.key);
+                assert!(
+                    lut.map(v).iter().all(|x| (0.0..=1.0).contains(x)),
+                    "{}",
+                    p.key
+                );
             }
             // Mid grey stays roughly mid grey: looks, not exposure changes.
-            assert!((luma(lut.map(grey)) - 0.5).abs() < 0.06, "{} {:?}", p.key, lut.map(grey));
+            assert!(
+                (luma(lut.map(grey)) - 0.5).abs() < 0.06,
+                "{} {:?}",
+                p.key,
+                lut.map(grey)
+            );
         }
         assert!(lib.remove("kokon:warm").is_err());
         assert!(lib.load("kokon:nope").is_err());
@@ -522,7 +723,11 @@ mod tests {
         std::fs::write(&src, cube3(2, |c| c)).unwrap();
         let a = lib.import(&src).unwrap();
         assert_eq!(a.name, "Warm Film");
-        assert_eq!(lib.import(&src).unwrap().name, "Warm Film", "the same file is not copied twice");
+        assert_eq!(
+            lib.import(&src).unwrap().name,
+            "Warm Film",
+            "the same file is not copied twice"
+        );
         // Another file with the same name gets its own entry.
         let other = dir.path().join("sub");
         std::fs::create_dir_all(&other).unwrap();
@@ -531,7 +736,12 @@ mod tests {
         assert_eq!(b.name, "Warm Film-2");
         std::thread::sleep(std::time::Duration::from_millis(20));
         lib.touch("Warm Film");
-        let names: Vec<_> = lib.list().into_iter().filter(|e| !e.builtin).map(|e| e.name).collect();
+        let names: Vec<_> = lib
+            .list()
+            .into_iter()
+            .filter(|e| !e.builtin)
+            .map(|e| e.name)
+            .collect();
         assert_eq!(names, ["Warm Film", "Warm Film-2"]);
         assert_eq!(lib.load("Warm Film-2").unwrap().size, 3);
         lib.remove("Warm Film").unwrap();
@@ -540,6 +750,11 @@ mod tests {
         assert_eq!(display_name(" a:b?.cube. "), "a-b-.cube");
         let bad = dir.path().join("bad.cube");
         std::fs::write(&bad, "LUT_3D_SIZE 2\n0 0 0\n").unwrap();
-        assert!(lib.import(&bad).unwrap_err().message.contains("can't be used"));
+        assert!(
+            lib.import(&bad)
+                .unwrap_err()
+                .message
+                .contains("can't be used")
+        );
     }
 }

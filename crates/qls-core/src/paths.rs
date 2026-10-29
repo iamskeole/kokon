@@ -8,7 +8,9 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{AppError, AppResult, ErrorCode};
 
-pub const INPUT_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif"];
+pub const INPUT_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif",
+];
 pub const OUTPUT_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
 pub const MAX_INPUT_BYTES: u64 = 200 * 1024 * 1024;
 
@@ -17,8 +19,8 @@ fn bad(msg: impl Into<String>) -> AppError {
 }
 
 const RESERVED: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4",
-    "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// Lexically normalizes an absolute path (resolving `.` and `..`) after rejecting
@@ -40,7 +42,11 @@ pub fn normalize(raw: &str, base: Option<&Path>) -> AppResult<PathBuf> {
     } else {
         match base {
             Some(b) if !s.contains(':') => b.join(p),
-            _ => return Err(bad("Use an absolute path (for example C:\\Images\\photo.png).")),
+            _ => {
+                return Err(bad(
+                    "Use an absolute path (for example C:\\Images\\photo.png).",
+                ));
+            }
         }
     };
     let mut out = PathBuf::new();
@@ -80,7 +86,8 @@ pub fn normalize(raw: &str, base: Option<&Path>) -> AppResult<PathBuf> {
 }
 
 fn ext_of(p: &Path) -> Option<String> {
-    p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase())
+    p.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
 }
 
 /// Resolves symlinks/junctions on the deepest existing ancestor, then re-appends the rest.
@@ -88,7 +95,10 @@ fn resolve_existing_prefix(p: &Path) -> PathBuf {
     let mut existing = p.to_path_buf();
     let mut rest = Vec::new();
     while !existing.exists() {
-        match (existing.file_name().map(|s| s.to_os_string()), existing.parent()) {
+        match (
+            existing.file_name().map(|s| s.to_os_string()),
+            existing.parent(),
+        ) {
             (Some(n), Some(parent)) => {
                 rest.push(n);
                 existing = parent.to_path_buf();
@@ -115,7 +125,10 @@ pub fn dunce_canonical(p: &Path) -> std::io::Result<PathBuf> {
 
 fn starts_with_ci(p: &Path, root: &Path) -> bool {
     let a = p.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
-    let mut b = root.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
+    let mut b = root
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('/', "\\");
     if !b.ends_with('\\') {
         b.push('\\');
     }
@@ -131,14 +144,25 @@ pub fn is_within(p: &Path, roots: &[PathBuf]) -> bool {
 }
 
 /// Validates an input image path. `roots`: when non-empty, the file must be inside one.
-pub fn validate_input_image(raw: &str, base: Option<&Path>, roots: &[PathBuf]) -> AppResult<PathBuf> {
+pub fn validate_input_image(
+    raw: &str,
+    base: Option<&Path>,
+    roots: &[PathBuf],
+) -> AppResult<PathBuf> {
     let p = normalize(raw, base)?;
     match ext_of(&p) {
         Some(e) if INPUT_EXTENSIONS.contains(&e.as_str()) => {}
-        _ => return Err(bad("Only PNG, JPEG, WebP, BMP, GIF, TIFF and HEIC images are supported.")),
+        _ => {
+            return Err(bad(
+                "Only PNG, JPEG, WebP, BMP, GIF, TIFF and HEIC images are supported.",
+            ));
+        }
     }
     if !roots.is_empty() && !is_within(&p, roots) {
-        return Err(bad(format!("{} is outside the allowed folders.", p.display())));
+        return Err(bad(format!(
+            "{} is outside the allowed folders.",
+            p.display()
+        )));
     }
     let meta = std::fs::metadata(&p).map_err(|e| AppError::io("read the image", &p, e))?;
     if !meta.is_file() {
@@ -153,7 +177,13 @@ pub fn validate_input_image(raw: &str, base: Option<&Path>, roots: &[PathBuf]) -
 pub fn sanitize_file_stem(s: &str) -> String {
     let cleaned: String = s
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let mut out = String::new();
     for c in cleaned.chars() {
@@ -162,13 +192,23 @@ pub fn sanitize_file_stem(s: &str) -> String {
         }
         out.push(c);
     }
-    let out = out.trim_matches('-').chars().take(60).collect::<String>().to_lowercase();
+    let out = out
+        .trim_matches('-')
+        .chars()
+        .take(60)
+        .collect::<String>()
+        .to_lowercase();
     if out.is_empty() { "image".into() } else { out }
 }
 
 /// Resolves where to write an output. Adds `.png` if no extension; requires an allowed
 /// root; never returns an existing path or one of `inputs` (adds -1, -2, ...).
-pub fn resolve_output_path(raw: &str, base: Option<&Path>, roots: &[PathBuf], inputs: &[PathBuf]) -> AppResult<PathBuf> {
+pub fn resolve_output_path(
+    raw: &str,
+    base: Option<&Path>,
+    roots: &[PathBuf],
+    inputs: &[PathBuf],
+) -> AppResult<PathBuf> {
     let mut p = normalize(raw, base)?;
     match ext_of(&p) {
         None => {
@@ -178,18 +218,33 @@ pub fn resolve_output_path(raw: &str, base: Option<&Path>, roots: &[PathBuf], in
         Some(_) => return Err(bad("Output files must end in .png, .jpg or .webp.")),
     }
     if !is_within(&p, roots) {
-        return Err(bad(format!("{} is outside the allowed output folders.", p.display())));
+        return Err(bad(format!(
+            "{} is outside the allowed output folders.",
+            p.display()
+        )));
     }
     Ok(unique_path(p, inputs))
 }
 
 pub fn unique_path(p: PathBuf, avoid: &[PathBuf]) -> PathBuf {
-    let collides = |c: &Path| c.exists() || avoid.iter().any(|a| a.to_string_lossy().eq_ignore_ascii_case(&c.to_string_lossy()));
+    let collides = |c: &Path| {
+        c.exists()
+            || avoid.iter().any(|a| {
+                a.to_string_lossy()
+                    .eq_ignore_ascii_case(&c.to_string_lossy())
+            })
+    };
     if !collides(&p) {
         return p;
     }
-    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
-    let ext = p.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "image".into());
+    let ext = p
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "png".into());
     let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     for i in 1..10_000 {
         let c = dir.join(format!("{stem}-{i}.{ext}"));
@@ -221,22 +276,40 @@ mod tests {
             assert!(normalize(bad_path, None).is_err(), "{bad_path:?} accepted");
         }
         assert!(normalize("relative.png", None).is_err());
-        assert!(normalize(r"C:relative.png", Some(Path::new(r"C:\base"))).is_err(), "drive-relative");
+        assert!(
+            normalize(r"C:relative.png", Some(Path::new(r"C:\base"))).is_err(),
+            "drive-relative"
+        );
     }
 
     #[test]
     #[cfg(windows)]
     fn normalize_resolves_dots() {
-        assert_eq!(normalize(r"C:\a\b\..\c\.\d.png", None).unwrap(), PathBuf::from(r"C:\a\c\d.png"));
-        assert_eq!(normalize(r"assets\hero.png", Some(Path::new(r"C:\proj"))).unwrap(), PathBuf::from(r"C:\proj\assets\hero.png"));
-        assert_eq!(normalize("C:/a/b.png", None).unwrap(), PathBuf::from(r"C:\a\b.png"));
+        assert_eq!(
+            normalize(r"C:\a\b\..\c\.\d.png", None).unwrap(),
+            PathBuf::from(r"C:\a\c\d.png")
+        );
+        assert_eq!(
+            normalize(r"assets\hero.png", Some(Path::new(r"C:\proj"))).unwrap(),
+            PathBuf::from(r"C:\proj\assets\hero.png")
+        );
+        assert_eq!(
+            normalize("C:/a/b.png", None).unwrap(),
+            PathBuf::from(r"C:\a\b.png")
+        );
     }
 
     #[test]
     #[cfg(unix)]
     fn normalize_resolves_dots_unix() {
-        assert_eq!(normalize("/a/b/../c/./d.png", None).unwrap(), PathBuf::from("/a/c/d.png"));
-        assert_eq!(normalize("assets/hero.png", Some(Path::new("/proj"))).unwrap(), PathBuf::from("/proj/assets/hero.png"));
+        assert_eq!(
+            normalize("/a/b/../c/./d.png", None).unwrap(),
+            PathBuf::from("/a/c/d.png")
+        );
+        assert_eq!(
+            normalize("assets/hero.png", Some(Path::new("/proj"))).unwrap(),
+            PathBuf::from("/proj/assets/hero.png")
+        );
     }
 
     #[test]
@@ -246,7 +319,11 @@ mod tests {
         let root = dir.path().join("proj");
         std::fs::create_dir_all(root.join("assets")).unwrap();
         let roots = vec![root.clone()];
-        assert!(resolve_output_path("assets/hero.png", Some(&root), &roots, &[]).unwrap().ends_with("hero.png"));
+        assert!(
+            resolve_output_path("assets/hero.png", Some(&root), &roots, &[])
+                .unwrap()
+                .ends_with("hero.png")
+        );
         assert!(resolve_output_path("../outside.png", Some(&root), &roots, &[]).is_err());
         assert!(resolve_output_path("assets/../../proj2/x.png", Some(&root), &roots, &[]).is_err());
         assert!(!is_within(&dir.path().join("proj2").join("x.png"), &roots));
@@ -279,11 +356,31 @@ mod tests {
         let p = resolve_output_path(&existing.to_string_lossy(), None, &roots, &[]).unwrap();
         assert_eq!(p.file_name().unwrap(), "a-1.png");
         let input = dir.path().join("b.png");
-        let p = resolve_output_path(&input.to_string_lossy(), None, &roots, std::slice::from_ref(&input)).unwrap();
+        let p = resolve_output_path(
+            &input.to_string_lossy(),
+            None,
+            &roots,
+            std::slice::from_ref(&input),
+        )
+        .unwrap();
         assert_eq!(p.file_name().unwrap(), "b-1.png");
-        let p = resolve_output_path(&dir.path().join("noext").to_string_lossy(), None, &roots, &[]).unwrap();
+        let p = resolve_output_path(
+            &dir.path().join("noext").to_string_lossy(),
+            None,
+            &roots,
+            &[],
+        )
+        .unwrap();
         assert_eq!(p.extension().unwrap(), "png");
-        assert!(resolve_output_path(&dir.path().join("x.exe").to_string_lossy(), None, &roots, &[]).is_err());
+        assert!(
+            resolve_output_path(
+                &dir.path().join("x.exe").to_string_lossy(),
+                None,
+                &roots,
+                &[]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -294,7 +391,14 @@ mod tests {
         let roots = vec![dir.path().to_path_buf()];
         assert!(validate_input_image(&img.to_string_lossy(), None, &roots).is_ok());
         assert!(validate_input_image(&img.to_string_lossy(), None, &[]).is_ok());
-        assert!(validate_input_image(&dir.path().join("missing.png").to_string_lossy(), None, &roots).is_err());
+        assert!(
+            validate_input_image(
+                &dir.path().join("missing.png").to_string_lossy(),
+                None,
+                &roots
+            )
+            .is_err()
+        );
         let txt = dir.path().join("a.txt");
         std::fs::write(&txt, b"x").unwrap();
         assert!(validate_input_image(&txt.to_string_lossy(), None, &roots).is_err());
@@ -306,7 +410,10 @@ mod tests {
 
     #[test]
     fn stems() {
-        assert_eq!(sanitize_file_stem("A hero image: sunset / city!"), "a-hero-image-sunset-city");
+        assert_eq!(
+            sanitize_file_stem("A hero image: sunset / city!"),
+            "a-hero-image-sunset-city"
+        );
         assert_eq!(sanitize_file_stem("../../etc"), "etc");
         assert_eq!(sanitize_file_stem("???"), "image");
     }

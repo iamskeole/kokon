@@ -551,6 +551,19 @@ export function Settings() {
 
           {tab === "models" && (
             <>
+              {cfg?.externalEngine ? (
+                <div className="setting-card">
+                  <div className="setting-card-text">
+                    <strong>External engine</strong>
+                    <span className="muted">
+                      {cfg.externalEngine.modelName} is managed outside Kokon by a gateway ({cfg.externalEngine.gateway}); Kokon never
+                      starts, stops or downloads it, and "no model loaded" is its resting state.
+                      {(cfg.flavors?.length ?? 0) > 0 ? " Pick another model with the model picker in the prompt box." : ""}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <>
               <div className="setting-card">
                 <div className="setting-card-text">
                   <strong>Model setup</strong>
@@ -699,6 +712,8 @@ export function Settings() {
                     <Trash2 size={15} /> Delete ({formatBytes(legacy.bytes)})
                   </button>
                 </div>
+              )}
+                </>
               )}
             </>
           )}

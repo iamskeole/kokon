@@ -1,9 +1,8 @@
 import { ArrowUp, Brush, Check, ChevronDown, Cpu, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
-import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, moveRef, needsPrompt, parseRatio, toggleLora, typedWords, wantsPromptReview, withActionVerb, type Ref } from "../lib/logic";
+import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, expansionPixels, flavorRequest, formatDuration, hasOutpaint, imageName, MAX_LORAS, moveRef, needsPrompt, parseRatio, toggleLora, type Ref, typedWords, wantsPromptReview, withActionVerb } from "../lib/logic";
 import { native } from "../lib/native";
-import { FLAVORS, flavorLabel } from "../lib/flavors";
 import { haptic } from "../lib/haptics";
 import { inBrowser, useNarrow } from "../lib/platform";
 import {
@@ -508,6 +507,7 @@ export function Composer() {
   const c = useStore((s) => s.composer);
   const external = useStore((s) => s.external);
   const server = useStore((s) => s.server);
+  const flavors = useStore((s) => s.flavors);
   const hasProject = useStore((s) => s.session.length > 0);
   const { plan, error } = usePlanPreview();
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -731,35 +731,37 @@ export function Composer() {
               {(close) => <ResolutionMenu plan={plan} close={close} />}
             </Popover>
 
-            <Popover
-              trigger={(open, toggle) => (
-                <button
-                  className={`pill ${open ? "on" : ""}`}
-                  onClick={toggle}
-                  title="Model: which version the box should be running. Switching asks the box to load it."
-                >
-                  <Cpu size={15} />
-                  <span className="lbl">{server.state === "starting" ? "Loading…" : flavorLabel(external)}</span>
-                  <ChevronDown size={13} className="chev" />
-                </button>
-              )}
-            >
-              {(close) =>
-                FLAVORS.map((f) => (
-                  <Option
-                    key={f.model}
-                    selected={f.model === external?.model}
-                    label={f.label}
-                    sub={f.sub}
-                    onClick={() => {
-                      if (f.model === external?.model) return close();
-                      if (server.state === "starting") return toastError(new Error("A model switch is already in progress"));
-                      api.switchFlavor(f).then(refreshStatus, toastError).finally(close);
-                    }}
-                  />
-                ))
-              }
-            </Popover>
+            {external && flavors.length > 0 && (
+              <Popover
+                trigger={(open, toggle) => (
+                  <button
+                    className={`pill ${open ? "on" : ""}`}
+                    onClick={toggle}
+                    title="Model: which model the engine is running. Switching asks the gateway to load the other one."
+                  >
+                    <Cpu size={15} />
+                    <span className="lbl">{server.state === "starting" ? "Loading…" : flavors.find((f) => f.model === external.model)?.label ?? external.model}</span>
+                    <ChevronDown size={13} className="chev" />
+                  </button>
+                )}
+              >
+                {(close) =>
+                  flavors.map((f) => (
+                    <Option
+                      key={f.model}
+                      selected={f.model === external.model}
+                      label={f.label}
+                      sub={f.sub}
+                      onClick={() => {
+                        if (f.model === external.model) return close();
+                        if (server.state === "starting") return toastError(new Error("A model switch is already in progress"));
+                        api.switchFlavor(flavorRequest(external, f)).then(refreshStatus, toastError).finally(close);
+                      }}
+                    />
+                  ))
+                }
+              </Popover>
+            )}
 
             <Popover
               trigger={(open, toggle) => (

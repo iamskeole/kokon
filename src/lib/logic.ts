@@ -1,6 +1,6 @@
 // Pure UI logic (unit-tested in logic.test.ts).
 
-import type { Advanced, GenerationRecord, GenerationRequest, InpaintAction, InputRecord, InstallItem, InstallStatus, JobView, LoraItem, LutInfo, MacBenchState, Mode, ModelsStatus, StatusResponse, OutpaintSpec, Plan, Quality, ResolutionMode, Size } from "./types";
+import type { Advanced, ExternalEngine, FlavorProfile, GenerationRecord, GenerationRequest, InpaintAction, InputRecord, InstallItem, InstallStatus, JobView, LoraItem, LutInfo, MacBenchState, Mode, ModelsStatus, OutpaintSpec, Plan, Quality, ResolutionMode, Size, StatusResponse } from "./types";
 
 export interface Ref {
   key: string;
@@ -1067,4 +1067,19 @@ export function jobStepText(j: Pick<JobView, "status" | "step">): string {
  * installer is shared with Settings and the first setup). */
 export function downloadIsFor(st: Pick<InstallStatus, "running" | "preset"> | null | undefined, preset: string): boolean {
   return !!st?.running && st.preset === preset;
+}
+
+/** The full external-engine definition for a flavor: the gateway comes from the configured
+ * engine, the model and sample overrides from the flavor (config `flavors`). */
+export function flavorRequest(external: ExternalEngine, f: FlavorProfile): ExternalEngine {
+  return { gateway: external.gateway, model: f.model, modelName: f.modelName, sample: f.sample };
+}
+
+/** The configured flavor that made a generation, matched on the model name recorded on it
+ * (the engine's own name). The full name is tried first, then the file stem, in case one
+ * side keeps the extension and the other does not. */
+export function flavorForModel(flavors: FlavorProfile[], model: string | null | undefined): FlavorProfile | null {
+  if (!model) return null;
+  const stem = (s: string) => s.replace(/\.[^.]+$/, "");
+  return flavors.find((f) => f.modelName === model) ?? flavors.find((f) => stem(f.modelName) === stem(model)) ?? null;
 }
