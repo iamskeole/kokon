@@ -4,7 +4,7 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import {
-  compareBase, composerFromRecord, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
+  compareBase, composerFromRecord, flavorForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
   upscalerLabel, upscaleTargets, variationRequest, imageName, type LinkKind, type TimelineLink,
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
@@ -554,7 +554,7 @@ function PlainFrame({ src, source, alt, w, h, maskSrc, overlay, fill, onFullscre
 
 /** Under the image: which image this is and what made it, then what you can do with it. */
 /** `phone`: the prompt stays in Details, the actions are the phone's row. */
-function StageBar(props: { item: SessionItem; label: string; showOriginal: boolean; setShowOriginal: (on: boolean) => void; lutBar: React.ReactNode; onLut: (lut: LutEntry) => void; phone?: boolean }) {
+function StageBar(props: { item: SessionItem; label: string; showOriginal: boolean; setShowOriginal: (on: boolean) => void; lutBar: React.ReactNode; onLut: (lut: LutEntry) => void; phone?: boolean; model?: string | null }) {
   const { item, label, showOriginal, setShowOriginal } = props;
   const g = item.gen;
   const lut = g && lutInfo(g);
@@ -567,6 +567,7 @@ function StageBar(props: { item: SessionItem; label: string; showOriginal: boole
       <div className="stage-meta">
         <span className="ver">{imageName(label)}</span>
         {g && <span className="mode">{MODE_LABEL[g.mode]}</span>}
+        {props.model && <span className="mode" title="Model">{props.model}</span>}
         {g?.original_prompt && (
           <span className="enhanced-mark" title="The prompt enhancer wrote this image's prompt">
             <WandSparkles size={13} />
@@ -839,6 +840,11 @@ const viewable = (i: SessionItem) => !!(i.gen || i.input);
 /** Full screen for the selected version: follows the selection, and ←/→ (or the arrows on
  * the sides) step through the versions of the timeline without leaving it. */
 function StageFullscreen({ item, session, showOriginal, onClose }: { item: SessionItem; session: SessionItem[]; showOriginal: boolean; onClose: () => void }) {
+  // The model that made the picture: it goes in the viewer's standard hint row.
+  const modelLabel = useStore((s) => {
+    const g = item.gen;
+    return s.external && g ? (flavorForModel(s.flavors, g.model)?.label ?? null) : null;
+  });
   const nav = useMemo<ViewerNav>(() => {
     const at = session.findIndex((i) => i.key === item.key);
     const step = (d: number) => {
@@ -866,6 +872,7 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
     const size = g ? { width: g.width, height: g.height } : { width: item.input!.width, height: item.input!.height };
     content = <ZoomImage key={src} src={src} source={g ? `gen:${g.id}` : `input:${item.input!.id}`} size={size} alt={g?.prompt ?? item.input?.original_name ?? ""} />;
   }
+  if (modelLabel) hint = `${modelLabel} · ${hint}`;
   return (
     <Fullscreen hint={hint} onClose={onClose} nav={nav}>
       {content}
@@ -882,6 +889,12 @@ export function Stage() {
   // A phone: swipe between versions, a row of actions and a filmstrip (PhoneStage.tsx).
   const phone = useNarrow();
   const job = useStore((s) => (item?.jobId ? s.jobs[item.jobId] : undefined));
+  // External engine mode: the configured flavor name of the model that made the shown image
+  // (each record carries the engine's own reported model name).
+  const modelLabel = useStore((s) => {
+    const g = item?.gen;
+    return s.external && g ? (flavorForModel(s.flavors, g.model)?.label ?? null) : null;
+  });
   const labels = useMemo(() => sessionLabels(session), [session]);
   // The result whose pre-upscale original is on screen instead of it.
   const [originalOf, setOriginalOf] = useState<string | null>(null);
@@ -1022,7 +1035,7 @@ export function Stage() {
         )}
         </Hatch>
     );
-    bar = <StageBar item={item} label={labels[item.key]} showOriginal={showOriginal} setShowOriginal={(on) => setOriginalOf(on && g ? g.id : null)} lutBar={lutBar} onLut={startLut} phone={phone} />;
+    bar = <StageBar item={item} label={labels[item.key]} showOriginal={showOriginal} setShowOriginal={(on) => setOriginalOf(on && g ? g.id : null)} lutBar={lutBar} onLut={startLut} phone={phone} model={modelLabel} />;
   }
 
   return (

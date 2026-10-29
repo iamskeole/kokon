@@ -20,7 +20,7 @@ use axum::{
 use futures_util::stream::Stream;
 use qls_core::{
     catalog,
-    config::{AppConfig, GpuBackend, OFFICIAL_PROFILE_ID, USER_PROFILE_ID},
+    config::{AppConfig, ExternalEngine, GpuBackend, OFFICIAL_PROFILE_ID, USER_PROFILE_ID},
     diagnostics,
     engine::{APP_VERSION, JobView, LoraPatch},
     error::{AppError, ErrorCode},
@@ -78,6 +78,7 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/models/use", post(models_use))
         .route("/models/vae", post(models_improve_vae))
         .route("/models/dit", post(models_new_dit))
+        .route("/models/flavor", post(models_flavor))
         .route("/upscalers", get(list_upscalers))
         .route("/upscalers/{name}/download", post(download_upscaler))
         .route("/config", get(get_config).put(put_config))
@@ -1638,4 +1639,24 @@ async fn models_use(State(s): St, Json(b): Json<UseBody>) -> ApiResult<Json<Valu
     }
     save_and_restart(&s, cfg).await?;
     models_status(State(s)).await
+}
+
+/// Switch which model of the external engine this UI will use (config `externalEngine`):
+/// the body carries the model id, the diffusion file name it must report and any per-
+/// request sample overrides.
+///
+/// Only the config is saved here; the engine is left alone. The gateway is first touched
+/// when work needs the model — the next generation (or an explicit start) runs the probe,
+/// which evicts the gateway's current tenant and waits out the load. Switching therefore
+/// never touches the GPU, so picking a model cannot evict whatever the gateway is serving.
+/// Only available when the service runs with an external engine configured — the config
+/// file is the entry point into that mode, this endpoint only changes the flavor within it.
+async fn models_flavor(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult<Json<Value>> {
+    let mut cfg = s.engine.config();
+    if cfg.external_engine.is_none() {
+        return Err(AppError::invalid("This service has no external engine configured.").into());
+    }
+    cfg.external_engine = Some(b);
+    s.engine.set_config(cfg)?;
+    Ok(Json(json!({ "requested": true })))
 }

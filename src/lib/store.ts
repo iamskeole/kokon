@@ -10,7 +10,7 @@ import { useSyncExternalStore } from "react";
 import { markFresh } from "../components/Cocoon";
 import { api, ApiError, setPrivateInputs, subscribe, urls } from "./api";
 import { activeLoras, buildRequest, composing, emptyComposer, goneVersions, macEngineOfferDue, needsPrompt, newKey, pageOutdated, persistentAdvanced, refFromGen, refFromInput, reviewRequest, stageFitsPreview, starPromptDue, timelineLinks, undoTarget, versionLabels, wantsPromptReview, type CompareMode, type Composer, type Ref } from "./logic";
-import type { AppErrorBody, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
+import type { AppErrorBody, ExternalEngine, FlavorProfile, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
 
 export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "welcome" | "whats-new" | "mac-engine" | "prompt-tips" | "shortcuts";
 
@@ -56,7 +56,11 @@ export interface State {
   update: UpdateInfo | null;
   connected: boolean;
   connectError: string | null;
-  server: { state: ServerState; owned: boolean; error: AppErrorBody | null };
+  server: { state: ServerState; owned: boolean; error: AppErrorBody | null; model: string | null };
+  /** An externally managed engine is configured (the UI never preloads one on visit). */
+  external: ExternalEngine | null;
+  /** Selectable flavors of the external engine (config); empty = no model picker. */
+  flavors: FlavorProfile[];
   status: StatusResponse | null;
   /** Versions of the open project, in order. */
   session: SessionItem[];
@@ -394,7 +398,9 @@ let state: State = {
   update: null,
   connected: false,
   connectError: null,
-  server: { state: "stopped", owned: false, error: null },
+  server: { state: "stopped", owned: false, error: null, model: null },
+  external: null,
+  flavors: [],
   status: null,
   session: [],
   selected: null,
@@ -498,8 +504,10 @@ let unsub: (() => void) | null = null;
 /** After Setup or What's new: the Mac engine offer when it is due (the answer decides which engine loads), else the
  * model loads in the background so the first image starts at once. */
 export async function afterStartScreens() {
+  let external = false;
   try {
     const [cfg, st] = await Promise.all([api.config(), api.status()]);
+    external = !!cfg.externalEngine;
     if (!inBrowser && macEngineOfferDue(st, (cfg.ui ?? {}) as Record<string, unknown>, cfg.setupComplete)) {
       setState({ overlay: "mac-engine" });
       return;
@@ -507,6 +515,9 @@ export async function afterStartScreens() {
   } catch {
     // The offer can wait for the next start; the model still loads.
   }
+  // An externally managed engine is never preloaded on visit: it loads on the first request
+  // (or when the user asks for it), through the gateway.
+  if (external) return;
   api.startBackend().then(refreshStatus, () => refreshStatus());
 }
 
@@ -522,7 +533,7 @@ export async function refreshStatus() {
         /* storage unavailable */
       }
     }
-    setState({ status: st, server: { state: st.server.state, owned: st.server.owned, error: st.server.error } });
+    setState({ status: st, server: { state: st.server.state, owned: st.server.owned, error: st.server.error, model: st.server.model ?? null } });
     if (inBrowser) reloadIfOutdated(st.service.version);
     return st;
   } catch {
@@ -574,7 +585,7 @@ export function startEvents() {
       if (ev.type === "job") onJob(ev.job);
       else if (ev.type === "server") {
         const loaded = ev.state === "ready" && getState().server.state !== "ready";
-        setState({ server: { state: ev.state, owned: ev.owned, error: ev.error } });
+        setState({ server: { state: ev.state, owned: ev.owned, error: ev.error, model: ev.model ?? null } });
         // What the newly loaded engine can do (the prompt enhancer).
         if (loaded) refreshStatus();
       }
