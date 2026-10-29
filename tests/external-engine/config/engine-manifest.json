@@ -1,0 +1,34 @@
+{
+  "checked_at": 1793309854,
+  "manifest": {
+    "kokon": {
+      "tag": "kokon-1013-1814814",
+      "min_app": "0.10.0",
+      "win_cuda": {
+        "url": "https://github.com/GabrieleLozupone/stable-diffusion.cpp/releases/download/kokon-1013-1814814/sd-kokon-1814814-bin-win-cuda12-x64.zip",
+        "size": 343854810,
+        "sha256": "5ef1a5306c280e871991893a41d0f8af853a3394b9a639d554f9c0734ee0ad35"
+      },
+      "win_vulkan": {
+        "url": "https://github.com/GabrieleLozupone/stable-diffusion.cpp/releases/download/kokon-1013-1814814/sd-kokon-1814814-bin-win-vulkan-x64.zip",
+        "size": 29559595,
+        "sha256": "29427c56a00f35d8f61180a6ff352563dd3a726b7d0b9b6f8732e87f876511eb"
+      },
+      "linux_cuda": {
+        "url": "https://github.com/GabrieleLozupone/stable-diffusion.cpp/releases/download/kokon-1013-1814814/sd-kokon-1814814-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+        "size": 352747528,
+        "sha256": "a7a712f86f5d605883d2496dacf283009d00d2d5880b4b8b1cb8cf9e595bb62f"
+      },
+      "linux_vulkan": {
+        "url": "https://github.com/GabrieleLozupone/stable-diffusion.cpp/releases/download/kokon-1013-1814814/sd-kokon-1814814-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+        "size": 38181852,
+        "sha256": "9c085070da4ea07356f92bddfb5882133de40ef36de30d8e8d6ddde064f33890"
+      },
+      "macos": {
+        "url": "https://github.com/GabrieleLozupone/stable-diffusion.cpp/releases/download/kokon-1013-1814814/sd-kokon-1814814-bin-Darwin-macOS-15.0-universal.zip",
+        "size": 36981824,
+        "sha256": "0cba039a1ce063daa977e3ea927dab0a0bf1414002e74e80902afdf0ef6bb274"
+      }
+    }
+  }
+}

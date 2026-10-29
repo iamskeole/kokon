@@ -1,0 +1,6 @@
+{
+  "cuda|NVIDIA GeForce RTX 3090|Ram|sage=true": {
+    "factor": 0.12110547,
+    "samples": 1
+  }
+}

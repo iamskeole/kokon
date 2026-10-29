@@ -737,7 +737,7 @@ export function Composer() {
                   <button
                     className={`pill ${open ? "on" : ""}`}
                     onClick={toggle}
-                    title="Model: which model the engine is running. Switching asks the gateway to load the other one."
+                    title="Model: which flavor you picked. The engine loads it when you generate (or when you ask in the status bar)."
                   >
                     <Cpu size={15} />
                     <span className="lbl">{server.state === "starting" ? "Loading…" : flavors.find((f) => f.model === external.model)?.label ?? external.model}</span>
@@ -755,7 +755,11 @@ export function Composer() {
                       onClick={() => {
                         if (f.model === external.model) return close();
                         if (server.state === "starting") return toastError(new Error("A model switch is already in progress"));
-                        api.switchFlavor(flavorRequest(external, f)).then(refreshStatus, toastError).finally(close);
+                        const req = flavorRequest(external, f);
+                        // Switching only records the pick; the engine is loaded by the next
+                        // generation. The server saves the config before answering, so the
+                        // picker can show the new flavor at once.
+                        api.switchFlavor(req).then(() => { setState({ external: req }); refreshStatus(); }, toastError).finally(close);
                       }}
                     />
                   ))

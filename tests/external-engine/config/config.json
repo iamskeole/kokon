@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 11,
+  "sdcppDir": "/home/p/ml/backends/kokon-fork/tests/external-engine/data/sdcpp",
+  "gpuBackend": "cuda",
+  "serverPort": 39900,
+  "servicePort": 39902,
+  "remoteAccess": false,
+  "remotePort": 39152,
+  "activeProfile": "qwen-image-2.1",
+  "profiles": [
+    {
+      "id": "qwen-image-2.1",
+      "displayName": "Qwen-Image 2.1 Turbo Q4_K_M (official)",
+      "model": "qwen-image-2.1",
+      "source": "official",
+      "scanDir": null,
+      "diffusionModel": "/home/p/ml/backends/kokon-fork/tests/external-engine/data/sdcpp/models/qwen21/qwen-image-2.1-turbo-Q4_K_M.gguf",
+      "vae": "/home/p/ml/backends/kokon-fork/tests/external-engine/data/sdcpp/models/qwen21/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
+      "textEncoder": "/home/p/ml/backends/kokon-fork/tests/external-engine/data/sdcpp/models/qwen21/Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+      "visionProjector": "/home/p/ml/backends/kokon-fork/tests/external-engine/data/sdcpp/models/qwen21/mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+      "backendArgs": [],
+      "recommendedSettings": {
+        "sampler": "euler",
+        "area_fast": 1048576,
+        "area_balanced": 2359296,
+        "area_quality": 4194304,
+        "align": 32,
+        "max_side": 4096,
+        "max_references": 10
+      },
+      "capabilities": {
+        "text_to_image": true,
+        "edit": true,
+        "multi_reference": true,
+        "inpaint": true,
+        "outpaint": true,
+        "alpha": true
+      }
+    }
+  ],
+  "device": "cuda0",
+  "textEncoderPlacement": "ram",
+  "vramReserveGib": 1.0,
+  "flashAttention": true,
+  "sageAttention": true,
+  "sageUnsupported": false,
+  "vaeTileSize": 768,
+  "prefixCacheType": "q8_0",
+  "eagerLoad": true,
+  "upscalerModel": "4x_NMKD-Superscale-SP_178000_G",
+  "upscaleTileSize": 0,
+  "upscaleBlend": 1.0,
+  "upscalePrescale": false,
+  "extraServerArgs": [],
+  "macEngine": false,
+  "outputDir": "/home/p/Pictures/Kokon",
+  "keepServerRunning": false,
+  "idleUnloadMinutes": 15,
+  "setupComplete": true,
+  "hardwarePreset": "16gb",
+  "vramOverrideMib": 0,
+  "enhancerT2iPrompt": "",
+  "enhancerEditPrompt": "",
+  "enhancerComposePrompt": "",
+  "loras": [],
+  "ui": {},
+  "externalEngine": {
+    "gateway": "http://127.0.0.1:39990/upstream",
+    "model": "kokon-full",
+    "modelName": "qwen-image-2.1-Q8_0.gguf",
+    "sample": {
+      "cfg": 6.0,
+      "clear_sigmas": true,
+      "sampler": "euler",
+      "steps": 20
+    }
+  }
+}

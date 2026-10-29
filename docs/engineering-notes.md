@@ -76,8 +76,11 @@ to it over HTTP.
 - `flavors` is the list the UI's model picker shows: the active flavor's `model` is what
   the engine runs, and each flavor may carry `sample` overrides (steps, cfg, sampler) that
   apply to the jobs it starts. Empty or absent means there is no picker.
-- Switching flavors is `POST /api/v1/models/flavor` with the chosen flavor: the config is
-  saved and the probe runs again. It returns at once; the UI follows the server state.
+- Switching flavors is `POST /api/v1/models/flavor` with the chosen flavor: only the
+  config is saved, the engine is left alone. The gateway is first touched when work needs
+  the model — the next generation (or an explicit start) runs the probe, which evicts the
+  current tenant and waits out the load, shown in the usual loading state. Picking a
+  flavor therefore never evicts whatever the gateway is serving.
 - Each generation records the model name the engine reports, so the gallery and the image
   details can tell the models apart.
 - In this mode "no model loaded" is the resting state: opening the UI starts nothing, and
