@@ -947,6 +947,11 @@ const viewable = (i: SessionItem) => !!(i.gen || i.input);
 /** Full screen for the selected version: follows the selection, and ←/→ (or the arrows on
  * the sides) step through the versions of the timeline without leaving it. */
 function StageFullscreen({ item, session, showOriginal, onClose }: { item: SessionItem; session: SessionItem[]; showOriginal: boolean; onClose: () => void }) {
+  // The model that made the picture: it goes in the viewer's standard hint row.
+  const modelLabel = useStore((s) => {
+    const g = item.gen;
+    return s.external && g ? (flavorForModel(s.flavors, g.model)?.label ?? null) : null;
+  });
   const nav = useMemo<ViewerNav>(() => {
     const at = session.findIndex((i) => i.key === item.key);
     const step = (d: number) => {
@@ -974,6 +979,7 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
     const size = g ? { width: g.width, height: g.height } : { width: item.input!.width, height: item.input!.height };
     content = <ZoomImage key={src} src={src} source={g ? `gen:${g.id}` : `input:${item.input!.id}`} size={size} alt={g?.prompt ?? item.input?.original_name ?? ""} />;
   }
+  if (modelLabel) hint = `${modelLabel} · ${hint}`;
   return (
     <Fullscreen hint={hint} onClose={onClose} nav={nav}>
       {content}
