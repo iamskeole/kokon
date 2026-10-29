@@ -24,7 +24,9 @@ pub const DEFAULT_REMOTE_PORT: u16 = 39152;
 /// Schema 9 (2026-10-16, #14): profiles record their model and source; model paths edited by
 /// hand on the official profile move to a profile of the user's own files.
 /// Schema 10 (2026-10-19): the 8 GB preset's VRAM reserve 1 -> 1.5 GiB (unless set by hand).
-const SCHEMA_VERSION: u32 = 10;
+/// Schema 11: additive `externalEngine` (an externally managed inference engine); older files
+/// load with the field unset.
+const SCHEMA_VERSION: u32 = 11;
 /// `upscaler_model` value for a plain Lanczos resize (no model).
 pub const LANCZOS: &str = "lanczos";
 /// Upscalers offered in Settings: (file stem, label). Superscale-SP is a setup download, MoSR is
@@ -279,6 +281,26 @@ impl ModelProfile {
     }
 }
 
+/// An externally managed inference engine: Kokon never spawns, restarts, idle-unloads or kills
+/// it. Every engine HTTP call goes to `{gateway}/{model}/...` of a load-on-demand gateway (a
+/// model router that starts the engine when requested), and a running engine is accepted only
+/// when it reports `model_name`. The UI treats "no engine loaded" as a normal resting state
+/// (zero VRAM) and requests one explicitly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalEngine {
+    /// Base URL of the load-on-demand gateway, e.g. `http://127.0.0.1:8081/upstream`.
+    pub gateway: String,
+    /// The model the gateway loads on demand for this UI (its id in the gateway's vocabulary).
+    pub model: String,
+    /// File name of the diffusion model the running engine must report (`/capabilities`).
+    pub model_name: String,
+    /// Per-request overrides merged into every job's sample params (e.g. `steps`, `cfg`);
+    /// `{}` = the engine's defaults for the loaded model.
+    #[serde(default)]
+    pub sample: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppConfig {
@@ -366,6 +388,9 @@ pub struct AppConfig {
     pub loras: Vec<LoraEntry>,
     /// Opaque UI preferences (last quality, resolution mode, aspect...).
     pub ui: serde_json::Value,
+    /// Externally managed inference engine (see [`ExternalEngine`]); unset = Kokon runs its own.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub external_engine: Option<ExternalEngine>,
 }
 
 impl Default for AppConfig {
@@ -407,6 +432,7 @@ impl Default for AppConfig {
             enhancer_compose_prompt: String::new(),
             loras: vec![],
             ui: serde_json::json!({}),
+            external_engine: None,
         }
     }
 }
@@ -614,6 +640,19 @@ impl AppConfig {
 
     pub fn profile(&self) -> &ModelProfile {
         self.profiles.iter().find(|p| p.id == self.active_profile).unwrap_or(&self.profiles[0])
+    }
+
+    pub fn external_engine(&self) -> Option<&ExternalEngine> {
+        self.external_engine.as_ref()
+    }
+
+    /// Base URL of the inference engine's API: the external gateway when configured,
+    /// otherwise the local server on the configured port.
+    pub fn engine_base_url(&self) -> String {
+        match &self.external_engine {
+            Some(e) => format!("{}/{}", e.gateway.trim_end_matches('/'), e.model),
+            None => format!("http://127.0.0.1:{}", self.server_port),
+        }
     }
 
     pub fn user_profile(&self) -> Option<&ModelProfile> {

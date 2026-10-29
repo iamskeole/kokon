@@ -112,7 +112,7 @@ struct Job {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     Job { job: Box<JobView> },
-    Server { state: ServerState, owned: bool, error: Option<AppError> },
+    Server { state: ServerState, owned: bool, error: Option<AppError>, model: Option<String> },
     Gallery { id: String, change: &'static str },
     /// A project changed (`rev`) or was removed: the other devices reload it.
     Projects { id: String, rev: u64, deleted: bool },
@@ -696,7 +696,7 @@ impl Engine {
 
     pub fn emit_server(&self) {
         let s = self.server.status();
-        let _ = self.events.send(Event::Server { state: s.state, owned: s.owned, error: s.error });
+        let _ = self.events.send(Event::Server { state: s.state, owned: s.owned, error: s.error, model: s.model });
     }
 
     fn update(&self, id: &str, f: impl FnOnce(&mut Job)) {
@@ -757,8 +757,11 @@ impl Engine {
         }
         // A model file on a drive that is not connected, moved or deleted: say so now, so the
         // app can guide the user (Setup), instead of failing once the job starts. Also with the
-        // model loaded: sd-server opens the files again for every image.
-        if let Some(e) = self.config().missing_files_error() {
+        // model loaded: sd-server opens the files again for every image. An external engine
+        // keeps its own files behind the gateway; there is nothing local to check.
+        if self.config().external_engine().is_none()
+            && let Some(e) = self.config().missing_files_error()
+        {
             return Err(e);
         }
         if let Some(seed) = request.seed
@@ -1177,8 +1180,11 @@ impl Engine {
             j.view.started_at = Some(now_rfc3339());
             j.view.queue_position = 0;
         });
-        // A file that went missing while the job was queued (see `submit`).
-        if let Some(e) = self.config().missing_files_error() {
+        // A file that went missing while the job was queued (see `submit`); external engines
+        // have no local files to miss.
+        if self.config().external_engine().is_none()
+            && let Some(e) = self.config().missing_files_error()
+        {
             return Err(e);
         }
 
@@ -1245,7 +1251,12 @@ impl Engine {
 
         // 3. Backend.
         // A job that also starts the server is not a fair speed sample (startup, first load).
-        let model_loaded = self.server.capabilities().is_some_and(|c| c.model_matches(&profile.diffusion_model));
+        // External engines are matched by the file name the gateway's model reports, not by a local path.
+        let ext_model = self.config().external_engine().map(|e| e.model_name.clone());
+        let model_loaded = self.server.capabilities().is_some_and(|c| match &ext_model {
+            Some(name) => c.model_matches(Path::new(name)),
+            None => c.model_matches(&profile.diffusion_model),
+        });
         let mut cold_start = false;
         if self.server.status().state != ServerState::Ready || self.server.owned_alive() == Some(false) || !model_loaded {
             cold_start = true;
@@ -1261,7 +1272,7 @@ impl Engine {
         // Whether the running server can use the upscaler (an engine older than MoSR lists the
         // file but cannot run it; an external server may lack --hires-upscalers-dir):
         // enlargements fall back to Lanczos. Fresh, because the server rescans the folder.
-        let client = SdcppClient::new(self.server.port());
+        let client = SdcppClient::new_url(cfg.engine_base_url());
         let caps = client.capabilities(Duration::from_secs(5)).await.ok().or_else(|| self.server.capabilities()).unwrap_or_default();
         let esrgan = plan.upscaler.clone().filter(|n| caps.has_upscaler(n, true));
         let needs_esrgan = plan.upscale.is_some() || plan.output.area() as f64 > plan.content.area() as f64 * 1.21;
@@ -1301,6 +1312,11 @@ impl Engine {
                 .await
                 .map_err(AppError::internal)??;
             let pipeline::PreparedJob { request: mut sd_req, mut post, enhancer: view } = prepared;
+            // An externally managed engine may run a model with different sampling defaults
+            // (config externalEngine.sample: steps / cfg / sampler / clear_sigmas).
+            if let Some(ext) = &cfg.external_engine {
+                pipeline::apply_sample_overrides(&mut sd_req, &ext.sample);
+            }
             if let Some(what) = caps.mac_engine_unsupported(&sd_req) {
                 return Err(AppError::new(ErrorCode::Unsupported, format!("Kokon's Mac engine (experimental) does not do {what} yet."))
                     .suggest("Turn it off in Settings → Performance to use the standard engine for this."));

@@ -439,13 +439,20 @@ fn unavailable(e: impl std::fmt::Display) -> AppError {
 }
 
 impl SdcppClient {
+    /// The local inference server on the loopback port Kokon configured it to use.
     pub fn new(port: u16) -> Self {
+        Self::new_url(format!("http://127.0.0.1:{port}"))
+    }
+
+    /// Any base URL, e.g. an external gateway (`{gateway}/{model}`) that serves the same
+    /// `/sdcpp/v1/*` API and loads the engine on demand. All requests are `{base}/...`.
+    pub fn new_url(base: impl Into<String>) -> Self {
         let http = reqwest::Client::builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(3))
             .build()
             .expect("http client");
-        Self { base: format!("http://127.0.0.1:{port}"), http }
+        Self { base: base.into().trim_end_matches('/').into(), http }
     }
 
     pub fn base_url(&self) -> &str {

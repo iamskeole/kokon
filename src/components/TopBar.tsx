@@ -4,6 +4,7 @@
 import { ArrowDownToLine, CircleHelp, CirclePlay, EyeOff, Keyboard, Lightbulb, PanelLeft, Redo2, Settings, SquarePen, Undo2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
+import { FLAVORS } from "../lib/flavors";
 import { native } from "../lib/native";
 import { haptic } from "../lib/haptics";
 import { isNarrow, shortcut } from "../lib/platform";
@@ -19,6 +20,7 @@ import { IconButton, Popover } from "./ui";
 export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
   const connected = useStore((s) => s.connected);
   const server = useStore((s) => s.server);
+  const external = useStore((s) => s.external);
   const busy = useStore((s) => Object.values(s.jobs).some((j) => !["done", "failed", "cancelled"].includes(j.status)));
   let cls = "dot";
   let text = "Connecting";
@@ -28,11 +30,11 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
       case "ready":
         cls = "dot ready";
         text = busy ? "Working" : "Ready";
-        title = server.owned ? "Model loaded" : "Using an inference server that was already running";
+        title = server.owned ? "Model loaded" : "Loaded on demand: " + (server.model ?? "the model");
         break;
       case "starting":
         cls = "dot busy";
-        text = "Loading model";
+        text = server.model ? "Loading " + server.model : "Loading model";
         break;
       case "error":
         cls = "dot error";
@@ -40,8 +42,8 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
         title = isMissingModel(server.error) ? "Find or download the missing file" : "Open Diagnostics";
         break;
       default:
-        text = "Model not loaded";
-        title = "Click to load the model now";
+        text = external ? "No model loaded" : "Model not loaded";
+        title = external ? "Click to request the model" : "Click to load the model now";
     }
   }
   if (quiet && cls === "dot ready" && !busy) return null;
@@ -155,6 +157,32 @@ export function HelpMenu() {
   );
 }
 
+/** The flavors of the externally managed engine: which one the box should be running. */
+function FlavorPicker() {
+  const external = useStore((s) => s.external);
+  const server = useStore((s) => s.server);
+  if (!external || isNarrow()) return null; // the phone bar has no room for this
+  return (
+    <span className="flavors" title="Which model the box should be running. Switching asks the gateway to load it.">
+      {FLAVORS.map((f) => {
+        const on = f.model === external.model;
+        const busy = server.state === "starting";
+        return (
+          <button
+            key={f.model}
+            className={on ? "flavor on" : "flavor"}
+            disabled={busy}
+            title={on ? "The flavor this UI points at" : `Switch to ${f.label}: the box reloads that model`}
+            onClick={() => api.switchFlavor(f).then(refreshStatus, toastError)}
+          >
+            {f.label}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
 export function TopBar() {
   const overlay = useStore((s) => s.overlay);
   const needsSetup = useStore((s) => s.needsSetup);
@@ -178,6 +206,7 @@ export function TopBar() {
       <div className="toolbar" data-tauri-drag-region>
         {!needsSetup && <HistoryButtons />}
         <UpdatePill />
+        {!needsSetup && <FlavorPicker />}
         <StatusIndicator />
         {!needsSetup && <PrivateToggle />}
         <HelpMenu />

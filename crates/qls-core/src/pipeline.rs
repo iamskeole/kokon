@@ -278,6 +278,28 @@ pub fn enhanced_prompt(original: &str, enhanced: &str) -> String {
     p.to_string()
 }
 
+/// The external engine's per-request sample overrides (config `externalEngine.sample`):
+/// `steps` (sample steps), `cfg` (prompt guidance), `sampler` (sample method) and
+/// `clear_sigmas` (drop the built-in Turbo schedule, which a non-distilled model must not run
+/// on). Keys that are absent leave the planned values untouched.
+pub fn apply_sample_overrides(req: &mut ImgGenRequest, sample: &serde_json::Value) {
+    let sp = &mut req.sample_params;
+    if let Some(steps) = sample.get("steps").and_then(|v| v.as_u64())
+        && steps > 0
+    {
+        sp.sample_steps = steps as u32;
+    }
+    if let Some(cfg) = sample.get("cfg").and_then(|v| v.as_f64()) {
+        sp.guidance.txt_cfg = cfg as f32;
+    }
+    if let Some(sampler) = sample.get("sampler").and_then(|v| v.as_str()) {
+        sp.sample_method = Some(sampler.to_string());
+    }
+    if sample.get("clear_sigmas").and_then(|v| v.as_bool()) == Some(true) {
+        sp.custom_sigmas.clear();
+    }
+}
+
 pub fn prepare(plan: &Plan, prompt: &str, seed: i64, images: &[LoadedImage], mask: Option<&GrayImage>, opts: &BackendOptions) -> AppResult<PreparedJob> {
     let first = plan.working;
     let mut req = ImgGenRequest {
@@ -941,6 +963,26 @@ mod tests {
     }
     fn req(p: &str) -> GenerationRequest {
         GenerationRequest { prompt: p.into(), preserve_dimensions: true, ..Default::default() }
+    }
+
+    #[test]
+    fn external_sample_overrides() {
+        let r = req("a red square");
+        let inputs = PlanInputs { image_sizes: vec![], vram_total_mib: Some(16303), ..Default::default() };
+        let p = plan(&r, &inputs, &RecommendedSettings::default()).unwrap();
+        let mut j = prepare(&p, &r.prompt, 7, &[], None, &BackendOptions::default()).unwrap();
+        apply_sample_overrides(&mut j.request, &serde_json::json!({ "steps": 8, "cfg": 1.0, "sampler": "euler", "clear_sigmas": true }));
+        let sp = &j.request.sample_params;
+        assert_eq!(sp.sample_steps, 8);
+        assert!((sp.guidance.txt_cfg - 1.0).abs() < f32::EPSILON);
+        assert_eq!(sp.sample_method.as_deref(), Some("euler"));
+        assert!(sp.custom_sigmas.is_empty(), "clear_sigmas drops the computed schedule");
+        // Zero steps and a non-string sampler are ignored, never overwriting the plan.
+        let before = prepare(&p, &r.prompt, 7, &[], None, &BackendOptions::default()).unwrap().request.sample_params.clone();
+        let mut j2 = prepare(&p, &r.prompt, 7, &[], None, &BackendOptions::default()).unwrap();
+        apply_sample_overrides(&mut j2.request, &serde_json::json!({ "steps": 0, "sampler": 42 }));
+        assert_eq!(j2.request.sample_params.sample_steps, before.sample_steps);
+        assert_eq!(j2.request.sample_params.sample_method, before.sample_method);
     }
     fn decode(b: &str) -> RgbaImage {
         imaging::decode_image(&b64_decode(b).unwrap()).unwrap().pixels

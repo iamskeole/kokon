@@ -11,7 +11,7 @@ import { markFresh } from "../components/Cocoon";
 import { api, ApiError, setPrivateInputs, subscribe, urls } from "./api";
 import { activeLoras, buildRequest, composing, emptyComposer, goneVersions, isGenericName, macEngineDefaultDue, needsPrompt, newKey, pageOutdated, persistentAdvanced, refFromGen, refFromInput, reviewRequest, stageFitsPreview, starPromptDue, timelineLinks, typedWords, undoTarget, versionLabels, wantsPromptReview, type CompareMode, type Composer, type Ref } from "./logic";
 import { keepLabsIn, labsChanged, labSources, loadLab, type LabStore } from "./layerDoc";
-import type { AppErrorBody, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
+import type { AppErrorBody, ExternalEngine, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
 
 export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "layers" | "welcome" | "whats-new" | "prompt-tips" | "shortcuts" | "ai-check";
 
@@ -57,7 +57,9 @@ export interface State {
   update: UpdateInfo | null;
   connected: boolean;
   connectError: string | null;
-  server: { state: ServerState; owned: boolean; error: AppErrorBody | null };
+  server: { state: ServerState; owned: boolean; error: AppErrorBody | null; model: string | null };
+  /** This deployment runs an externally managed engine (flavor switching, no preload on visit). */
+  external: ExternalEngine | null;
   status: StatusResponse | null;
   /** Versions of the open project, in order. */
   session: SessionItem[];
@@ -457,7 +459,8 @@ let state: State = {
   update: null,
   connected: false,
   connectError: null,
-  server: { state: "stopped", owned: false, error: null },
+  server: { state: "stopped", owned: false, error: null, model: null },
+  external: null,
   status: null,
   session: [],
   selected: null,
@@ -576,12 +579,17 @@ export async function turnOnMacEngine(): Promise<void> {
 /** After Setup or What's new: Kokon's Mac engine switched on when it is due (before the model loads, so it loads on
  * it), then the model loads in the background so the first image starts at once. */
 export async function afterStartScreens() {
+  let external = false;
   try {
     const [cfg, st] = await Promise.all([api.config(), api.status()]);
+    external = !!cfg.externalEngine;
     if (!inBrowser && macEngineDefaultDue(st, (cfg.ui ?? {}) as Record<string, unknown>, cfg.setupComplete)) await turnOnMacEngine();
   } catch {
     // It can wait for the next start; the model still loads.
   }
+  // An externally managed engine is never preloaded on visit: it loads on the first request
+  // (or when the user asks for it), through the gateway.
+  if (external) return;
   api.startBackend().then(refreshStatus, () => refreshStatus());
 }
 
@@ -597,7 +605,7 @@ export async function refreshStatus() {
         /* storage unavailable */
       }
     }
-    setState({ status: st, server: { state: st.server.state, owned: st.server.owned, error: st.server.error } });
+    setState({ status: st, server: { state: st.server.state, owned: st.server.owned, error: st.server.error, model: st.server.model ?? null } });
     if (inBrowser) reloadIfOutdated(st.service.version);
     return st;
   } catch {
@@ -649,7 +657,7 @@ export function startEvents() {
       if (ev.type === "job") onJob(ev.job);
       else if (ev.type === "server") {
         const loaded = ev.state === "ready" && getState().server.state !== "ready";
-        setState({ server: { state: ev.state, owned: ev.owned, error: ev.error } });
+        setState({ server: { state: ev.state, owned: ev.owned, error: ev.error, model: ev.model ?? null } });
         // What the newly loaded engine can do (the prompt enhancer).
         if (loaded) refreshStatus();
       }
