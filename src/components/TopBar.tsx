@@ -3,7 +3,6 @@
 // buttons. Its own file so the launch video (marketing/video) shows the same bar.
 import { ArrowDownToLine, CircleHelp, EyeOff, PanelLeft, Redo2, Settings, SquarePen, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
-import { FLAVORS } from "../lib/flavors";
 import { native } from "../lib/native";
 import { haptic } from "../lib/haptics";
 import { isNarrow, shortcut } from "../lib/platform";
@@ -119,32 +118,6 @@ export function togglePrivateMode() {
   setPrivateMode(!getState().privateMode, () => native.confirm("Turn off private mode? The images made in private mode will be deleted.", "Private mode"));
 }
 
-/** The flavors of the externally managed engine: which one the box should be running. */
-function FlavorPicker() {
-  const external = useStore((s) => s.external);
-  const server = useStore((s) => s.server);
-  if (!external || isNarrow()) return null; // the phone bar has no room for this
-  return (
-    <span className="flavors" title="Which model the box should be running. Switching asks the gateway to load it.">
-      {FLAVORS.map((f) => {
-        const on = f.model === external.model;
-        const busy = server.state === "starting";
-        return (
-          <button
-            key={f.model}
-            className={on ? "flavor on" : "flavor"}
-            disabled={busy}
-            title={on ? "The flavor this UI points at" : `Switch to ${f.label}: the box reloads that model`}
-            onClick={() => api.switchFlavor(f).then(refreshStatus, toastError)}
-          >
-            {f.label}
-          </button>
-        );
-      })}
-    </span>
-  );
-}
-
 export function TopBar() {
   const overlay = useStore((s) => s.overlay);
   const needsSetup = useStore((s) => s.needsSetup);
@@ -168,7 +141,6 @@ export function TopBar() {
       <div className="toolbar" data-tauri-drag-region>
         {!needsSetup && <HistoryButtons />}
         <UpdatePill />
-        {!needsSetup && <FlavorPicker />}
         <StatusIndicator />
         {!needsSetup && <PrivateToggle />}
         <IconButton title="Shortcuts (?)" onClick={() => setState({ overlay: "shortcuts" })}>

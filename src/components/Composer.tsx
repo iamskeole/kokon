@@ -1,12 +1,13 @@
-import { ArrowUp, Brush, Check, ChevronDown, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
+import { ArrowUp, Brush, Check, ChevronDown, Cpu, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, enhancerApplies, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, moveRef, needsPrompt, parseRatio, toggleLora, wantsPromptReview, type Ref } from "../lib/logic";
 import { native } from "../lib/native";
+import { FLAVORS, flavorLabel } from "../lib/flavors";
 import { haptic } from "../lib/haptics";
 import { inBrowser, useNarrow } from "../lib/platform";
 import {
-  addAsReference, addInputs, cancelPromptReview, editShownImage, enhancerAvailable, getState, itemSource, openSettings, selectedItem, sessionLabels, setProjectLoras, setState, startNewImage, submitComposer, toastError, undoEnhancedPrompt, updateComposer, useStore, type SessionItem,
+  addAsReference, addInputs, cancelPromptReview, editShownImage, enhancerAvailable, getState, itemSource, openSettings, refreshStatus, selectedItem, sessionLabels, setProjectLoras, setState, startNewImage, submitComposer, toastError, undoEnhancedPrompt, updateComposer, useStore, type SessionItem,
 } from "../lib/store";
 import type { InpaintAction, Plan, Quality } from "../lib/types";
 import { AdvancedPanel } from "./Advanced";
@@ -490,6 +491,8 @@ function EnhancedFrom({ words }: { words: string }) {
 
 export function Composer() {
   const c = useStore((s) => s.composer);
+  const external = useStore((s) => s.external);
+  const server = useStore((s) => s.server);
   const hasProject = useStore((s) => s.session.length > 0);
   const { plan, error } = usePlanPreview();
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -709,6 +712,36 @@ export function Composer() {
               )}
             >
               {(close) => <ResolutionMenu plan={plan} close={close} />}
+            </Popover>
+
+            <Popover
+              trigger={(open, toggle) => (
+                <button
+                  className={`pill ${open ? "on" : ""}`}
+                  onClick={toggle}
+                  title="Model: which version the box should be running. Switching asks the box to load it."
+                >
+                  <Cpu size={15} />
+                  <span className="lbl">{server.state === "starting" ? "Loading…" : flavorLabel(external)}</span>
+                  <ChevronDown size={13} className="chev" />
+                </button>
+              )}
+            >
+              {(close) =>
+                FLAVORS.map((f) => (
+                  <Option
+                    key={f.model}
+                    selected={f.model === external?.model}
+                    label={f.label}
+                    sub={f.sub}
+                    onClick={() => {
+                      if (f.model === external?.model) return close();
+                      if (server.state === "starting") return toastError(new Error("A model switch is already in progress"));
+                      api.switchFlavor(f).then(refreshStatus, toastError).finally(close);
+                    }}
+                  />
+                ))
+              }
             </Popover>
 
             <Popover

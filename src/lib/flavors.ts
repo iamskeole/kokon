@@ -12,11 +12,13 @@ export const GATEWAY = "http://127.0.0.1:8081/upstream";
 
 export interface Flavor extends ExternalEngine {
   label: string;
+  sub: string;
 }
 
 export const FLAVORS: Flavor[] = [
   {
     label: "Turbo",
+    sub: "8 steps · fastest",
     gateway: GATEWAY,
     model: "kokon-turbo",
     modelName: "qwen-image-2.1-turbo-Q4_K_M.gguf",
@@ -25,6 +27,7 @@ export const FLAVORS: Flavor[] = [
   },
   {
     label: "Full",
+    sub: "20 steps · most detail",
     gateway: GATEWAY,
     model: "kokon-full",
     modelName: "qwen-image-2.1-Q8_0.gguf",
