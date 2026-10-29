@@ -10,6 +10,7 @@ S="http://127.0.0.1:$PORT/api/v1"
 
 rm -rf "$D/data" "$D/config" "$D/requests.log"
 mkdir -p "$D/data" "$D/config"
+cp "$(cd "$(dirname "$0")" && pwd)/mock_gateway.py" "$D/mock_gateway.py"
 cat > "$D/config/config.json" <<EOF
 {
   "schemaVersion": 11,
@@ -79,7 +80,7 @@ grep -q "upstream/kokon-turbo/sdcpp/v1/img_gen" "$D/requests.log" \
 JERR=$(curl -s -H "$H" $S/jobs/"$JID" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('error') or '-')")
 [ "$JERR" = "-" ] || echo "  (job error: $JERR)"
 
-echo "=== 4. flavor switch: turbo -> full ==="
+echo "=== 4. flavor switch: turbo -> full (records the pick, touches nothing) ==="
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/models/flavor -d "{
   \"gateway\": \"http://127.0.0.1:$GW/upstream\",
   \"model\": \"kokon-full\",
@@ -88,17 +89,19 @@ curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/models/flavor -d 
 }" > /dev/null
 sleep 1
 R=$(sf)
-case "$R" in
-  "starting false qwen-image-2.1-Q8_0.gguf") echo "PASS: mid-switch: reported as loading the new model"; pass=$((pass+1));;
-  "ready false qwen-image-2.1-turbo-Q4_K_M.gguf") echo "PASS: mid-switch: still ready on the old model (load in flight elsewhere)"; pass=$((pass+1));;
-  *) echo "FAIL: mid-switch state [$R]"; fail=$((fail+1));;
-esac
-sleep 5
-R=$(sf)
-check "after switch: full loaded, still not owned" "ready false qwen-image-2.1-Q8_0.gguf" "$R"
-check "gateway evicted the old tenant once for the switch" 1 "$(gs evicts)"
+check "after switch: still ready on turbo, no load started" "ready false qwen-image-2.1-turbo-Q4_K_M.gguf" "$R"
+check "gateway: no load, no eviction for a mere switch" "1 0" "$(gs loads) $(gs evicts)"
+check "config now selects full" "kokon-full" "$(curl -s -H "$H" $S/config | python3 -c "import json,sys;print(json.load(sys.stdin)['externalEngine']['model'])")"
 
-echo "=== 5. gateway down ==="
+echo "=== 5. the next generation triggers the swap ==="
+JID=$(curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/jobs -d '{"prompt":"a red square","mode":"generate","quality":"fast","width":64,"height":64}' | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+for i in $(seq 1 30); do S5=$(js $JID); [ "$S5" = done ] && break; [ "$S5" = error ] && break; sleep 1; done
+check "job on the newly picked model finished" "done" "$(js $JID)"
+check "gateway evicted the old tenant once and loaded the new one" "2 1" "$(gs loads) $(gs evicts)"
+R=$(sf)
+check "state: full loaded, still not owned" "ready false qwen-image-2.1-Q8_0.gguf" "$R"
+
+echo "=== 6. gateway down ==="
 kill $GWPID 2>/dev/null; wait $GWPID 2>/dev/null
 curl -s -X POST -H "$H" $S/backend/start > /dev/null
 sleep 5
@@ -108,16 +111,11 @@ MSG=$(curl -s -H "$H" $S/status | python3 -c "import json,sys;print((json.load(s
 case "$MSG" in *"not reachable"*) echo "PASS: error says the engine is not reachable (a switch, not a crash)"; pass=$((pass+1));; *) echo "FAIL: unexpected error message: $MSG"; fail=$((fail+1));; esac
 pgrep -f "sd-server" > /dev/null && { echo "FAIL: service spawned a local engine!"; fail=$((fail+1)); } || { echo "PASS: no local engine was spawned"; pass=$((pass+1)); }
 
-echo "=== 6. recovery ==="
+echo "=== 7. recovery ==="
 python3 "$D/mock_gateway.py" $GW 1.5 "$D/requests.log" > "$D/gateway.log" 2>&1 &
 GWPID=$!
 sleep 1
-curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/models/flavor -d "{
-  \"gateway\": \"http://127.0.0.1:$GW/upstream\",
-  \"model\": \"kokon-full\",
-  \"modelName\": \"qwen-image-2.1-Q8_0.gguf\",
-  \"sample\": {\"steps\": 20, \"cfg\": 6.0, \"sampler\": \"euler\", \"clear_sigmas\": true}
-}" > /dev/null
+curl -s -X POST -H "$H" $S/backend/start > /dev/null
 sleep 4
 R=$(sf)
 check "recovered: full loaded and ready" "ready false qwen-image-2.1-Q8_0.gguf" "$R"

@@ -2073,12 +2073,16 @@ async fn models_use(State(s): St, Json(b): Json<UseBody>) -> ApiResult<Json<Valu
     models_status(State(s)).await
 }
 
-/// Switch which model of the external engine serves this UI (config `externalEngine`):
-/// the body carries the new model id, the diffusion file name it must report and any
-/// per-request sample overrides. The gateway's load runs in the background; clients poll
-/// `/status` (the server goes `starting` with the new model's name, then `ready`). Only
-/// available when the service runs with an external engine configured — the config file is
-/// the entry point into that mode, this endpoint only changes the flavor within it.
+/// Switch which model of the external engine this UI will use (config `externalEngine`):
+/// the body carries the model id, the diffusion file name it must report and any per-
+/// request sample overrides.
+///
+/// Only the config is saved here; the engine is left alone. The gateway is first touched
+/// when work needs the model — the next generation (or an explicit start) runs the probe,
+/// which evicts the gateway's current tenant and waits out the load. Switching therefore
+/// never touches the GPU, so picking a model cannot evict whatever the gateway is serving.
+/// Only available when the service runs with an external engine configured — the config
+/// file is the entry point into that mode, this endpoint only changes the flavor within it.
 async fn models_flavor(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult<Json<Value>> {
     let mut cfg = s.engine.config();
     if cfg.external_engine.is_none() {
@@ -2086,11 +2090,5 @@ async fn models_flavor(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult
     }
     cfg.external_engine = Some(b);
     s.engine.set_config(cfg)?;
-    let engine = s.engine.clone();
-    tokio::spawn(async move {
-        let cfg = engine.config();
-        let _ = engine.server.ensure_ready(&cfg).await;
-        engine.emit_server();
-    });
     Ok(Json(json!({ "requested": true })))
 }
