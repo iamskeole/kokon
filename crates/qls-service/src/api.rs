@@ -28,7 +28,9 @@ use qls_core::{
     imaging, installer,
     modelfile::{self, FileInfo, Role, Slot},
     paths,
-    planner::{GenerationRequest, InpaintAction, Mode, OutpaintSpec, Quality, UpscaleMethod, UpscaleSpec},
+    planner::{
+        GenerationRequest, InpaintAction, Mode, OutpaintSpec, Quality, UpscaleMethod, UpscaleSpec,
+    },
     projects::Project,
     store::{GenerationRecord, ListQuery},
 };
@@ -51,18 +53,27 @@ impl From<AppError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         (status, Json(json!({ "error": self.0 }))).into_response()
     }
 }
 
 type ApiResult<T> = Result<T, ApiError>;
 
-const ALLOWED_ORIGINS: &[&str] = &["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost", "http://localhost:1420"];
+const ALLOWED_ORIGINS: &[&str] = &[
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+    "http://localhost:1420",
+];
 
 /// The API and the UI. `lan`: the network listener, where the token is refused.
 pub fn router(state: Arc<AppState>, lan: bool) -> Router {
-    let ctx = AuthCtx { app: state.clone(), lan };
+    let ctx = AuthCtx {
+        app: state.clone(),
+        lan,
+    };
     let api = Router::new()
         .route("/status", get(status))
         .route("/setup", get(setup))
@@ -70,7 +81,10 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/setup/install", get(install_status).post(install_start))
         .route("/setup/install/cancel", post(install_cancel))
         .route("/setup/gpu", post(setup_gpu))
-        .route("/setup/legacy-upscalers", get(legacy_upscalers).delete(remove_legacy_upscalers))
+        .route(
+            "/setup/legacy-upscalers",
+            get(legacy_upscalers).delete(remove_legacy_upscalers),
+        )
         .route("/models", get(models_status))
         .route("/models/scan", post(models_scan))
         .route("/models/inspect", post(models_inspect))
@@ -83,7 +97,12 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/upscalers/{name}/download", post(download_upscaler))
         .route("/config", get(get_config).put(put_config))
         .route("/enhancer/defaults", get(enhancer_defaults))
-        .route("/mac-engine/bench", get(mac_bench_status).post(mac_bench_start).delete(mac_bench_clear))
+        .route(
+            "/mac-engine/bench",
+            get(mac_bench_status)
+                .post(mac_bench_start)
+                .delete(mac_bench_clear),
+        )
         .route("/mac-engine/bench/cancel", post(mac_bench_cancel))
         .route("/backend/start", post(backend_start))
         .route("/backend/stop", post(backend_stop))
@@ -108,7 +127,10 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/inputs/{id}/thumb", get(input_thumb))
         .route("/inputs/{id}/preview", get(input_preview))
         .route("/gallery", get(gallery_list))
-        .route("/gallery/{id}", get(gallery_get).patch(gallery_patch).delete(gallery_delete))
+        .route(
+            "/gallery/{id}",
+            get(gallery_get).patch(gallery_patch).delete(gallery_delete),
+        )
         .route("/gallery/{id}/image", get(gallery_image))
         .route("/gallery/{id}/thumb", get(gallery_thumb))
         .route("/gallery/{id}/preview", get(gallery_preview))
@@ -125,22 +147,33 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/examples", post(install_examples))
         .route("/projects", get(projects_list))
         .route("/projects/import", post(projects_import))
-        .route("/projects/{id}", get(projects_get).put(projects_put).delete(projects_delete))
+        .route(
+            "/projects/{id}",
+            get(projects_get).put(projects_put).delete(projects_delete),
+        )
         .route("/projects/{id}/records", get(projects_records))
         .route("/session/heartbeat", post(heartbeat))
         .route("/session/release", post(release))
         .route("/shutdown", post(shutdown))
         .route("/remote", get(remote_status).post(remote_set))
-        .route("/remote/password", post(remote_password).delete(remote_password_clear))
+        .route(
+            "/remote/password",
+            post(remote_password).delete(remote_password_clear),
+        )
         .layer(middleware::from_fn_with_state(ctx.clone(), auth))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024));
-    let uploads = Router::new().route("/inputs", post(upload_input)).layer(DefaultBodyLimit::max(210 * 1024 * 1024));
+    let uploads = Router::new()
+        .route("/inputs", post(upload_input))
+        .layer(DefaultBodyLimit::max(210 * 1024 * 1024));
     Router::new()
         .route("/api/v1/ping", get(ping))
         .route("/api/v1/auth/session", get(web::session))
         .route("/api/v1/auth/login", post(web::login))
         .route("/api/v1/auth/logout", post(web::logout))
-        .nest("/api/v1", api.merge(uploads.layer(middleware::from_fn_with_state(ctx, auth))))
+        .nest(
+            "/api/v1",
+            api.merge(uploads.layer(middleware::from_fn_with_state(ctx, auth))),
+        )
         .fallback(web::ui)
         .layer(middleware::from_fn(cors))
         .with_state(state)
@@ -154,8 +187,15 @@ struct AuthCtx {
 
 /// CORS for the desktop webview origins only; everything else gets no CORS headers.
 async fn cors(req: Request, next: Next) -> Response {
-    let origin = req.headers().get(header::ORIGIN).and_then(|o| o.to_str().ok()).map(str::to_owned);
-    let allowed = origin.as_deref().filter(|o| ALLOWED_ORIGINS.contains(o)).map(str::to_owned);
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .map(str::to_owned);
+    let allowed = origin
+        .as_deref()
+        .filter(|o| ALLOWED_ORIGINS.contains(o))
+        .map(str::to_owned);
     if req.method() == Method::OPTIONS {
         let mut r = StatusCode::NO_CONTENT.into_response();
         if let Some(o) = allowed {
@@ -165,14 +205,22 @@ async fn cors(req: Request, next: Next) -> Response {
     }
     let mut r = next.run(req).await;
     // Windows PowerShell 5.1 decodes JSON without an explicit charset as Latin-1.
-    if r.headers().get(header::CONTENT_TYPE).map(|v| v == "application/json").unwrap_or(false) {
-        r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
+    if r.headers()
+        .get(header::CONTENT_TYPE)
+        .map(|v| v == "application/json")
+        .unwrap_or(false)
+    {
+        r.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
     }
     if let Some(o) = allowed {
         set_cors(r.headers_mut(), &o);
     }
     // Responses differ by Origin (CORS headers), so caches must not reuse one for the other.
-    r.headers_mut().insert(header::VARY, HeaderValue::from_static("Origin"));
+    r.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Origin"));
     r
 }
 
@@ -180,8 +228,14 @@ fn set_cors(h: &mut HeaderMap, origin: &str) {
     if let Ok(v) = HeaderValue::from_str(origin) {
         h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
     }
-    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"));
-    h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type, x-filename"));
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization, content-type, x-filename"),
+    );
     h.insert(header::VARY, HeaderValue::from_static("Origin"));
 }
 
@@ -197,17 +251,36 @@ async fn auth(State(c): State<AuthCtx>, mut req: Request, next: Next) -> Respons
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_owned);
-    let query_tok = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")).map(str::to_owned)).filter(|t| !t.is_empty());
+    let query_tok = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("token="))
+                .map(str::to_owned)
+        })
+        .filter(|t| !t.is_empty());
     if let Some(t) = header_tok.or(query_tok)
         && !c.lan
     {
-        if let Some(o) = req.headers().get(header::ORIGIN).and_then(|o| o.to_str().ok())
+        if let Some(o) = req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|o| o.to_str().ok())
             && !ALLOWED_ORIGINS.contains(&o)
         {
-            return ApiError(AppError::new(ErrorCode::Unauthorized, "Requests from web pages are not allowed.")).into_response();
+            return ApiError(AppError::new(
+                ErrorCode::Unauthorized,
+                "Requests from web pages are not allowed.",
+            ))
+            .into_response();
         }
         if !constant_eq(t.as_bytes(), s.token.as_bytes()) {
-            return ApiError(AppError::new(ErrorCode::Unauthorized, "Missing or invalid API token (see service.json).")).into_response();
+            return ApiError(AppError::new(
+                ErrorCode::Unauthorized,
+                "Missing or invalid API token (see service.json).",
+            ))
+            .into_response();
         }
         req.extensions_mut().insert(Caller::Local);
         // No `touch()` here: heartbeats and status polls are not work, and counting them kept
@@ -218,15 +291,29 @@ async fn auth(State(c): State<AuthCtx>, mut req: Request, next: Next) -> Respons
         let path = req.uri().path();
         let path = path.strip_prefix("/api/v1").unwrap_or(path);
         if !qls_core::remote::browser_allowed(req.method().as_str(), path) {
-            return ApiError(AppError::new(ErrorCode::Forbidden, "This is not available from a browser.")).into_response();
+            return ApiError(AppError::new(
+                ErrorCode::Forbidden,
+                "This is not available from a browser.",
+            ))
+            .into_response();
         }
-        if !matches!(*req.method(), Method::GET | Method::HEAD) && !web::has_csrf_header(req.headers()) {
-            return ApiError(AppError::new(ErrorCode::Forbidden, "Requests from other sites are not allowed.")).into_response();
+        if !matches!(*req.method(), Method::GET | Method::HEAD)
+            && !web::has_csrf_header(req.headers())
+        {
+            return ApiError(AppError::new(
+                ErrorCode::Forbidden,
+                "Requests from other sites are not allowed.",
+            ))
+            .into_response();
         }
         req.extensions_mut().insert(Caller::Browser);
         return next.run(req).await;
     }
-    ApiError(AppError::new(ErrorCode::LoginRequired, "Sign in with the password (scripts on this computer: the API token in service.json).")).into_response()
+    ApiError(AppError::new(
+        ErrorCode::LoginRequired,
+        "Sign in with the password (scripts on this computer: the API token in service.json).",
+    ))
+    .into_response()
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
@@ -243,13 +330,21 @@ async fn ping() -> Json<Value> {
 
 async fn status(State(s): St) -> Json<Value> {
     let e = s.engine.clone();
-    let gpu = tokio::task::spawn_blocking(move || e.gpu()).await.ok().flatten();
+    let gpu = tokio::task::spawn_blocking(move || e.gpu())
+        .await
+        .ok()
+        .flatten();
     let srv = s.engine.server.status();
     let jobs = s.engine.jobs();
-    let queued = jobs.iter().filter(|j| j.status == qls_core::engine::JobStatus::Queued).count();
+    let queued = jobs
+        .iter()
+        .filter(|j| j.status == qls_core::engine::JobStatus::Queued)
+        .count();
     let cfg = s.engine.config();
     let e = s.engine.clone();
-    let engine_update = tokio::task::spawn_blocking(move || e.engine_update_needed()).await.unwrap_or(false);
+    let engine_update = tokio::task::spawn_blocking(move || e.engine_update_needed())
+        .await
+        .unwrap_or(false);
     Json(json!({
         "service": { "version": APP_VERSION, "pid": std::process::id(), "uptime_s": s.started.elapsed().as_secs() },
         "server": {
@@ -280,7 +375,11 @@ async fn setup(State(s): St) -> ApiResult<Json<Value>> {
     let cfg = s.engine.config();
     let srv_ok = s.engine.server.status().state == qls_core::process::ServerState::Ready;
     let e = s.engine.clone();
-    let report = tokio::task::spawn_blocking(move || diagnostics::setup_checks_with(&cfg, Some(srv_ok), e.devices(), e.backend_version())).await.map_err(AppError::internal)?;
+    let report = tokio::task::spawn_blocking(move || {
+        diagnostics::setup_checks_with(&cfg, Some(srv_ok), e.devices(), e.backend_version())
+    })
+    .await
+    .map_err(AppError::internal)?;
     Ok(Json(serde_json::to_value(report).unwrap()))
 }
 
@@ -382,7 +481,8 @@ fn yes() -> bool {
 /// Starts downloading a preset into the configured folder. When every file is installed the
 /// preset's runtime settings apply, and for the official files their profile becomes active.
 async fn install_start(State(s): St, Json(b): Json<InstallBody>) -> ApiResult<Json<Value>> {
-    let preset = catalog::preset(&b.preset).ok_or_else(|| AppError::invalid(format!("Unknown preset {}.", b.preset)))?;
+    let preset = catalog::preset(&b.preset)
+        .ok_or_else(|| AppError::invalid(format!("Unknown preset {}.", b.preset)))?;
     let cfg = s.engine.config();
     let backend = b.backend.unwrap_or(cfg.gpu_backend);
     let user = match b.target.as_deref() {
@@ -392,7 +492,9 @@ async fn install_start(State(s): St, Json(b): Json<InstallBody>) -> ApiResult<Js
         Some(t) => return Err(AppError::invalid(format!("Unknown install target {t}.")).into()),
     };
     let downloads = if user {
-        let u = cfg.user_profile().ok_or_else(|| AppError::invalid("Choose your model files first."))?;
+        let u = cfg
+            .user_profile()
+            .ok_or_else(|| AppError::invalid("Choose your model files first."))?;
         catalog::downloads_for_profile(u, backend)
     } else {
         catalog::downloads_for(preset, backend, &cfg.sdcpp_dir)
@@ -401,14 +503,21 @@ async fn install_start(State(s): St, Json(b): Json<InstallBody>) -> ApiResult<Js
     let st = s.engine.server.status();
     if st.owned && st.state != qls_core::process::ServerState::Stopped {
         if s.engine.has_pending_work() {
-            return Err(AppError::new(ErrorCode::QueueFull, "Wait for the current images to finish, then install.").into());
+            return Err(AppError::new(
+                ErrorCode::QueueFull,
+                "Wait for the current images to finish, then install.",
+            )
+            .into());
         }
         s.engine.server.stop().await;
         s.engine.emit_server();
     }
     let engine = s.engine.clone();
     // Below ~8 GiB of planning memory (a 16 GB Mac) only streaming weights from disk fits.
-    let small_unified = s.engine.gpu().is_some_and(|g| g.unified && g.planning_mib() < 8 * 1024);
+    let small_unified = s
+        .engine
+        .gpu()
+        .is_some_and(|g| g.unified && g.planning_mib() < 8 * 1024);
     let apply = b.apply;
     let card = b.gpu;
     let on_finish = Box::new(move |complete: bool| {
@@ -431,7 +540,10 @@ async fn install_start(State(s): St, Json(b): Json<InstallBody>) -> ApiResult<Js
         if let Some(i) = card {
             match engine.use_card(i) {
                 Ok(Some(_)) => {}
-                Ok(None) => tracing::warn!("the engine does not list card {i}; keeping device {}", engine.config().device),
+                Ok(None) => tracing::warn!(
+                    "the engine does not list card {i}; keeping device {}",
+                    engine.config().device
+                ),
                 Err(e) => tracing::error!("could not save the chosen GPU: {}", e.message),
             }
         }
@@ -439,9 +551,17 @@ async fn install_start(State(s): St, Json(b): Json<InstallBody>) -> ApiResult<Js
     // The bundled upscaler first, so it is not downloaded again.
     let e = s.engine.clone();
     let _ = tokio::task::spawn_blocking(move || e.place_bundled_upscaler()).await;
-    let label = if user { format!("user:{}", preset.id) } else { preset.id.to_string() };
-    s.engine.installer.start(cfg.sdcpp_dir.clone(), &label, downloads, on_finish)?;
-    Ok(Json(serde_json::to_value(s.engine.installer.status()).unwrap()))
+    let label = if user {
+        format!("user:{}", preset.id)
+    } else {
+        preset.id.to_string()
+    };
+    s.engine
+        .installer
+        .start(cfg.sdcpp_dir.clone(), &label, downloads, on_finish)?;
+    Ok(Json(
+        serde_json::to_value(s.engine.installer.status()).unwrap(),
+    ))
 }
 
 /// The upscalers Settings offers, with whether each is installed and what it takes to get it.
@@ -461,10 +581,15 @@ async fn list_upscalers(State(s): St) -> Json<Value> {
 
 /// Downloads one upscaler model (progress in `/setup/install`).
 async fn download_upscaler(State(s): St, AxPath(name): AxPath<String>) -> ApiResult<Json<Value>> {
-    let d = catalog::upscaler_download(&name).ok_or_else(|| AppError::invalid(format!("Unknown upscaler {name}.")))?;
+    let d = catalog::upscaler_download(&name)
+        .ok_or_else(|| AppError::invalid(format!("Unknown upscaler {name}.")))?;
     let dir = s.engine.config().sdcpp_dir;
-    s.engine.installer.start(dir, &format!("upscaler:{name}"), vec![d], Box::new(|_| {}))?;
-    Ok(Json(serde_json::to_value(s.engine.installer.status()).unwrap()))
+    s.engine
+        .installer
+        .start(dir, &format!("upscaler:{name}"), vec![d], Box::new(|_| {}))?;
+    Ok(Json(
+        serde_json::to_value(s.engine.installer.status()).unwrap(),
+    ))
 }
 
 /// Upscaler models of earlier versions in the app's own folder (Settings offers to delete
@@ -477,7 +602,10 @@ struct KeepQ {
 
 async fn legacy_upscalers(State(s): St, Query(q): Query<KeepQ>) -> Json<Value> {
     let cfg = s.engine.config();
-    let files = installer::legacy_upscalers(&cfg.sdcpp_dir, &[cfg.upscaler_model.trim(), q.keep.as_deref().unwrap_or("")]);
+    let files = installer::legacy_upscalers(
+        &cfg.sdcpp_dir,
+        &[cfg.upscaler_model.trim(), q.keep.as_deref().unwrap_or("")],
+    );
     let bytes: u64 = files.iter().map(|(_, n)| n).sum();
     Json(json!({ "files": files.iter().map(|(p, _)| p).collect::<Vec<_>>(), "bytes": bytes }))
 }
@@ -485,7 +613,14 @@ async fn legacy_upscalers(State(s): St, Query(q): Query<KeepQ>) -> Json<Value> {
 async fn remove_legacy_upscalers(State(s): St, Query(q): Query<KeepQ>) -> ApiResult<Json<Value>> {
     let cfg = s.engine.config();
     let keep = q.keep.unwrap_or_default();
-    let freed = tokio::task::spawn_blocking(move || installer::remove_legacy_upscalers(&cfg.sdcpp_dir, &[cfg.upscaler_model.trim(), keep.as_str()])).await.map_err(AppError::internal)??;
+    let freed = tokio::task::spawn_blocking(move || {
+        installer::remove_legacy_upscalers(
+            &cfg.sdcpp_dir,
+            &[cfg.upscaler_model.trim(), keep.as_str()],
+        )
+    })
+    .await
+    .map_err(AppError::internal)??;
     Ok(Json(json!({ "freed_bytes": freed })))
 }
 
@@ -498,12 +633,18 @@ struct GpuBody {
 /// Runs the engine on another card (setup's GPU picker).
 async fn setup_gpu(State(s): St, Json(b): Json<GpuBody>) -> ApiResult<Json<Value>> {
     let e = s.engine.clone();
-    let r = tokio::task::spawn_blocking(move || e.use_card(b.gpu)).await.map_err(AppError::internal)??;
+    let r = tokio::task::spawn_blocking(move || e.use_card(b.gpu))
+        .await
+        .map_err(AppError::internal)??;
     let Some(restart) = r else {
         return Err(AppError::invalid("The engine does not see this graphics card. Pick it in Settings → Performance → GPU device.").into());
     };
     let st = s.engine.server.status();
-    if restart && st.owned && st.state != qls_core::process::ServerState::Stopped && !s.engine.has_pending_work() {
+    if restart
+        && st.owned
+        && st.state != qls_core::process::ServerState::Stopped
+        && !s.engine.has_pending_work()
+    {
         s.engine.server.stop().await;
         s.engine.emit_server();
     }
@@ -526,20 +667,32 @@ async fn get_config(State(s): St) -> Json<AppConfig> {
 /// The prompt enhancer's built-in system prompts (Settings shows them for "" and restores them).
 async fn enhancer_defaults() -> Json<Value> {
     use qls_core::enhancer;
-    Json(json!({ "t2i": enhancer::T2I_SYSTEM_PROMPT, "edit": enhancer::EDIT_SYSTEM_PROMPT, "compose": enhancer::COMPOSE_SYSTEM_PROMPT, "max_chars": enhancer::MAX_SYSTEM_PROMPT_CHARS }))
+    Json(
+        json!({ "t2i": enhancer::T2I_SYSTEM_PROMPT, "edit": enhancer::EDIT_SYSTEM_PROMPT, "compose": enhancer::COMPOSE_SYSTEM_PROMPT, "max_chars": enhancer::MAX_SYSTEM_PROMPT_CHARS }),
+    )
 }
 
-async fn put_config(State(s): St, Extension(caller): Extension<Caller>, Json(mut cfg): Json<AppConfig>) -> ApiResult<Json<Value>> {
+async fn put_config(
+    State(s): St,
+    Extension(caller): Extension<Caller>,
+    Json(mut cfg): Json<AppConfig>,
+) -> ApiResult<Json<Value>> {
     if caller == Caller::Browser {
         cfg.keep_computer_settings(&s.engine.config());
     }
     let restart = s.engine.set_config(cfg)?;
     let st = s.engine.server.status();
-    if restart && st.owned && st.state == qls_core::process::ServerState::Ready && !s.engine.has_pending_work() {
+    if restart
+        && st.owned
+        && st.state == qls_core::process::ServerState::Ready
+        && !s.engine.has_pending_work()
+    {
         s.engine.server.stop().await;
         s.engine.emit_server();
     }
-    Ok(Json(json!({ "saved": true, "backend_restart_needed": restart })))
+    Ok(Json(
+        json!({ "saved": true, "backend_restart_needed": restart }),
+    ))
 }
 
 #[derive(Deserialize, Default)]
@@ -702,7 +855,10 @@ fn workspace_path(w: Option<&str>) -> Result<Option<PathBuf>, AppError> {
         Some(w) if !w.trim().is_empty() => {
             let p = paths::normalize(w, None)?;
             if !p.is_dir() {
-                return Err(AppError::new(ErrorCode::InvalidPath, format!("Workspace folder not found: {}", p.display())));
+                return Err(AppError::new(
+                    ErrorCode::InvalidPath,
+                    format!("Workspace folder not found: {}", p.display()),
+                ));
             }
             Ok(Some(p))
         }
@@ -710,7 +866,11 @@ fn workspace_path(w: Option<&str>) -> Result<Option<PathBuf>, AppError> {
     }
 }
 
-async fn create_job(State(s): St, Extension(caller): Extension<Caller>, Json(mut b): Json<JobBody>) -> ApiResult<(StatusCode, Json<JobView>)> {
+async fn create_job(
+    State(s): St,
+    Extension(caller): Extension<Caller>,
+    Json(mut b): Json<JobBody>,
+) -> ApiResult<(StatusCode, Json<JobView>)> {
     if caller == Caller::Browser {
         qls_core::remote::stored_sources_only(&b.request, b.workspace.as_deref())?;
         // Browser jobs outlive the desktop window (`client_left` cancels "ui" jobs).
@@ -726,7 +886,9 @@ async fn list_jobs(State(s): St) -> Json<Vec<JobView>> {
 }
 
 async fn get_job(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<JobView>> {
-    Ok(Json(s.engine.job(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?))
+    Ok(Json(s.engine.job(&id).ok_or_else(|| {
+        AppError::new(ErrorCode::NotFound, "Unknown job.")
+    })?))
 }
 
 async fn cancel_job(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<JobView>> {
@@ -742,17 +904,35 @@ async fn wait_for(s: &AppState, id: &str, timeout: Duration) -> Result<JobView, 
     let mut rx = s.engine.events.subscribe();
     let deadline = Instant::now() + timeout;
     loop {
-        let j = s.engine.job(id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?;
+        let j = s
+            .engine
+            .job(id)
+            .ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?;
         if j.status.is_terminal() || Instant::now() >= deadline {
             return Ok(j);
         }
-        let _ = tokio::time::timeout(Duration::from_millis(1000).min(deadline - Instant::now()), rx.recv()).await;
+        let _ = tokio::time::timeout(
+            Duration::from_millis(1000).min(deadline - Instant::now()),
+            rx.recv(),
+        )
+        .await;
     }
 }
 
 /// Long-poll until the job finishes or `timeout` seconds pass (default 60, max 600).
-async fn wait_job(State(s): St, AxPath(id): AxPath<String>, Query(q): Query<WaitQ>) -> ApiResult<Json<JobView>> {
-    Ok(Json(wait_for(&s, &id, Duration::from_secs(q.timeout.unwrap_or(60).min(600))).await?))
+async fn wait_job(
+    State(s): St,
+    AxPath(id): AxPath<String>,
+    Query(q): Query<WaitQ>,
+) -> ApiResult<Json<JobView>> {
+    Ok(Json(
+        wait_for(
+            &s,
+            &id,
+            Duration::from_secs(q.timeout.unwrap_or(60).min(600)),
+        )
+        .await?,
+    ))
 }
 
 /// Stable convenience endpoints. Body is a simplified request; `?wait=false` returns the
@@ -791,7 +971,12 @@ struct OpQ {
     wait: Option<bool>,
 }
 
-async fn run_simple(s: Arc<AppState>, mode: Mode, op: SimpleOp, wait: bool) -> ApiResult<Json<JobView>> {
+async fn run_simple(
+    s: Arc<AppState>,
+    mode: Mode,
+    op: SimpleOp,
+    wait: bool,
+) -> ApiResult<Json<JobView>> {
     let mut images = op.images.clone();
     if let Some(i) = op.image.clone() {
         images.insert(0, i);
@@ -803,7 +988,13 @@ async fn run_simple(s: Arc<AppState>, mode: Mode, op: SimpleOp, wait: bool) -> A
         images,
         mask: op.mask,
         inpaint_action: op.action.unwrap_or_default(),
-        outpaint: (mode == Mode::Outpaint).then_some(OutpaintSpec { left: op.left, right: op.right, top: op.top, bottom: op.bottom, units: op.units.unwrap_or_default() }),
+        outpaint: (mode == Mode::Outpaint).then_some(OutpaintSpec {
+            left: op.left,
+            right: op.right,
+            top: op.top,
+            bottom: op.bottom,
+            units: op.units.unwrap_or_default(),
+        }),
         quality: op.quality.unwrap_or_default(),
         aspect_ratio: op.aspect_ratio,
         width: op.width,
@@ -812,7 +1003,12 @@ async fn run_simple(s: Arc<AppState>, mode: Mode, op: SimpleOp, wait: bool) -> A
         preserve_dimensions: op.preserve_dimensions.unwrap_or(true),
         output_path: op.output_path,
         client: op.client.or(Some("api".into())),
-        upscale: (mode == Mode::Upscale).then_some(UpscaleSpec { method: op.method.unwrap_or_default(), scale: op.scale, width: op.width, height: op.height }),
+        upscale: (mode == Mode::Upscale).then_some(UpscaleSpec {
+            method: op.method.unwrap_or_default(),
+            scale: op.scale,
+            width: op.width,
+            height: op.height,
+        }),
         ..Default::default()
     };
     let ws = workspace_path(op.workspace.as_deref())?;
@@ -825,22 +1021,50 @@ async fn run_simple(s: Arc<AppState>, mode: Mode, op: SimpleOp, wait: bool) -> A
 
 /// A new image; with `images`, a new image that uses them as references (sized like
 /// text-to-image, not like image 1).
-async fn op_generate(State(s): St, Query(q): Query<OpQ>, Json(op): Json<SimpleOp>) -> ApiResult<Json<JobView>> {
-    let mode = if op.images.is_empty() && op.image.is_none() { Mode::Generate } else { Mode::Compose };
+async fn op_generate(
+    State(s): St,
+    Query(q): Query<OpQ>,
+    Json(op): Json<SimpleOp>,
+) -> ApiResult<Json<JobView>> {
+    let mode = if op.images.is_empty() && op.image.is_none() {
+        Mode::Generate
+    } else {
+        Mode::Compose
+    };
     run_simple(s, mode, op, q.wait.unwrap_or(true)).await
 }
-async fn op_edit(State(s): St, Query(q): Query<OpQ>, Json(op): Json<SimpleOp>) -> ApiResult<Json<JobView>> {
-    let mode = if op.images.len() + op.image.is_some() as usize > 1 { Mode::MultiReference } else { Mode::Edit };
+async fn op_edit(
+    State(s): St,
+    Query(q): Query<OpQ>,
+    Json(op): Json<SimpleOp>,
+) -> ApiResult<Json<JobView>> {
+    let mode = if op.images.len() + op.image.is_some() as usize > 1 {
+        Mode::MultiReference
+    } else {
+        Mode::Edit
+    };
     run_simple(s, mode, op, q.wait.unwrap_or(true)).await
 }
-async fn op_inpaint(State(s): St, Query(q): Query<OpQ>, Json(op): Json<SimpleOp>) -> ApiResult<Json<JobView>> {
+async fn op_inpaint(
+    State(s): St,
+    Query(q): Query<OpQ>,
+    Json(op): Json<SimpleOp>,
+) -> ApiResult<Json<JobView>> {
     run_simple(s, Mode::Inpaint, op, q.wait.unwrap_or(true)).await
 }
-async fn op_outpaint(State(s): St, Query(q): Query<OpQ>, Json(op): Json<SimpleOp>) -> ApiResult<Json<JobView>> {
+async fn op_outpaint(
+    State(s): St,
+    Query(q): Query<OpQ>,
+    Json(op): Json<SimpleOp>,
+) -> ApiResult<Json<JobView>> {
     run_simple(s, Mode::Outpaint, op, q.wait.unwrap_or(true)).await
 }
 /// `{"image": "...", "scale": 2 | "width"/"height", "prompt"?}`: the upscaler model only.
-async fn op_upscale(State(s): St, Query(q): Query<OpQ>, Json(op): Json<SimpleOp>) -> ApiResult<Json<JobView>> {
+async fn op_upscale(
+    State(s): St,
+    Query(q): Query<OpQ>,
+    Json(op): Json<SimpleOp>,
+) -> ApiResult<Json<JobView>> {
     run_simple(s, Mode::Upscale, op, q.wait.unwrap_or(true)).await
 }
 
@@ -853,7 +1077,11 @@ struct PlanBody {
 }
 
 /// Dry run: resolved mode, working/output size and notes for the current inputs.
-async fn plan(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<PlanBody>) -> ApiResult<Json<Value>> {
+async fn plan(
+    State(s): St,
+    Extension(caller): Extension<Caller>,
+    Json(b): Json<PlanBody>,
+) -> ApiResult<Json<Value>> {
     if caller == Caller::Browser {
         qls_core::remote::stored_sources_only(&b.request, b.workspace.as_deref())?;
     }
@@ -868,7 +1096,11 @@ async fn plan(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<
             Some(m) => {
                 let (img, _) = engine.resolve_source(m, ws.as_deref(), b.request.private)?;
                 let mm = imaging::mask_from_image(&img);
-                Some((Size::new(mm.width(), mm.height()), imaging::mask_bbox(&mm, 16), imaging::mask_coverage(&mm, 16)))
+                Some((
+                    Size::new(mm.width(), mm.height()),
+                    imaging::mask_bbox(&mm, 16),
+                    imaging::mask_coverage(&mm, 16),
+                ))
             }
             None => None,
         };
@@ -880,7 +1112,11 @@ async fn plan(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<
     Ok(Json(v))
 }
 
-fn source_size(engine: &qls_core::engine::Engine, src: &str, ws: Option<&Path>) -> Result<Size, AppError> {
+fn source_size(
+    engine: &qls_core::engine::Engine,
+    src: &str,
+    ws: Option<&Path>,
+) -> Result<Size, AppError> {
     if let Some(id) = src.strip_prefix("input:") {
         let r = engine.input_store(id).get_input(id)?;
         return Ok(Size::new(r.width, r.height));
@@ -898,9 +1134,14 @@ fn source_size(engine: &qls_core::engine::Engine, src: &str, ws: Option<&Path>) 
 // Events (SSE)
 // ---------------------------------------------------------------------------------------
 
-async fn events(State(s): St, Extension(caller): Extension<Caller>) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+async fn events(
+    State(s): St,
+    Extension(caller): Extension<Caller>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = s.engine.events.subscribe();
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| r.ok()).map(|ev| Ok(SseEvent::default().json_data(ev).unwrap_or_default()));
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(|r| r.ok())
+        .map(|ev| Ok(SseEvent::default().json_data(ev).unwrap_or_default()));
     // Streams end when the service shuts down (an open browser tab would otherwise hold the
     // graceful shutdown, and with it an app update), and a browser's with its session (new
     // password, access turned off).
@@ -919,7 +1160,8 @@ async fn events(State(s): St, Extension(caller): Extension<Caller>) -> Sse<impl 
             _ = session_ended => {}
         }
     };
-    Sse::new(futures_util::StreamExt::take_until(stream, ended)).keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
+    Sse::new(futures_util::StreamExt::take_until(stream, ended))
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -932,13 +1174,27 @@ struct PrivateQ {
     private: bool,
 }
 
-async fn upload_input(State(s): St, Query(q): Query<PrivateQ>, headers: HeaderMap, body: Bytes) -> ApiResult<Json<Value>> {
+async fn upload_input(
+    State(s): St,
+    Query(q): Query<PrivateQ>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Json<Value>> {
     if body.is_empty() {
         return Err(AppError::invalid("The upload was empty.").into());
     }
-    let name = headers.get("x-filename").and_then(|v| v.to_str().ok()).map(|n| percent_decode(n).chars().take(200).collect::<String>());
-    let store = if q.private { s.engine.private_store.clone() } else { s.engine.store.clone() };
-    let rec = tokio::task::spawn_blocking(move || store.put_input(&body, name.as_deref(), None)).await.map_err(AppError::internal)??;
+    let name = headers
+        .get("x-filename")
+        .and_then(|v| v.to_str().ok())
+        .map(|n| percent_decode(n).chars().take(200).collect::<String>());
+    let store = if q.private {
+        s.engine.private_store.clone()
+    } else {
+        s.engine.store.clone()
+    };
+    let rec = tokio::task::spawn_blocking(move || store.put_input(&body, name.as_deref(), None))
+        .await
+        .map_err(AppError::internal)??;
     Ok(Json(serde_json::to_value(rec).unwrap()))
 }
 
@@ -947,8 +1203,16 @@ struct PathBody {
     path: String,
 }
 
-async fn import_input(State(s): St, Query(q): Query<PrivateQ>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
-    let store = if q.private { s.engine.private_store.clone() } else { s.engine.store.clone() };
+async fn import_input(
+    State(s): St,
+    Query(q): Query<PrivateQ>,
+    Json(b): Json<PathBody>,
+) -> ApiResult<Json<Value>> {
+    let store = if q.private {
+        s.engine.private_store.clone()
+    } else {
+        s.engine.store.clone()
+    };
     let rec = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let p = paths::validate_input_image(&b.path, None, &[])?;
         let bytes = std::fs::read(&p).map_err(|e| AppError::io("read the image", &p, e))?;
@@ -961,7 +1225,9 @@ async fn import_input(State(s): St, Query(q): Query<PrivateQ>, Json(b): Json<Pat
 }
 
 async fn get_input(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
-    Ok(Json(serde_json::to_value(s.engine.input_store(&id).get_input(&id)?).unwrap()))
+    Ok(Json(
+        serde_json::to_value(s.engine.input_store(&id).get_input(&id)?).unwrap(),
+    ))
 }
 
 /// Ends private mode: deletes every private input and result.
@@ -971,9 +1237,15 @@ async fn private_clear(State(s): St) -> ApiResult<Json<Value>> {
 }
 
 async fn serve_file(path: &Path, content_type: Option<&str>) -> ApiResult<Response> {
-    let bytes = tokio::fs::read(path).await.map_err(|e| AppError::io("read the image", path, e))?;
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| AppError::io("read the image", path, e))?;
     let ct = content_type.map(str::to_owned).unwrap_or_else(|| {
-        match path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).as_deref() {
+        match path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .as_deref()
+        {
             Some("png") => "image/png",
             Some("jpg") | Some("jpeg") => "image/jpeg",
             Some("webp") => "image/webp",
@@ -986,14 +1258,19 @@ async fn serve_file(path: &Path, content_type: Option<&str>) -> ApiResult<Respon
     });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, ct)
-        .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
+        .header(
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable",
+        )
         .body(Body::from(bytes))
         .unwrap())
 }
 
 async fn loras_list(State(s): St) -> Json<Value> {
     let cfg = s.engine.config();
-    Json(json!({ "items": s.engine.loras(), "dir": cfg.lora_dir(), "max_active": qls_core::lora::MAX_ACTIVE }))
+    Json(
+        json!({ "items": s.engine.loras(), "dir": cfg.lora_dir(), "max_active": qls_core::lora::MAX_ACTIVE }),
+    )
 }
 
 /// Loads a LoRA file the user picked: checked against the image model, then copied into
@@ -1001,14 +1278,24 @@ async fn loras_list(State(s): St) -> Json<Value> {
 async fn loras_add(State(s): St, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
     let p = PathBuf::from(&b.path);
     if !p.is_absolute() || !p.is_file() {
-        return Err(AppError::new(ErrorCode::InvalidInput, "Choose a LoRA file (.safetensors).").into());
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "Choose a LoRA file (.safetensors).",
+        )
+        .into());
     }
     let engine = s.engine.clone();
-    let entry = tokio::task::spawn_blocking(move || engine.add_lora(&p)).await.map_err(AppError::internal)??;
+    let entry = tokio::task::spawn_blocking(move || engine.add_lora(&p))
+        .await
+        .map_err(AppError::internal)??;
     Ok(Json(serde_json::to_value(entry).unwrap()))
 }
 
-async fn loras_update(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<LoraPatch>) -> ApiResult<Json<Value>> {
+async fn loras_update(
+    State(s): St,
+    AxPath(id): AxPath<String>,
+    Json(b): Json<LoraPatch>,
+) -> ApiResult<Json<Value>> {
     let entry = s.engine.update_lora(&id, b)?;
     Ok(Json(serde_json::to_value(entry).unwrap()))
 }
@@ -1020,17 +1307,25 @@ async fn loras_remove(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Jso
 
 async fn luts_list(State(s): St) -> Json<Value> {
     let lib = s.engine.luts();
-    Json(json!({ "items": tokio::task::spawn_blocking(move || lib.list()).await.unwrap_or_default() }))
+    Json(
+        json!({ "items": tokio::task::spawn_blocking(move || lib.list()).await.unwrap_or_default() }),
+    )
 }
 
 /// Adds a .cube file the user picked to the LUT list (copied into the data folder).
 async fn luts_import(State(s): St, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
     let p = PathBuf::from(&b.path);
-    if !p.is_absolute() || !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")) {
+    if !p.is_absolute()
+        || !p
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("cube"))
+    {
         return Err(AppError::new(ErrorCode::InvalidInput, "Choose a .cube LUT file.").into());
     }
     let lib = s.engine.luts();
-    let entry = tokio::task::spawn_blocking(move || lib.import(&p)).await.map_err(AppError::internal)??;
+    let entry = tokio::task::spawn_blocking(move || lib.import(&p))
+        .await
+        .map_err(AppError::internal)??;
     Ok(Json(serde_json::to_value(entry).unwrap()))
 }
 
@@ -1051,10 +1346,21 @@ fn default_preview_side() -> u32 {
 }
 
 /// The LUT on an image, reduced, for the live preview.
-async fn luts_preview(State(s): St, AxPath(name): AxPath<String>, Query(q): Query<LutPreviewQ>) -> ApiResult<Response> {
+async fn luts_preview(
+    State(s): St,
+    AxPath(name): AxPath<String>,
+    Query(q): Query<LutPreviewQ>,
+) -> ApiResult<Response> {
     let engine = s.engine.clone();
-    let (bytes, ct) = tokio::task::spawn_blocking(move || engine.lut_preview(&q.source, &name, q.max)).await.map_err(AppError::internal)??;
-    Ok(Response::builder().header(header::CONTENT_TYPE, ct).header(header::CACHE_CONTROL, "no-store").body(Body::from(bytes)).unwrap())
+    let (bytes, ct) =
+        tokio::task::spawn_blocking(move || engine.lut_preview(&q.source, &name, q.max))
+            .await
+            .map_err(AppError::internal)??;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, ct)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .unwrap())
 }
 
 #[derive(Deserialize)]
@@ -1071,9 +1377,17 @@ fn default_intensity() -> f32 {
 }
 
 /// Saves the image with the LUT applied as a new version (the source is kept).
-async fn luts_apply(State(s): St, AxPath(name): AxPath<String>, Json(b): Json<LutApplyBody>) -> ApiResult<Json<Value>> {
+async fn luts_apply(
+    State(s): St,
+    AxPath(name): AxPath<String>,
+    Json(b): Json<LutApplyBody>,
+) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let rec = tokio::task::spawn_blocking(move || engine.apply_lut(&b.source, &name, b.intensity, b.private)).await.map_err(AppError::internal)??;
+    let rec = tokio::task::spawn_blocking(move || {
+        engine.apply_lut(&b.source, &name, b.intensity, b.private)
+    })
+    .await
+    .map_err(AppError::internal)??;
     Ok(Json(serde_json::to_value(rec).unwrap()))
 }
 
@@ -1094,7 +1408,9 @@ async fn input_thumb(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Resp
 
 /// A screen-sized copy of `src` for the browser's stage, made once (`qls_core::store::preview`).
 async fn serve_preview(src: PathBuf, stem: PathBuf) -> ApiResult<Response> {
-    let (p, ct) = tokio::task::spawn_blocking(move || qls_core::store::preview(&src, &stem)).await.map_err(AppError::internal)??;
+    let (p, ct) = tokio::task::spawn_blocking(move || qls_core::store::preview(&src, &stem))
+        .await
+        .map_err(AppError::internal)??;
     serve_file(&p, Some(ct)).await
 }
 
@@ -1102,7 +1418,11 @@ async fn input_preview(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Re
     let store = s.engine.input_store(&id);
     let r = store.get_input(&id)?;
     // From the JPEG kept for display, as `input_image` serves it.
-    let src = if r.format == "heic" { store.input_display_path(&id) } else { PathBuf::from(&r.path) };
+    let src = if r.format == "heic" {
+        store.input_display_path(&id)
+    } else {
+        PathBuf::from(&r.path)
+    };
     serve_preview(src, store.input_preview_path(&id)).await
 }
 
@@ -1115,7 +1435,10 @@ async fn gallery_list(State(s): St, Query(q): Query<ListQuery>) -> ApiResult<Jso
     Ok(Json(json!({ "items": items, "total": total })))
 }
 
-async fn gallery_get(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<GenerationRecord>> {
+async fn gallery_get(
+    State(s): St,
+    AxPath(id): AxPath<String>,
+) -> ApiResult<Json<GenerationRecord>> {
     Ok(Json(s.engine.gen_store(&id).get_generation(&id)?))
 }
 
@@ -1124,11 +1447,18 @@ struct PatchBody {
     favorite: Option<bool>,
 }
 
-async fn gallery_patch(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<PatchBody>) -> ApiResult<Json<GenerationRecord>> {
+async fn gallery_patch(
+    State(s): St,
+    AxPath(id): AxPath<String>,
+    Json(b): Json<PatchBody>,
+) -> ApiResult<Json<GenerationRecord>> {
     let store = s.engine.gen_store(&id);
     if let Some(f) = b.favorite {
         store.set_favorite(&id, f)?;
-        let _ = s.engine.events.send(qls_core::engine::Event::Gallery { id: id.clone(), change: "updated" });
+        let _ = s.engine.events.send(qls_core::engine::Event::Gallery {
+            id: id.clone(),
+            change: "updated",
+        });
     }
     Ok(Json(store.get_generation(&id)?))
 }
@@ -1136,7 +1466,10 @@ async fn gallery_patch(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<P
 async fn gallery_delete(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
     let out = s.engine.output_root(&id);
     s.engine.gen_store(&id).delete_generation(&id, &out)?;
-    let _ = s.engine.events.send(qls_core::engine::Event::Gallery { id: id.clone(), change: "deleted" });
+    let _ = s.engine.events.send(qls_core::engine::Event::Gallery {
+        id: id.clone(),
+        change: "deleted",
+    });
     Ok(Json(json!({ "deleted": id })))
 }
 
@@ -1148,7 +1481,12 @@ async fn gallery_image(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Re
 /// The result before the upscaler enlarged it, when it was kept.
 async fn gallery_original(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Response> {
     let r = s.engine.gen_store(&id).get_generation(&id)?;
-    let p = r.pipeline.and_then(|p| p.original_path).ok_or_else(|| AppError::new(ErrorCode::NotFound, "This image has no pre-upscale original."))?;
+    let p = r.pipeline.and_then(|p| p.original_path).ok_or_else(|| {
+        AppError::new(
+            ErrorCode::NotFound,
+            "This image has no pre-upscale original.",
+        )
+    })?;
     serve_file(Path::new(&p), Some("image/png")).await
 }
 
@@ -1180,11 +1518,17 @@ struct ExportBody {
 
 /// "Save as" from the desktop app (path chosen in the native dialog, which already
 /// confirmed any overwrite). Format follows the extension.
-async fn gallery_export(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<ExportBody>) -> ApiResult<Json<Value>> {
+async fn gallery_export(
+    State(s): St,
+    AxPath(id): AxPath<String>,
+    Json(b): Json<ExportBody>,
+) -> ApiResult<Json<Value>> {
     let rec = s.engine.gen_store(&id).get_generation(&id)?;
     let saved = tokio::task::spawn_blocking(move || -> Result<PathBuf, AppError> {
         let mut target = paths::normalize(&b.path, None)?;
-        let ext = target.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+        let ext = target
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
         let fmt = match ext.as_deref() {
             Some("jpg") | Some("jpeg") => qls_core::planner::OutputFormat::Jpeg,
             Some("webp") => qls_core::planner::OutputFormat::Webp,
@@ -1195,7 +1539,15 @@ async fn gallery_export(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<
             }
         };
         let source = if b.original {
-            rec.pipeline.as_ref().and_then(|p| p.original_path.clone()).ok_or_else(|| AppError::new(ErrorCode::NotFound, "This image has no pre-upscale original."))?
+            rec.pipeline
+                .as_ref()
+                .and_then(|p| p.original_path.clone())
+                .ok_or_else(|| {
+                    AppError::new(
+                        ErrorCode::NotFound,
+                        "This image has no pre-upscale original.",
+                    )
+                })?
         } else {
             rec.file_path.clone()
         };
@@ -1206,7 +1558,8 @@ async fn gallery_export(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<
             target = paths::unique_path(target, &[]);
         }
         let img = imaging::load_image(Path::new(&source))?;
-        let bytes = qls_core::engine::encode_output(&img.pixels, fmt, &rec, img.icc_profile.as_deref())?;
+        let bytes =
+            qls_core::engine::encode_output(&img.pixels, fmt, &rec, img.icc_profile.as_deref())?;
         qls_core::engine::write_atomic(&target, &bytes)?;
         Ok(target)
     })
@@ -1221,14 +1574,20 @@ async fn projects_list(State(s): St) -> Json<Value> {
 }
 
 async fn projects_get(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
-    let p = s.engine.projects.get(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "No such project."))?;
+    let p = s
+        .engine
+        .projects
+        .get(&id)
+        .ok_or_else(|| AppError::new(ErrorCode::NotFound, "No such project."))?;
     Ok(Json(serde_json::to_value(p).unwrap()))
 }
 
 /// Every version's record in one answer (a browser opening the project).
 async fn projects_records(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let r = tokio::task::spawn_blocking(move || engine.project_records(&id)).await.map_err(AppError::internal)?;
+    let r = tokio::task::spawn_blocking(move || engine.project_records(&id))
+        .await
+        .map_err(AppError::internal)?;
     let r = r.ok_or_else(|| AppError::new(ErrorCode::NotFound, "No such project."))?;
     Ok(Json(serde_json::to_value(r).unwrap()))
 }
@@ -1242,9 +1601,16 @@ struct ProjectPut {
 }
 
 /// Saves a device's copy of a project; answers with the merged one.
-async fn projects_put(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<ProjectPut>) -> ApiResult<Json<Value>> {
+async fn projects_put(
+    State(s): St,
+    AxPath(id): AxPath<String>,
+    Json(b): Json<ProjectPut>,
+) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let (p, change) = tokio::task::spawn_blocking(move || engine.projects.put(&id, b.project, &b.known)).await.map_err(AppError::internal)??;
+    let (p, change) =
+        tokio::task::spawn_blocking(move || engine.projects.put(&id, b.project, &b.known))
+            .await
+            .map_err(AppError::internal)??;
     s.engine.emit_projects(vec![change]);
     Ok(Json(serde_json::to_value(p).unwrap()))
 }
@@ -1252,7 +1618,11 @@ async fn projects_put(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<Pr
 async fn projects_delete(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
     let key = id.clone();
-    let change = tokio::task::spawn_blocking(move || engine.projects.delete(&key, qls_core::engine::now_ms())).await.map_err(AppError::internal)??;
+    let change = tokio::task::spawn_blocking(move || {
+        engine.projects.delete(&key, qls_core::engine::now_ms())
+    })
+    .await
+    .map_err(AppError::internal)??;
     s.engine.emit_projects(vec![change]);
     Ok(Json(json!({ "deleted": id })))
 }
@@ -1265,15 +1635,21 @@ struct ProjectImport {
 /// A device's project list from before 0.11 (its browser storage), merged in once.
 async fn projects_import(State(s): St, Json(b): Json<ProjectImport>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let changes = tokio::task::spawn_blocking(move || engine.projects.import(b.projects)).await.map_err(AppError::internal)??;
+    let changes = tokio::task::spawn_blocking(move || engine.projects.import(b.projects))
+        .await
+        .map_err(AppError::internal)??;
     let n = changes.len();
     s.engine.emit_projects(changes);
-    Ok(Json(json!({ "changed": n, "projects": s.engine.projects.list() })))
+    Ok(Json(
+        json!({ "changed": n, "projects": s.engine.projects.list() }),
+    ))
 }
 
 async fn install_examples(State(s): St) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let projects = tokio::task::spawn_blocking(move || engine.install_examples()).await.map_err(AppError::internal)??;
+    let projects = tokio::task::spawn_blocking(move || engine.install_examples())
+        .await
+        .map_err(AppError::internal)??;
     Ok(Json(json!({ "projects": projects })))
 }
 
@@ -1311,15 +1687,27 @@ struct HeartbeatBody {
     pid: Option<u32>,
 }
 
-async fn heartbeat(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<HeartbeatBody>) -> Json<Value> {
+async fn heartbeat(
+    State(s): St,
+    Extension(caller): Extension<Caller>,
+    Json(b): Json<HeartbeatBody>,
+) -> Json<Value> {
     // A browser holds its lease by heartbeat only, and never as the desktop window.
     let (kind, pid) = match caller {
         Caller::Local => (b.kind.unwrap_or_else(|| "client".into()), b.pid),
         Caller::Browser => ("web".to_string(), None),
     };
-    s.leases.lock().unwrap().insert(b.client_id.chars().take(80).collect(), Lease { kind, last_seen: Instant::now(), pid });
+    s.leases.lock().unwrap().insert(
+        b.client_id.chars().take(80).collect(),
+        Lease {
+            kind,
+            last_seen: Instant::now(),
+            pid,
+        },
+    );
     *s.exit_deadline.lock().unwrap() = None;
-    s.quick_exit.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.quick_exit
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     Json(json!({ "ok": true, "ttl_s": crate::LEASE_TTL.as_secs() }))
 }
 
@@ -1327,7 +1715,11 @@ async fn release(State(s): St, Json(b): Json<HeartbeatBody>) -> Json<Value> {
     let (removed, remaining, ui_remaining) = {
         let mut l = s.leases.lock().unwrap();
         let removed = l.remove(&b.client_id);
-        (removed, crate::holding_clients(&s, &l), l.values().any(|l| l.kind == "ui"))
+        (
+            removed,
+            crate::holding_clients(&s, &l),
+            l.values().any(|l| l.kind == "ui"),
+        )
     };
     if let Some(lease) = removed {
         tracing::info!("client {} ({}) released", b.client_id, lease.kind);
@@ -1370,7 +1762,9 @@ struct PasswordBody {
 /// Sets or changes the password; every browser signs in again.
 async fn remote_password(State(s): St, Json(b): Json<PasswordBody>) -> ApiResult<Json<Value>> {
     let r = s.clone();
-    tokio::task::spawn_blocking(move || r.remote.set_password(&b.password)).await.map_err(AppError::internal)??;
+    tokio::task::spawn_blocking(move || r.remote.set_password(&b.password))
+        .await
+        .map_err(AppError::internal)??;
     tracing::info!("password for other devices changed");
     web::sync_listener(&s);
     Ok(Json(web::status_json(&s)))
@@ -1417,7 +1811,11 @@ fn percent_decode(s: &str) -> String {
 async fn save_and_restart(s: &AppState, cfg: AppConfig) -> ApiResult<()> {
     let restart = s.engine.set_config(cfg)?;
     let st = s.engine.server.status();
-    if restart && st.owned && st.state != qls_core::process::ServerState::Stopped && !s.engine.has_pending_work() {
+    if restart
+        && st.owned
+        && st.state != qls_core::process::ServerState::Stopped
+        && !s.engine.has_pending_work()
+    {
         s.engine.server.stop().await;
         s.engine.emit_server();
     }
@@ -1457,8 +1855,12 @@ async fn models_improve_vae(State(s): St) -> ApiResult<Json<Value>> {
             let _ = tokio::task::spawn_blocking(move || e.remove_unused_original_vae()).await;
         });
     });
-    s.engine.installer.start(dir, "vae", vec![catalog::VAE], on_finish)?;
-    Ok(Json(serde_json::to_value(s.engine.installer.status()).unwrap()))
+    s.engine
+        .installer
+        .start(dir, "vae", vec![catalog::VAE], on_finish)?;
+    Ok(Json(
+        serde_json::to_value(s.engine.installer.status()).unwrap(),
+    ))
 }
 
 /// Downloads the Q4_K_M image model into the app's folder and makes the active model use it
@@ -1476,7 +1878,12 @@ async fn models_new_dit(State(s): St) -> ApiResult<Json<Value>> {
         c.use_new_dit();
         let restart = match engine.set_config(c) {
             Ok(r) => r,
-            Err(e) => return tracing::error!("could not switch to the Q4_K_M image model: {}", e.message),
+            Err(e) => {
+                return tracing::error!(
+                    "could not switch to the Q4_K_M image model: {}",
+                    e.message
+                );
+            }
         };
         tracing::info!("switched to the Q4_K_M image model");
         tokio::spawn(async move {
@@ -1494,8 +1901,12 @@ async fn models_new_dit(State(s): St) -> ApiResult<Json<Value>> {
             let _ = tokio::task::spawn_blocking(move || e.remove_unused_old_dit()).await;
         });
     });
-    s.engine.installer.start(dir, "dit", vec![catalog::TURBO_Q4_K_M], on_finish)?;
-    Ok(Json(serde_json::to_value(s.engine.installer.status()).unwrap()))
+    s.engine
+        .installer
+        .start(dir, "dit", vec![catalog::TURBO_Q4_K_M], on_finish)?;
+    Ok(Json(
+        serde_json::to_value(s.engine.installer.status()).unwrap(),
+    ))
 }
 
 fn role_of(label: &str) -> Option<Role> {
@@ -1574,8 +1985,19 @@ async fn models_scan(State(s): St, Json(b): Json<ScanBody>) -> ApiResult<Json<Va
         for (label, path) in cfg.missing_files() {
             let name = path.file_name().map(|n| n.to_ascii_lowercase());
             let role = role_of(label);
-            if let Some(f) = files.iter().find(|f| f.compatible && f.role == role && f.path.file_name().map(|n| n.to_ascii_lowercase()) == name) {
-                moved.insert(serde_json::to_value(role).unwrap().as_str().unwrap_or_default().to_string(), json!(f.path));
+            if let Some(f) = files.iter().find(|f| {
+                f.compatible
+                    && f.role == role
+                    && f.path.file_name().map(|n| n.to_ascii_lowercase()) == name
+            }) {
+                moved.insert(
+                    serde_json::to_value(role)
+                        .unwrap()
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    json!(f.path),
+                );
             }
         }
         json!({ "dir": b.dir, "files": files, "picks": picks, "moved": moved })
@@ -1592,7 +2014,10 @@ struct InspectBody {
 
 async fn models_inspect(Json(b): Json<InspectBody>) -> ApiResult<Json<FileInfo>> {
     let p = b.path.clone();
-    let info = tokio::task::spawn_blocking(move || modelfile::inspect(&p)).await.map_err(AppError::internal)?.map_err(|e| AppError::io("read", &b.path, e))?;
+    let info = tokio::task::spawn_blocking(move || modelfile::inspect(&p))
+        .await
+        .map_err(AppError::internal)?
+        .map_err(|e| AppError::io("read", &b.path, e))?;
     Ok(Json(info))
 }
 
@@ -1612,7 +2037,14 @@ async fn models_set_user(State(s): St, Json(b): Json<UserFilesBody>) -> ApiResul
     let engine = s.engine.clone();
     let cfg = tokio::task::spawn_blocking(move || -> Result<AppConfig, AppError> {
         let mut cfg = engine.config();
-        let p = modelfile::user_profile(&b.diffusion_model, &b.vae, &b.text_encoder, b.vision_projector.as_ref(), b.scan_dir, cfg.preset())?;
+        let p = modelfile::user_profile(
+            &b.diffusion_model,
+            &b.vae,
+            &b.text_encoder,
+            b.vision_projector.as_ref(),
+            b.scan_dir,
+            cfg.preset(),
+        )?;
         cfg.set_user_files(p);
         Ok(cfg)
     })

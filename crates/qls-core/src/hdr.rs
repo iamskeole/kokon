@@ -26,17 +26,40 @@ pub struct GainMap {
 
 /// `ffmpeg.exe` on PATH (winget, scoop, manual installs), if any.
 pub fn find_ffmpeg() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(exe)).find(|p| p.is_file())
+    let exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(exe))
+        .find(|p| p.is_file())
 }
 
 /// Reads the gain map of a HEIC file. `source` is the file on disk (ffmpeg needs to seek).
 /// The result has the same orientation as the decoded base image (both apply `irot`/`imir`).
-pub fn read_heic_gain_map(ffmpeg: &Path, source: &Path, info: &HeifGainMap) -> Result<GainMap, String> {
+pub fn read_heic_gain_map(
+    ffmpeg: &Path,
+    source: &Path,
+    info: &HeifGainMap,
+) -> Result<GainMap, String> {
     let map = if info.is_grid {
         // Grids are stream groups; ffmpeg's filter label takes the group *index*.
-        let ffprobe = ffmpeg.with_file_name(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
-        let out = run(Command::new(&ffprobe).args(["-v", "error", "-show_entries", "stream_group=index,id", "-of", "csv=p=0"]).arg(source))?;
+        let ffprobe = ffmpeg.with_file_name(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        let out = run(Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream_group=index,id",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(source))?;
         let text = String::from_utf8_lossy(&out);
         let index = text
             .lines()
@@ -55,9 +78,26 @@ pub fn read_heic_gain_map(ffmpeg: &Path, source: &Path, info: &HeifGainMap) -> R
     let png = run(Command::new(ffmpeg)
         .args(["-v", "error", "-i"])
         .arg(source)
-        .args(["-map", &map, "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-pix_fmt", "gray", "-"]))?;
-    let image = image::load_from_memory(&png).map_err(|e| format!("gain map decode: {e}"))?.into_luma8();
-    Ok(GainMap { image, metadata: info.metadata.clone() })
+        .args([
+            "-map",
+            &map,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "png",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ]))?;
+    let image = image::load_from_memory(&png)
+        .map_err(|e| format!("gain map decode: {e}"))?
+        .into_luma8();
+    Ok(GainMap {
+        image,
+        metadata: info.metadata.clone(),
+    })
 }
 
 fn parse_id(s: &str) -> Option<u32> {
@@ -74,10 +114,15 @@ fn run(cmd: &mut Command) -> Result<Vec<u8>, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let out = cmd.output().map_err(|e| format!("could not run ffmpeg: {e}"))?;
+    let out = cmd
+        .output()
+        .map_err(|e| format!("could not run ffmpeg: {e}"))?;
     if !out.status.success() || out.stdout.is_empty() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("ffmpeg failed: {}", err.lines().last().unwrap_or("no output")));
+        return Err(format!(
+            "ffmpeg failed: {}",
+            err.lines().last().unwrap_or("no output")
+        ));
     }
     Ok(out.stdout)
 }
@@ -99,8 +144,18 @@ pub fn adapt_gain_map(gm: &GainMap, source_sdr: &RgbaImage, edited: &RgbaImage) 
     let w = ((ew as f64 * scale).round() as u32).clamp(1, ew);
     let h = ((eh as f64 * scale).round() as u32).clamp(1, eh);
     let gain = imageops::resize(&gm.image, w, h, imageops::FilterType::Triangle);
-    let ys = luma_linear(&imageops::resize(source_sdr, w, h, imageops::FilterType::Triangle));
-    let ye = luma_linear(&imageops::resize(edited, w, h, imageops::FilterType::Triangle));
+    let ys = luma_linear(&imageops::resize(
+        source_sdr,
+        w,
+        h,
+        imageops::FilterType::Triangle,
+    ));
+    let ye = luma_linear(&imageops::resize(
+        edited,
+        w,
+        h,
+        imageops::FilterType::Triangle,
+    ));
 
     // Per-pixel keep weight from the brightness change, smoothed so the fade has no edges.
     let mut keep = GrayImage::new(w, h);
@@ -124,11 +179,21 @@ pub fn adapt_gain_map(gm: &GainMap, source_sdr: &RgbaImage, edited: &RgbaImage) 
         let e = g.0[0] as f64 / 255.0;
         let log_gain = lo + (hi - lo) * e.powf(1.0 / gamma);
         let faded = log_gain * k;
-        let enc = if hi > lo { ((faded - lo) / (hi - lo)).clamp(0.0, 1.0).powf(gamma) } else { 0.0 };
+        let enc = if hi > lo {
+            ((faded - lo) / (hi - lo)).clamp(0.0, 1.0).powf(gamma)
+        } else {
+            0.0
+        };
         *o = Luma([(enc * 255.0).round() as u8]);
     }
     let share = kept as f32 / (w * h) as f32;
-    (GainMap { image: out, metadata: m.clone() }, share)
+    (
+        GainMap {
+            image: out,
+            metadata: m.clone(),
+        },
+        share,
+    )
 }
 
 /// Relative linear luminance per pixel (sRGB transfer, Rec.709 weights).
@@ -136,18 +201,37 @@ fn luma_linear(img: &RgbaImage) -> Vec<f32> {
     let lin: Vec<f32> = (0..256)
         .map(|v| {
             let c = v as f32 / 255.0;
-            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
         })
         .collect();
-    img.pixels().map(|p| 0.2126 * lin[p.0[0] as usize] + 0.7152 * lin[p.0[1] as usize] + 0.0722 * lin[p.0[2] as usize]).collect()
+    img.pixels()
+        .map(|p| {
+            0.2126 * lin[p.0[0] as usize]
+                + 0.7152 * lin[p.0[1] as usize]
+                + 0.0722 * lin[p.0[2] as usize]
+        })
+        .collect()
 }
 
 const XMP_NS: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 const ISO_NS: &[u8] = b"urn:iso:std:iso:ts:21496:-1\0";
 
 /// Encodes an Ultra HDR JPEG: `sdr` as the primary image (with `icc`), `gm` as the gain map.
-pub fn encode_ultra_hdr(sdr: &RgbaImage, icc: Option<&[u8]>, gm: &GainMap, quality: u8) -> Result<Vec<u8>, String> {
-    let primary = jpeg(&DynamicImage::ImageRgba8(sdr.clone()).into_rgb8(), icc, quality)?;
+pub fn encode_ultra_hdr(
+    sdr: &RgbaImage,
+    icc: Option<&[u8]>,
+    gm: &GainMap,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
+    let primary = jpeg(
+        &DynamicImage::ImageRgba8(sdr.clone()).into_rgb8(),
+        icc,
+        quality,
+    )?;
     let gain = jpeg(&gm.image, None, quality.min(90))?;
 
     let mut gain_segments = app(1, &[XMP_NS, gain_map_xmp(&gm.metadata).as_bytes()].concat());
@@ -155,25 +239,41 @@ pub fn encode_ultra_hdr(sdr: &RgbaImage, icc: Option<&[u8]>, gm: &GainMap, quali
     let gain_file = insert_after_soi(&gain, &gain_segments);
 
     // Primary: XMP directory + ISO version marker + MPF index, then the encoder's own segments.
-    let mut head = app(1, &[XMP_NS, primary_xmp(gain_file.len()).as_bytes()].concat());
+    let mut head = app(
+        1,
+        &[XMP_NS, primary_xmp(gain_file.len()).as_bytes()].concat(),
+    );
     head.extend(app(2, &[ISO_NS, &[0, 0, 0, 0]].concat()));
     let mpf_at = 2 + head.len() + 4 + 4; // SOI + segments + APP2 marker/length + "MPF\0"
     let mpf_len = app(2, &mpf(0, 0, 0)).len();
     let primary_len = primary.len() + head.len() + mpf_len;
-    head.extend(app(2, &mpf(primary_len as u32, gain_file.len() as u32, (primary_len - mpf_at) as u32)));
+    head.extend(app(
+        2,
+        &mpf(
+            primary_len as u32,
+            gain_file.len() as u32,
+            (primary_len - mpf_at) as u32,
+        ),
+    ));
     let mut out = insert_after_soi(&primary, &head);
     debug_assert_eq!(out.len(), primary_len);
     out.extend_from_slice(&gain_file);
     Ok(out)
 }
 
-fn jpeg<P: image::PixelWithColorType + image::Pixel<Subpixel = u8>>(img: &image::ImageBuffer<P, Vec<u8>>, icc: Option<&[u8]>, quality: u8) -> Result<Vec<u8>, String> {
+fn jpeg<P: image::PixelWithColorType + image::Pixel<Subpixel = u8>>(
+    img: &image::ImageBuffer<P, Vec<u8>>,
+    icc: Option<&[u8]>,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+    let mut enc =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
     if let Some(icc) = icc {
         let _ = enc.set_icc_profile(icc.to_vec());
     }
-    enc.write_image(img.as_raw(), img.width(), img.height(), P::COLOR_TYPE).map_err(|e| format!("JPEG encode: {e}"))?;
+    enc.write_image(img.as_raw(), img.width(), img.height(), P::COLOR_TYPE)
+        .map_err(|e| format!("JPEG encode: {e}"))?;
     Ok(out)
 }
 
@@ -207,7 +307,10 @@ fn mpf(primary_len: u32, gain_len: u32, gain_offset: u32) -> Vec<u8> {
     entry(&mut v, 0xB001, 4, 1, 2u32.to_be_bytes());
     entry(&mut v, 0xB002, 7, 32, 50u32.to_be_bytes()); // 8 (header) + 2 + 3*12 + 4
     v.extend_from_slice(&0u32.to_be_bytes());
-    for (attr, size, off) in [(0x0003_0000u32, primary_len, 0u32), (0, gain_len, gain_offset)] {
+    for (attr, size, off) in [
+        (0x0003_0000u32, primary_len, 0u32),
+        (0, gain_len, gain_offset),
+    ] {
         v.extend_from_slice(&attr.to_be_bytes());
         v.extend_from_slice(&size.to_be_bytes());
         v.extend_from_slice(&off.to_be_bytes());
@@ -225,7 +328,10 @@ fn primary_xmp(gain_len: usize) -> String {
 fn gain_map_xmp(m: &GainMapMetadata) -> String {
     let f = |a: &[f64; 3]| {
         if m.multichannel {
-            format!("<rdf:Seq><rdf:li>{:.6}</rdf:li><rdf:li>{:.6}</rdf:li><rdf:li>{:.6}</rdf:li></rdf:Seq>", a[0], a[1], a[2])
+            format!(
+                "<rdf:Seq><rdf:li>{:.6}</rdf:li><rdf:li>{:.6}</rdf:li><rdf:li>{:.6}</rdf:li></rdf:Seq>",
+                a[0], a[1], a[2]
+            )
         } else {
             format!("{:.6}", a[0])
         }
@@ -294,16 +400,28 @@ mod tests {
     #[test]
     fn unchanged_edit_keeps_the_gain_and_a_changed_one_drops_it() {
         let src = RgbaImage::from_pixel(64, 48, image::Rgba([120, 110, 100, 255]));
-        let gm = GainMap { image: GrayImage::from_pixel(32, 24, Luma([200])), metadata: meta() };
+        let gm = GainMap {
+            image: GrayImage::from_pixel(32, 24, Luma([200])),
+            metadata: meta(),
+        };
         let (same, share) = adapt_gain_map(&gm, &src, &src);
         assert_eq!(same.image.dimensions(), (32, 24));
         assert!(share > 0.99);
-        assert!((decode_log_gain(&gm.metadata, same.image.get_pixel(10, 10).0[0]) - decode_log_gain(&gm.metadata, 200)).abs() < 0.02);
+        assert!(
+            (decode_log_gain(&gm.metadata, same.image.get_pixel(10, 10).0[0])
+                - decode_log_gain(&gm.metadata, 200))
+            .abs()
+                < 0.02
+        );
 
         // The edit is 3 stops darker everywhere: no boost left (log gain ~0).
         let dark = RgbaImage::from_pixel(128, 96, image::Rgba([40, 36, 33, 255]));
         let (faded, share) = adapt_gain_map(&gm, &src, &dark);
-        assert_eq!(faded.image.dimensions(), (64, 48), "same relative resolution on a 2x larger result");
+        assert_eq!(
+            faded.image.dimensions(),
+            (64, 48),
+            "same relative resolution on a 2x larger result"
+        );
         assert!(share < 0.01);
         assert!(decode_log_gain(&gm.metadata, faded.image.get_pixel(30, 20).0[0]).abs() < 0.02);
     }
@@ -311,7 +429,10 @@ mod tests {
     #[test]
     fn ultra_hdr_layout() {
         let sdr = RgbaImage::from_pixel(64, 32, image::Rgba([200, 30, 30, 255]));
-        let gm = GainMap { image: GrayImage::from_pixel(32, 16, Luma([128])), metadata: meta() };
+        let gm = GainMap {
+            image: GrayImage::from_pixel(32, 16, Luma([128])),
+            metadata: meta(),
+        };
         let icc = vec![7u8; 600];
         let out = encode_ultra_hdr(&sdr, Some(&icc), &gm, 90).unwrap();
 
@@ -321,21 +442,35 @@ mod tests {
         let e2 = tiff + 50 + 16;
         let size = u32::from_be_bytes(out[e2 + 4..e2 + 8].try_into().unwrap()) as usize;
         let off = u32::from_be_bytes(out[e2 + 8..e2 + 12].try_into().unwrap()) as usize;
-        let primary_size = u32::from_be_bytes(out[tiff + 50 + 4..tiff + 50 + 8].try_into().unwrap()) as usize;
-        assert_eq!(tiff + off, primary_size, "gain map starts right after the primary image");
+        let primary_size =
+            u32::from_be_bytes(out[tiff + 50 + 4..tiff + 50 + 8].try_into().unwrap()) as usize;
+        assert_eq!(
+            tiff + off,
+            primary_size,
+            "gain map starts right after the primary image"
+        );
         assert_eq!(primary_size + size, out.len());
         let gain = &out[tiff + off..];
         assert_eq!(&gain[..2], &[0xFF, 0xD8]);
         let g = String::from_utf8_lossy(gain);
-        assert!(g.contains("hdrgm:GainMapMax=\"1.850000\"") && g.contains("urn:iso:std:iso:ts:21496:-1"));
+        assert!(
+            g.contains("hdrgm:GainMapMax=\"1.850000\"")
+                && g.contains("urn:iso:std:iso:ts:21496:-1")
+        );
         let p = String::from_utf8_lossy(&out[..primary_size]);
         assert!(p.contains(&format!("Item:Length=\"{size}\"")));
-        assert_eq!(&out[primary_size - 2..primary_size], &[0xFF, 0xD9], "primary ends with EOI");
+        assert_eq!(
+            &out[primary_size - 2..primary_size],
+            &[0xFF, 0xD9],
+            "primary ends with EOI"
+        );
 
         // Both images decode; the primary keeps its ICC profile.
         assert_eq!(image::load_from_memory(&out).unwrap().width(), 64);
         assert_eq!(image::load_from_memory(gain).unwrap().width(), 32);
-        let mut dec = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(&out[..primary_size])).unwrap();
+        let mut dec =
+            image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(&out[..primary_size]))
+                .unwrap();
         use image::ImageDecoder;
         assert_eq!(dec.icc_profile().unwrap().unwrap(), icc);
     }
@@ -343,15 +478,30 @@ mod tests {
     /// Run with QLS_TEST_HEIC=<iPhone .HEIC with HDR> and ffmpeg on PATH.
     #[test]
     fn real_heic_gain_map_matches_base() {
-        let Ok(p) = std::env::var("QLS_TEST_HEIC") else { return };
+        let Ok(p) = std::env::var("QLS_TEST_HEIC") else {
+            return;
+        };
         let Some(ff) = find_ffmpeg() else { return };
         let bytes = std::fs::read(&p).unwrap();
         let info = crate::heif::gain_map(&bytes).unwrap();
         let gm = read_heic_gain_map(&ff, Path::new(&p), &info).unwrap();
         let base = crate::wic::decode(&bytes).unwrap().pixels;
-        println!("base {:?} gain map {:?}", base.dimensions(), gm.image.dimensions());
-        assert!(same_framing(base.dimensions(), gm.image.dimensions()), "gain map oriented like the base");
-        let out = encode_ultra_hdr(&base, crate::heif::primary_icc(&bytes).as_deref(), &adapt_gain_map(&gm, &base, &base).0, 92).unwrap();
+        println!(
+            "base {:?} gain map {:?}",
+            base.dimensions(),
+            gm.image.dimensions()
+        );
+        assert!(
+            same_framing(base.dimensions(), gm.image.dimensions()),
+            "gain map oriented like the base"
+        );
+        let out = encode_ultra_hdr(
+            &base,
+            crate::heif::primary_icc(&bytes).as_deref(),
+            &adapt_gain_map(&gm, &base, &base).0,
+            92,
+        )
+        .unwrap();
         if let Ok(dir) = std::env::var("QLS_TEST_OUT") {
             std::fs::write(Path::new(&dir).join("ultrahdr_test.jpg"), &out).unwrap();
         }

@@ -4,7 +4,7 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import {
-  compareBase, composerFromRecord, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
+  compareBase, composerFromRecord, flavorForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
   upscalerLabel, upscaleTargets, variationRequest, imageName, type LinkKind, type TimelineLink,
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
@@ -554,7 +554,7 @@ function PlainFrame({ src, source, alt, w, h, maskSrc, overlay, fill, onFullscre
 
 /** Under the image: which image this is and what made it, then what you can do with it. */
 /** `phone`: the prompt stays in Details, the actions are the phone's row. */
-function StageBar(props: { item: SessionItem; label: string; showOriginal: boolean; setShowOriginal: (on: boolean) => void; lutBar: React.ReactNode; onLut: (lut: LutEntry) => void; phone?: boolean }) {
+function StageBar(props: { item: SessionItem; label: string; showOriginal: boolean; setShowOriginal: (on: boolean) => void; lutBar: React.ReactNode; onLut: (lut: LutEntry) => void; phone?: boolean; model?: string | null }) {
   const { item, label, showOriginal, setShowOriginal } = props;
   const g = item.gen;
   const lut = g && lutInfo(g);
@@ -567,6 +567,7 @@ function StageBar(props: { item: SessionItem; label: string; showOriginal: boole
       <div className="stage-meta">
         <span className="ver">{imageName(label)}</span>
         {g && <span className="mode">{MODE_LABEL[g.mode]}</span>}
+        {props.model && <span className="mode" title="Model">{props.model}</span>}
         {g?.original_prompt && (
           <span className="enhanced-mark" title="The prompt enhancer wrote this image's prompt">
             <WandSparkles size={13} />
@@ -882,6 +883,12 @@ export function Stage() {
   // A phone: swipe between versions, a row of actions and a filmstrip (PhoneStage.tsx).
   const phone = useNarrow();
   const job = useStore((s) => (item?.jobId ? s.jobs[item.jobId] : undefined));
+  // External engine mode: the configured flavor name of the model that made the shown image
+  // (each record carries the engine's own reported model name).
+  const modelLabel = useStore((s) => {
+    const g = item?.gen;
+    return s.external && g ? (flavorForModel(s.flavors, g.model)?.label ?? null) : null;
+  });
   const labels = useMemo(() => sessionLabels(session), [session]);
   // The result whose pre-upscale original is on screen instead of it.
   const [originalOf, setOriginalOf] = useState<string | null>(null);
@@ -989,6 +996,7 @@ export function Stage() {
     };
     // The preview is made for the screen: the image's own size at most.
     const previewMax = Math.min(Math.max(w, h), Math.round(1600 * Math.min(2, window.devicePixelRatio || 1)), 4096);
+    const modelBadge = modelLabel ? <span className="model-badge">{modelLabel}</span> : undefined;
     const lutBar = lutActive && (
       <LutBar
         lut={lutActive.lut}
@@ -1014,15 +1022,15 @@ export function Stage() {
             onFullscreen={openFull}
           />
         ) : g && from && showOriginal ? (
-          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} onFullscreen={openFull} />
+          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} overlay={modelBadge} onFullscreen={openFull} />
         ) : item.gen && base ? (
           <CompareFrame key={`compare-${item.gen.id}`} g={item.gen} base={base} maskSrc={maskSrc} onFullscreen={openFull} />
         ) : (
-          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} onFullscreen={openFull} />
+          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} overlay={modelBadge} onFullscreen={openFull} />
         )}
         </Hatch>
     );
-    bar = <StageBar item={item} label={labels[item.key]} showOriginal={showOriginal} setShowOriginal={(on) => setOriginalOf(on && g ? g.id : null)} lutBar={lutBar} onLut={startLut} phone={phone} />;
+    bar = <StageBar item={item} label={labels[item.key]} showOriginal={showOriginal} setShowOriginal={(on) => setOriginalOf(on && g ? g.id : null)} lutBar={lutBar} onLut={startLut} phone={phone} model={modelLabel} />;
   }
 
   return (

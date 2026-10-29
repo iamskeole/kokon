@@ -79,12 +79,24 @@ pub const MAX_SYSTEM_PROMPT_CHARS: usize = 20_000;
 pub const MAX_TOKENS: u32 = 1024;
 
 /// Qwen's recommended sampling for Qwen3-VL (vision-language), used for both prompts.
-pub const SAMPLING: TextSampling = TextSampling { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5, seed: -1 };
+pub const SAMPLING: TextSampling = TextSampling {
+    temperature: 0.7,
+    top_p: 0.8,
+    top_k: 20,
+    presence_penalty: 1.5,
+    seed: -1,
+};
 
 /// Text-to-image, new images from references, edits and combines get the enhancer. Inpaint
 /// and outpaint wrap the prompt in their own instructions, and upscales have no prompt.
 pub fn applies(mode: ResolvedMode) -> bool {
-    matches!(mode, ResolvedMode::Generate | ResolvedMode::Compose | ResolvedMode::Edit | ResolvedMode::MultiReference)
+    matches!(
+        mode,
+        ResolvedMode::Generate
+            | ResolvedMode::Compose
+            | ResolvedMode::Edit
+            | ResolvedMode::MultiReference
+    )
 }
 
 /// The system prompt for `mode`: the one saved in Settings, or the built-in one.
@@ -94,17 +106,31 @@ pub fn system_prompt(cfg: &AppConfig, mode: ResolvedMode) -> String {
         ResolvedMode::Compose => (&cfg.enhancer_compose_prompt, COMPOSE_SYSTEM_PROMPT),
         _ => (&cfg.enhancer_edit_prompt, EDIT_SYSTEM_PROMPT),
     };
-    if custom.trim().is_empty() { default.to_string() } else { custom.trim().to_string() }
+    if custom.trim().is_empty() {
+        default.to_string()
+    } else {
+        custom.trim().to_string()
+    }
 }
 
 /// The `text_gen` request for a job: its seed (so the same seed writes the same prompt, and
 /// Regenerate writes a new one) and, for edits and compositions, the references as the image
 /// model gets them.
-pub fn request(cfg: &AppConfig, mode: ResolvedMode, prompt: &str, images: Vec<String>, seed: i64) -> TextGenRequest {
+pub fn request(
+    cfg: &AppConfig,
+    mode: ResolvedMode,
+    prompt: &str,
+    images: Vec<String>,
+    seed: i64,
+) -> TextGenRequest {
     TextGenRequest {
         prompt: prompt.trim().to_string(),
         system_prompt: system_prompt(cfg, mode),
-        images: if mode == ResolvedMode::Generate { Vec::new() } else { images },
+        images: if mode == ResolvedMode::Generate {
+            Vec::new()
+        } else {
+            images
+        },
         max_tokens: MAX_TOKENS,
         sampling: TextSampling { seed, ..SAMPLING },
         stream: true,
@@ -115,7 +141,10 @@ pub fn request(cfg: &AppConfig, mode: ResolvedMode, prompt: &str, images: Vec<St
 /// with the user's request.
 pub fn label_request(image: String, request: &str, seed: i64) -> TextGenRequest {
     TextGenRequest {
-        prompt: format!("The user's request for the new picture: {}\nLabel what it takes from this image.", request.trim()),
+        prompt: format!(
+            "The user's request for the new picture: {}\nLabel what it takes from this image.",
+            request.trim()
+        ),
         system_prompt: COMPOSE_LABEL_PROMPT.into(),
         images: vec![image],
         max_tokens: LABEL_MAX_TOKENS,
@@ -127,14 +156,33 @@ pub fn label_request(image: String, request: &str, seed: i64) -> TextGenRequest 
 /// A label as the model wrote it, on one line and without a closing full stop.
 pub fn clean_label(text: &str) -> String {
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    one_line.trim().trim_end_matches('.').trim().chars().take(400).collect()
+    one_line
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .chars()
+        .take(400)
+        .collect()
 }
 
 /// Step 2 of a composition: the request with the references' labels, without the images.
-pub fn compose_request(cfg: &AppConfig, labels: &[String], prompt: &str, seed: i64) -> TextGenRequest {
-    let refs: Vec<String> = labels.iter().enumerate().map(|(i, l)| format!("<image{}>: {l}", i + 1)).collect();
+pub fn compose_request(
+    cfg: &AppConfig,
+    labels: &[String],
+    prompt: &str,
+    seed: i64,
+) -> TextGenRequest {
+    let refs: Vec<String> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("<image{}>: {l}", i + 1))
+        .collect();
     TextGenRequest {
-        prompt: format!("References:\n{}\n\nRequest: {}", refs.join("\n"), prompt.trim()),
+        prompt: format!(
+            "References:\n{}\n\nRequest: {}",
+            refs.join("\n"),
+            prompt.trim()
+        ),
         system_prompt: system_prompt(cfg, ResolvedMode::Compose),
         images: Vec::new(),
         max_tokens: MAX_TOKENS,
@@ -148,7 +196,9 @@ pub fn compose_request(cfg: &AppConfig, labels: &[String], prompt: &str, seed: i
 pub fn clean(text: &str) -> Option<String> {
     let mut t = text.trim();
     for label in ["Prompt:", "Instruction:", "Editing instruction:"] {
-        if t.get(..label.len()).is_some_and(|head| head.eq_ignore_ascii_case(label)) {
+        if t.get(..label.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(label))
+        {
             t = t[label.len()..].trim_start();
         }
     }
@@ -165,28 +215,68 @@ mod tests {
 
     #[test]
     fn modes_and_prompts() {
-        assert!(applies(ResolvedMode::Generate) && applies(ResolvedMode::Edit) && applies(ResolvedMode::MultiReference) && applies(ResolvedMode::Compose));
-        assert!(!applies(ResolvedMode::Inpaint) && !applies(ResolvedMode::Outpaint) && !applies(ResolvedMode::Upscale));
+        assert!(
+            applies(ResolvedMode::Generate)
+                && applies(ResolvedMode::Edit)
+                && applies(ResolvedMode::MultiReference)
+                && applies(ResolvedMode::Compose)
+        );
+        assert!(
+            !applies(ResolvedMode::Inpaint)
+                && !applies(ResolvedMode::Outpaint)
+                && !applies(ResolvedMode::Upscale)
+        );
         let mut cfg = AppConfig::default();
-        assert_eq!(system_prompt(&cfg, ResolvedMode::Generate), T2I_SYSTEM_PROMPT);
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::Generate),
+            T2I_SYSTEM_PROMPT
+        );
         assert_eq!(system_prompt(&cfg, ResolvedMode::Edit), EDIT_SYSTEM_PROMPT);
-        assert_eq!(system_prompt(&cfg, ResolvedMode::MultiReference), EDIT_SYSTEM_PROMPT);
-        assert_eq!(system_prompt(&cfg, ResolvedMode::Compose), COMPOSE_SYSTEM_PROMPT);
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::MultiReference),
+            EDIT_SYSTEM_PROMPT
+        );
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::Compose),
+            COMPOSE_SYSTEM_PROMPT
+        );
         cfg.enhancer_edit_prompt = "  Jewelry retouch rules.\n".into();
         cfg.enhancer_t2i_prompt = " \n ".into();
-        assert_eq!(system_prompt(&cfg, ResolvedMode::Edit), "Jewelry retouch rules.");
-        assert_eq!(system_prompt(&cfg, ResolvedMode::Generate), T2I_SYSTEM_PROMPT, "blank = built-in");
-        assert_eq!(system_prompt(&cfg, ResolvedMode::Compose), COMPOSE_SYSTEM_PROMPT, "an edit prompt does not change compose");
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::Edit),
+            "Jewelry retouch rules."
+        );
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::Generate),
+            T2I_SYSTEM_PROMPT,
+            "blank = built-in"
+        );
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::Compose),
+            COMPOSE_SYSTEM_PROMPT,
+            "an edit prompt does not change compose"
+        );
         cfg.enhancer_compose_prompt = "Product shots only.".into();
-        assert_eq!(system_prompt(&cfg, ResolvedMode::Compose), "Product shots only.");
-        assert!(T2I_SYSTEM_PROMPT.ends_with("Output only the prompt.") && EDIT_SYSTEM_PROMPT.contains("<image1>, <image2>"));
+        assert_eq!(
+            system_prompt(&cfg, ResolvedMode::Compose),
+            "Product shots only."
+        );
+        assert!(
+            T2I_SYSTEM_PROMPT.ends_with("Output only the prompt.")
+                && EDIT_SYSTEM_PROMPT.contains("<image1>, <image2>")
+        );
     }
 
     #[test]
     fn builtin_prompts_have_nothing_the_model_copies() {
         // Seen in real outputs (bench sysprompt-v2-20261019-155557): example colours ended up in
         // almost every prompt, and the text rule became "No text appears in the image."
-        for p in [T2I_SYSTEM_PROMPT, EDIT_SYSTEM_PROMPT, COMPOSE_SYSTEM_PROMPT, COMPOSE_LABEL_PROMPT] {
+        for p in [
+            T2I_SYSTEM_PROMPT,
+            EDIT_SYSTEM_PROMPT,
+            COMPOSE_SYSTEM_PROMPT,
+            COMPOSE_LABEL_PROMPT,
+        ] {
             for leak in ["deep navy", "pale cream", "copper", "No text"] {
                 assert!(!p.contains(leak), "{leak:?} in a built-in prompt");
             }
@@ -197,20 +287,67 @@ mod tests {
     #[test]
     fn request_uses_job_seed_and_images_only_for_edits() {
         let cfg = AppConfig::default();
-        let r = request(&cfg, ResolvedMode::Edit, " rendi la macchina nera ", vec!["PNG".into()], 1234);
-        assert_eq!((r.prompt.as_str(), r.images.len(), r.sampling.seed, r.max_tokens), ("rendi la macchina nera", 1, 1234, MAX_TOKENS));
-        assert_eq!((r.sampling.temperature, r.sampling.top_p, r.sampling.top_k, r.sampling.presence_penalty), (0.7, 0.8, 20, 1.5));
+        let r = request(
+            &cfg,
+            ResolvedMode::Edit,
+            " rendi la macchina nera ",
+            vec!["PNG".into()],
+            1234,
+        );
+        assert_eq!(
+            (
+                r.prompt.as_str(),
+                r.images.len(),
+                r.sampling.seed,
+                r.max_tokens
+            ),
+            ("rendi la macchina nera", 1, 1234, MAX_TOKENS)
+        );
+        assert_eq!(
+            (
+                r.sampling.temperature,
+                r.sampling.top_p,
+                r.sampling.top_k,
+                r.sampling.presence_penalty
+            ),
+            (0.7, 0.8, 20, 1.5)
+        );
         assert!(r.stream);
-        let r = request(&cfg, ResolvedMode::Generate, "un gatto", vec!["PNG".into()], 1);
+        let r = request(
+            &cfg,
+            ResolvedMode::Generate,
+            "un gatto",
+            vec!["PNG".into()],
+            1,
+        );
         assert!(r.images.is_empty() && r.system_prompt == T2I_SYSTEM_PROMPT);
         // Compose: each reference labelled alone, then the scene from the labels, without images.
         let l = label_request("A".into(), " la ciotola su un tavolo ", 5);
-        assert_eq!((l.images.len(), l.system_prompt.as_str(), l.sampling.seed, l.max_tokens), (1, COMPOSE_LABEL_PROMPT, 5, LABEL_MAX_TOKENS));
-        assert!(l.prompt.contains("la ciotola su un tavolo\n"), "the label knows what the request takes");
-        let labels = vec!["person, female, dark hair; style: photo".to_string(), "cat, orange tabby; style: photo".to_string()];
+        assert_eq!(
+            (
+                l.images.len(),
+                l.system_prompt.as_str(),
+                l.sampling.seed,
+                l.max_tokens
+            ),
+            (1, COMPOSE_LABEL_PROMPT, 5, LABEL_MAX_TOKENS)
+        );
+        assert!(
+            l.prompt.contains("la ciotola su un tavolo\n"),
+            "the label knows what the request takes"
+        );
+        let labels = vec![
+            "person, female, dark hair; style: photo".to_string(),
+            "cat, orange tabby; style: photo".to_string(),
+        ];
         let r = compose_request(&cfg, &labels, " lei sul divano con il gatto ", 5);
-        assert!(r.images.is_empty() && r.system_prompt == COMPOSE_SYSTEM_PROMPT && r.sampling.seed == 5);
-        assert_eq!(r.prompt, "References:\n<image1>: person, female, dark hair; style: photo\n<image2>: cat, orange tabby; style: photo\n\nRequest: lei sul divano con il gatto");
+        assert!(
+            r.images.is_empty() && r.system_prompt == COMPOSE_SYSTEM_PROMPT && r.sampling.seed == 5
+        );
+        assert_eq!(
+            r.prompt,
+            "References:\n<image1>: person, female, dark hair; style: photo\n<image2>: cat, orange tabby; style: photo\n\nRequest: lei sul divano con il gatto"
+        );
         assert_eq!(clean_label(" cat,\n orange tabby.\n"), "cat, orange tabby");
     }
 
@@ -218,7 +355,10 @@ mod tests {
     fn compose_prompt_makes_a_new_picture() {
         // "Keep everything else unchanged" turns a composition into an edit of image 1.
         assert!(!COMPOSE_SYSTEM_PROMPT.contains("unchanged"));
-        assert!(COMPOSE_SYSTEM_PROMPT.contains("<image1>, <image2>") && COMPOSE_SYSTEM_PROMPT.contains("new image"));
+        assert!(
+            COMPOSE_SYSTEM_PROMPT.contains("<image1>, <image2>")
+                && COMPOSE_SYSTEM_PROMPT.contains("new image")
+        );
         assert!(!COMPOSE_LABEL_PROMPT.contains("unchanged"));
         // Long scenes are allowed for, within the token cap (~1.4 tokens a word at most).
         assert!(COMPOSE_SYSTEM_PROMPT.contains("280") && T2I_SYSTEM_PROMPT.contains("250"));
@@ -227,14 +367,31 @@ mod tests {
 
     #[test]
     fn cleaning() {
-        assert_eq!(clean("  A watercolour fox.\n").as_deref(), Some("A watercolour fox."));
+        assert_eq!(
+            clean("  A watercolour fox.\n").as_deref(),
+            Some("A watercolour fox.")
+        );
         assert_eq!(clean("Prompt: A fox.").as_deref(), Some("A fox."));
-        assert_eq!(clean("\"A fox in snow.\"").as_deref(), Some("A fox in snow."));
+        assert_eq!(
+            clean("\"A fox in snow.\"").as_deref(),
+            Some("A fox in snow.")
+        );
         let sign = "A shop sign reading \"CAFÉ\" above the door, lit by \"warm\" lamps.";
-        assert_eq!(clean(sign).as_deref(), Some(sign), "inner quotes are text to render");
-        assert_eq!(clean("\"OPEN\" glows in red neon above a \"BAR\"").as_deref(), Some("\"OPEN\" glows in red neon above a \"BAR\""));
+        assert_eq!(
+            clean(sign).as_deref(),
+            Some(sign),
+            "inner quotes are text to render"
+        );
+        assert_eq!(
+            clean("\"OPEN\" glows in red neon above a \"BAR\"").as_deref(),
+            Some("\"OPEN\" glows in red neon above a \"BAR\"")
+        );
         assert_eq!(clean(" \n "), None);
         assert_eq!(clean("Prompt:"), None);
-        assert_eq!(clean("Ünïcode first").as_deref(), Some("Ünïcode first"), "no slicing inside a character");
+        assert_eq!(
+            clean("Ünïcode first").as_deref(),
+            Some("Ünïcode first"),
+            "no slicing inside a character"
+        );
     }
 }

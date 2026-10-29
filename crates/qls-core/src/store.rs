@@ -99,7 +99,13 @@ impl GenerationRecord {
         if self.mode == "lut" {
             let lut = &self.request["lut"];
             let pct = (lut["intensity"].as_f64().unwrap_or(1.0) * 100.0).round();
-            return format!("Colour LUT: {}, Intensity: {pct}%, Size: {}x{}, Version: Kokon {}", lut["name"].as_str().unwrap_or("?"), self.width, self.height, self.app_version);
+            return format!(
+                "Colour LUT: {}, Intensity: {pct}%, Size: {}x{}, Version: Kokon {}",
+                lut["name"].as_str().unwrap_or("?"),
+                self.width,
+                self.height,
+                self.app_version
+            );
         }
         let mut s = self.prompt.clone();
         if !self.negative_prompt.is_empty() {
@@ -120,7 +126,11 @@ impl GenerationRecord {
             s.push_str(&format!(", Denoising strength: {st}"));
         }
         if !self.loras.is_empty() {
-            let list: Vec<String> = self.loras.iter().map(|l| format!("{} ({})", l.name.replace([',', ':'], " "), l.weight)).collect();
+            let list: Vec<String> = self
+                .loras
+                .iter()
+                .map(|l| format!("{} ({})", l.name.replace([',', ':'], " "), l.weight))
+                .collect();
             s.push_str(&format!(", LoRA: {}", list.join(" + ")));
         }
         if let Some(p) = &self.pipeline
@@ -136,7 +146,10 @@ impl GenerationRecord {
                 s.push_str(&format!(", Hires denoising strength: {d}"));
             }
         }
-        s.push_str(&format!(", Mode: {}, Version: Kokon {}", self.mode, self.app_version));
+        s.push_str(&format!(
+            ", Mode: {}, Version: Kokon {}",
+            self.mode, self.app_version
+        ));
         s
     }
 
@@ -148,13 +161,18 @@ impl GenerationRecord {
         }
         vec![
             ("parameters", self.parameters_text()),
-            ("qls:generation", serde_json::to_string(&slim).unwrap_or_default()),
+            (
+                "qls:generation",
+                serde_json::to_string(&slim).unwrap_or_default(),
+            ),
             ("Software", format!("Kokon {}", self.app_version)),
         ]
     }
 
     pub fn from_png_text(text: &[(String, String)]) -> Option<Self> {
-        text.iter().find(|(k, _)| k == "qls:generation").and_then(|(_, v)| serde_json::from_str(v).ok())
+        text.iter()
+            .find(|(k, _)| k == "qls:generation")
+            .and_then(|(_, v)| serde_json::from_str(v).ok())
     }
 }
 
@@ -195,7 +213,11 @@ pub struct Store {
 }
 
 fn db_err(e: rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::Internal, "The local gallery database reported an error.").detail(e.to_string())
+    AppError::new(
+        ErrorCode::Internal,
+        "The local gallery database reported an error.",
+    )
+    .detail(e.to_string())
 }
 
 pub fn now_rfc3339() -> String {
@@ -204,13 +226,19 @@ pub fn now_rfc3339() -> String {
 
 pub fn new_id() -> String {
     // Time-ordered prefix keeps file listings chronological.
-    format!("{}{}", chrono::Utc::now().format("%Y%m%d%H%M%S"), &uuid::Uuid::new_v4().simple().to_string()[..8])
+    format!(
+        "{}{}",
+        chrono::Utc::now().format("%Y%m%d%H%M%S"),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )
 }
 
 impl Store {
     pub fn open(data_dir: &Path) -> AppResult<Self> {
-        std::fs::create_dir_all(data_dir.join("inputs")).map_err(|e| AppError::io("create the data folder", data_dir, e))?;
-        std::fs::create_dir_all(data_dir.join("thumbs")).map_err(|e| AppError::io("create the data folder", data_dir, e))?;
+        std::fs::create_dir_all(data_dir.join("inputs"))
+            .map_err(|e| AppError::io("create the data folder", data_dir, e))?;
+        std::fs::create_dir_all(data_dir.join("thumbs"))
+            .map_err(|e| AppError::io("create the data folder", data_dir, e))?;
         let conn = Connection::open(data_dir.join("gallery.db")).map_err(db_err)?;
         Self::init(conn, data_dir)
     }
@@ -240,13 +268,21 @@ impl Store {
              );",
         )
         .map_err(db_err)?;
-        conn.pragma_update(None, "user_version", 1).map_err(db_err)?;
-        Ok(Self { conn: Mutex::new(conn), data_dir: data_dir.to_path_buf() })
+        conn.pragma_update(None, "user_version", 1)
+            .map_err(db_err)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            data_dir: data_dir.to_path_buf(),
+        })
     }
 
     /// Forgets every record (used for the temporary private-mode store).
     pub fn clear(&self) -> AppResult<()> {
-        self.conn.lock().unwrap().execute_batch("DELETE FROM generations; DELETE FROM inputs;").map_err(db_err)
+        self.conn
+            .lock()
+            .unwrap()
+            .execute_batch("DELETE FROM generations; DELETE FROM inputs;")
+            .map_err(db_err)
     }
 
     pub fn thumb_path(&self, id: &str) -> PathBuf {
@@ -286,10 +322,17 @@ impl Store {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT record FROM generations WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT record FROM generations WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(db_err)?;
-        let json = json.ok_or_else(|| AppError::new(ErrorCode::NotFound, "That image is no longer in the gallery."))?;
+        let json = json.ok_or_else(|| {
+            AppError::new(
+                ErrorCode::NotFound,
+                "That image is no longer in the gallery.",
+            )
+        })?;
         let mut rec: GenerationRecord = serde_json::from_str(&json).map_err(AppError::internal)?;
         rec.favorite = self.is_favorite(id)?;
         Ok(rec)
@@ -302,10 +345,16 @@ impl Store {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT record FROM generations WHERE file_path = ?1 LIMIT 1", [file_path], |r| r.get(0))
+            .query_row(
+                "SELECT record FROM generations WHERE file_path = ?1 LIMIT 1",
+                [file_path],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(db_err)?;
-        Ok(json.and_then(|j| serde_json::from_str::<GenerationRecord>(&j).ok()).map(|r| r.seed))
+        Ok(json
+            .and_then(|j| serde_json::from_str::<GenerationRecord>(&j).ok())
+            .map(|r| r.seed))
     }
 
     fn is_favorite(&self, id: &str) -> AppResult<bool> {
@@ -313,7 +362,11 @@ impl Store {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT favorite FROM generations WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT favorite FROM generations WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         Ok(v.unwrap_or(0) != 0)
@@ -322,21 +375,38 @@ impl Store {
     pub fn list_generations(&self, q: &ListQuery) -> AppResult<(Vec<GenerationRecord>, u64)> {
         let limit = q.limit.unwrap_or(60).clamp(1, 500);
         let offset = q.offset.unwrap_or(0);
-        let order = if q.sort.as_deref() == Some("oldest") { "ASC" } else { "DESC" };
-        let pattern = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| {
-            let esc = s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-            format!("%{esc}%")
-        });
+        let order = if q.sort.as_deref() == Some("oldest") {
+            "ASC"
+        } else {
+            "DESC"
+        };
+        let pattern =
+            q.q.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    let esc = s
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
+                    format!("%{esc}%")
+                });
         let where_ = "WHERE (?1 IS NULL OR prompt LIKE ?1 ESCAPE '\\' OR mode LIKE ?1 ESCAPE '\\') AND (?2 = 0 OR favorite = 1)";
         let conn = self.conn.lock().unwrap();
         let total: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM generations {where_}"), params![pattern, q.favorites as i32], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM generations {where_}"),
+                params![pattern, q.favorites as i32],
+                |r| r.get(0),
+            )
             .map_err(db_err)?;
         let mut stmt = conn
             .prepare(&format!("SELECT record, favorite FROM generations {where_} ORDER BY created_at {order}, id {order} LIMIT ?3 OFFSET ?4"))
             .map_err(db_err)?;
         let rows = stmt
-            .query_map(params![pattern, q.favorites as i32, limit, offset], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?)))
+            .query_map(params![pattern, q.favorites as i32, limit, offset], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?))
+            })
             .map_err(db_err)?;
         let mut out = Vec::new();
         for row in rows {
@@ -350,9 +420,20 @@ impl Store {
     }
 
     pub fn set_favorite(&self, id: &str, fav: bool) -> AppResult<()> {
-        let n = self.conn.lock().unwrap().execute("UPDATE generations SET favorite = ?2 WHERE id = ?1", params![id, fav as i32]).map_err(db_err)?;
+        let n = self
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE generations SET favorite = ?2 WHERE id = ?1",
+                params![id, fav as i32],
+            )
+            .map_err(db_err)?;
         if n == 0 {
-            return Err(AppError::new(ErrorCode::NotFound, "That image is no longer in the gallery."));
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "That image is no longer in the gallery.",
+            ));
         }
         Ok(())
     }
@@ -361,7 +442,11 @@ impl Store {
     /// example's), thumbnail and pre-upscale original.
     pub fn delete_generation(&self, id: &str, output_root: &Path) -> AppResult<()> {
         let rec = self.get_generation(id)?;
-        self.conn.lock().unwrap().execute("DELETE FROM generations WHERE id = ?1", [id]).map_err(db_err)?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM generations WHERE id = ?1", [id])
+            .map_err(db_err)?;
         let f = PathBuf::from(&rec.file_path);
         if crate::paths::is_within(&f, &[output_root.to_path_buf(), self.examples_dir()]) {
             let _ = std::fs::remove_file(&f);
@@ -378,7 +463,12 @@ impl Store {
 
     /// Stores input bytes content-addressed (deduplicated). Original bytes are kept so
     /// EXIF/ICC survive for reopening.
-    pub fn put_input(&self, bytes: &[u8], original_name: Option<&str>, original_path: Option<&str>) -> AppResult<InputRecord> {
+    pub fn put_input(
+        &self,
+        bytes: &[u8],
+        original_name: Option<&str>,
+        original_path: Option<&str>,
+    ) -> AppResult<InputRecord> {
         let img = crate::imaging::decode_image(bytes)?;
         let hash = hex::encode(Sha256::digest(bytes));
         let id = hash[..24].to_string();
@@ -395,12 +485,16 @@ impl Store {
         std::fs::write(&path, bytes).map_err(|e| AppError::io("store the image", &path, e))?;
         let thumb = crate::imaging::thumbnail(&img.pixels, 384);
         if let Ok(j) = crate::imaging::encode_jpeg(&thumb, 85) {
-            let _ = std::fs::write(self.data_dir.join("inputs").join(format!("{id}.thumb.jpg")), j);
+            let _ = std::fs::write(
+                self.data_dir.join("inputs").join(format!("{id}.thumb.jpg")),
+                j,
+            );
         }
         if img.format == "heic" {
             // The UI's WebView cannot show HEIC: keep a full-size JPEG to display instead.
             let j = crate::imaging::encode_jpeg(&img.pixels, 92)?;
-            std::fs::write(self.input_display_path(&id), j).map_err(|e| AppError::io("store the image", &path, e))?;
+            std::fs::write(self.input_display_path(&id), j)
+                .map_err(|e| AppError::io("store the image", &path, e))?;
         }
         let rec = InputRecord {
             id: id.clone(),
@@ -418,7 +512,10 @@ impl Store {
         self.conn
             .lock()
             .unwrap()
-            .execute("INSERT OR REPLACE INTO inputs (id, created_at, record) VALUES (?1,?2,?3)", params![id, rec.created_at, json])
+            .execute(
+                "INSERT OR REPLACE INTO inputs (id, created_at, record) VALUES (?1,?2,?3)",
+                params![id, rec.created_at, json],
+            )
             .map_err(db_err)?;
         Ok(rec)
     }
@@ -431,10 +528,13 @@ impl Store {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT record FROM inputs WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT record FROM inputs WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(db_err)?;
-        let json = json.ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown input image."))?;
+        let json =
+            json.ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown input image."))?;
         let mut rec: InputRecord = serde_json::from_str(&json).map_err(AppError::internal)?;
         // Records keep absolute paths; after the data folder moved (app renamed, user moved
         // it) the file is found by name in this store's inputs folder.
@@ -460,7 +560,9 @@ impl Store {
 
     /// Full-size JPEG shown in the UI for inputs the WebView cannot display (HEIC).
     pub fn input_display_path(&self, id: &str) -> PathBuf {
-        self.data_dir.join("inputs").join(format!("{id}.display.jpg"))
+        self.data_dir
+            .join("inputs")
+            .join(format!("{id}.display.jpg"))
     }
 }
 
@@ -485,7 +587,11 @@ pub fn preview(src: &Path, stem: &Path) -> AppResult<(PathBuf, &'static str)> {
     let img = crate::imaging::decode_image(&bytes)?;
     let small = crate::imaging::thumbnail(&img.pixels, PREVIEW_SIDE);
     let (out, data, ct) = if img.has_transparency {
-        (png, crate::imaging::encode_png(&small, &[], None, true)?, "image/png")
+        (
+            png,
+            crate::imaging::encode_png(&small, &[], None, true)?,
+            "image/png",
+        )
     } else {
         (jpg, crate::imaging::encode_jpeg(&small, 85)?, "image/jpeg")
     };
@@ -527,9 +633,20 @@ mod tests {
             strength: None,
             quality: "balanced".into(),
             resolution: "auto".into(),
-            references: vec![ReferenceRecord { index: 0, input_id: "abc".into(), original_path: Some(r"C:\a.png".into()), width: 10, height: 20 }],
+            references: vec![ReferenceRecord {
+                index: 0,
+                input_id: "abc".into(),
+                original_path: Some(r"C:\a.png".into()),
+                width: 10,
+                height: 20,
+            }],
             mask_input_id: None,
-            outpaint: Some(Expansion { left: 1, right: 2, top: 3, bottom: 4 }),
+            outpaint: Some(Expansion {
+                left: 1,
+                right: 2,
+                top: 3,
+                bottom: 4,
+            }),
             file_path: r"C:\out\x.png".into(),
             extra_paths: vec![],
             favorite: false,
@@ -563,13 +680,19 @@ mod tests {
         let text = r.png_text();
         let params_ = &text.iter().find(|(k, _)| *k == "parameters").unwrap().1;
         assert!(params_.contains("Hires upscale: 1.49, Hires steps: 6, Hires upscaler: RealESRGAN_x4plus, Hires denoising strength: 0.35"), "{params_}");
-        let owned: Vec<(String, String)> = text.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let owned: Vec<(String, String)> =
+            text.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         let back = GenerationRecord::from_png_text(&owned).unwrap();
         assert_eq!(back.pipeline, r.pipeline);
         // Records written before this field existed still load.
         let mut v = serde_json::to_value(rec("g3", "x", "t")).unwrap();
         v.as_object_mut().unwrap().remove("pipeline");
-        assert_eq!(serde_json::from_value::<GenerationRecord>(v).unwrap().pipeline, None);
+        assert_eq!(
+            serde_json::from_value::<GenerationRecord>(v)
+                .unwrap()
+                .pipeline,
+            None
+        );
     }
 
     #[test]
@@ -584,8 +707,18 @@ mod tests {
         let mut expected = r.clone();
         expected.request = serde_json::Value::Null;
         assert_eq!(parsed, expected);
-        let params_ = back.text.iter().find(|(k, _)| k == "parameters").unwrap().1.clone();
-        assert!(params_.starts_with("a red fox in snow\nNegative prompt: blurry\nSteps: 30, Sampler: euler"));
+        let params_ = back
+            .text
+            .iter()
+            .find(|(k, _)| k == "parameters")
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            params_.starts_with(
+                "a red fox in snow\nNegative prompt: blurry\nSteps: 30, Sampler: euler"
+            )
+        );
         assert!(params_.contains("Seed: 1234, Size: 1024x1024"));
     }
 
@@ -593,20 +726,47 @@ mod tests {
     fn gallery_crud_search_favorites_sort() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(dir.path()).unwrap();
-        s.insert_generation(&rec("a", "a red fox", "2026-10-06T10:00:00.000Z")).unwrap();
-        s.insert_generation(&rec("b", "blue whale 100%", "2026-10-06T11:00:00.000Z")).unwrap();
-        s.insert_generation(&rec("c", "red car", "2026-10-06T12:00:00.000Z")).unwrap();
+        s.insert_generation(&rec("a", "a red fox", "2026-10-06T10:00:00.000Z"))
+            .unwrap();
+        s.insert_generation(&rec("b", "blue whale 100%", "2026-10-06T11:00:00.000Z"))
+            .unwrap();
+        s.insert_generation(&rec("c", "red car", "2026-10-06T12:00:00.000Z"))
+            .unwrap();
         let (all, total) = s.list_generations(&ListQuery::default()).unwrap();
         assert_eq!(total, 3);
-        assert_eq!(all.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["c", "b", "a"]);
-        let (red, _) = s.list_generations(&ListQuery { q: Some("red".into()), ..Default::default() }).unwrap();
+        assert_eq!(
+            all.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["c", "b", "a"]
+        );
+        let (red, _) = s
+            .list_generations(&ListQuery {
+                q: Some("red".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(red.len(), 2);
-        let (pct, _) = s.list_generations(&ListQuery { q: Some("100%".into()), ..Default::default() }).unwrap();
+        let (pct, _) = s
+            .list_generations(&ListQuery {
+                q: Some("100%".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(pct.len(), 1, "LIKE wildcards are escaped");
         s.set_favorite("a", true).unwrap();
-        let (fav, n) = s.list_generations(&ListQuery { favorites: true, ..Default::default() }).unwrap();
+        let (fav, n) = s
+            .list_generations(&ListQuery {
+                favorites: true,
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!((fav.len(), n, fav[0].favorite), (1, 1, true));
-        let (old, _) = s.list_generations(&ListQuery { sort: Some("oldest".into()), limit: Some(1), ..Default::default() }).unwrap();
+        let (old, _) = s
+            .list_generations(&ListQuery {
+                sort: Some("oldest".into()),
+                limit: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(old[0].id, "a");
         assert!(s.get_generation("a").unwrap().favorite);
         s.delete_generation("a", dir.path()).unwrap();
@@ -640,25 +800,67 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(dir.path()).unwrap();
         let big = dir.path().join("big.png");
-        std::fs::write(&big, crate::imaging::encode_png(&image::RgbaImage::from_pixel(2048, 1024, image::Rgba([9, 99, 199, 255])), &[], None, true).unwrap()).unwrap();
+        std::fs::write(
+            &big,
+            crate::imaging::encode_png(
+                &image::RgbaImage::from_pixel(2048, 1024, image::Rgba([9, 99, 199, 255])),
+                &[],
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let stem = s.preview_path("g1");
         let (p, ct) = preview(&big, &stem).unwrap();
         assert_eq!(ct, "image/jpeg");
         assert_eq!(p, dir.path().join("thumbs").join("g1.preview.jpg"));
         let img = crate::imaging::decode_image(&std::fs::read(&p).unwrap()).unwrap();
-        assert_eq!((img.pixels.width(), img.pixels.height()), (PREVIEW_SIDE, PREVIEW_SIDE / 2));
+        assert_eq!(
+            (img.pixels.width(), img.pixels.height()),
+            (PREVIEW_SIDE, PREVIEW_SIDE / 2)
+        );
         // Made once: later requests read the kept file.
         std::fs::remove_file(&big).unwrap();
         assert_eq!(preview(&big, &stem).unwrap().0, p);
-        assert!(preview(&big, &s.preview_path("g2")).is_err(), "no source, no preview");
+        assert!(
+            preview(&big, &s.preview_path("g2")).is_err(),
+            "no source, no preview"
+        );
         // A smaller image keeps its size; transparency stays (PNG).
         let small = dir.path().join("small.png");
-        std::fs::write(&small, crate::imaging::encode_png(&image::RgbaImage::from_pixel(300, 200, image::Rgba([1, 2, 3, 255])), &[], None, true).unwrap()).unwrap();
+        std::fs::write(
+            &small,
+            crate::imaging::encode_png(
+                &image::RgbaImage::from_pixel(300, 200, image::Rgba([1, 2, 3, 255])),
+                &[],
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let (p, ct) = preview(&small, &s.input_preview_path("abc")).unwrap();
         assert_eq!(ct, "image/jpeg");
-        assert_eq!(crate::imaging::decode_image(&std::fs::read(&p).unwrap()).unwrap().pixels.dimensions(), (300, 200));
+        assert_eq!(
+            crate::imaging::decode_image(&std::fs::read(&p).unwrap())
+                .unwrap()
+                .pixels
+                .dimensions(),
+            (300, 200)
+        );
         let clear = dir.path().join("clear.png");
-        std::fs::write(&clear, crate::imaging::encode_png(&image::RgbaImage::from_pixel(1600, 1600, image::Rgba([1, 2, 3, 0])), &[], None, true).unwrap()).unwrap();
+        std::fs::write(
+            &clear,
+            crate::imaging::encode_png(
+                &image::RgbaImage::from_pixel(1600, 1600, image::Rgba([1, 2, 3, 0])),
+                &[],
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let (p, ct) = preview(&clear, &s.preview_path("g3")).unwrap();
         assert_eq!(ct, "image/png");
         let img = crate::imaging::decode_image(&std::fs::read(&p).unwrap()).unwrap();
@@ -666,7 +868,12 @@ mod tests {
         assert_eq!(img.pixels.dimensions(), (PREVIEW_SIDE, PREVIEW_SIDE));
         // Removing the result removes its preview.
         let mut r = rec("g1", "p", "2026-10-24T10:00:00.000Z");
-        r.file_path = dir.path().join("out").join("g1.png").to_string_lossy().into_owned();
+        r.file_path = dir
+            .path()
+            .join("out")
+            .join("g1.png")
+            .to_string_lossy()
+            .into_owned();
         s.insert_generation(&r).unwrap();
         s.delete_generation("g1", &dir.path().join("out")).unwrap();
         assert!(!dir.path().join("thumbs").join("g1.preview.jpg").exists());

@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::{self, EngineManifest};
 
 /// Published from the repository's default branch.
-pub const MANIFEST_URL: &str = "https://raw.githubusercontent.com/GabrieleLozupone/kokon/master/engine.json";
+pub const MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/GabrieleLozupone/kokon/master/engine.json";
 /// How old the cached manifest may get before it is fetched again (2.5 days).
 pub const CHECK_EVERY: Duration = Duration::from_secs(60 * 3600);
 /// How often the service looks at the cache's age.
@@ -30,7 +31,10 @@ fn cache_path() -> PathBuf {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn read_cache() -> Option<Cached> {
@@ -39,15 +43,26 @@ fn read_cache() -> Option<Cached> {
 
 fn apply(m: &EngineManifest, app_version: &str) {
     match catalog::apply_engine_release(m, app_version) {
-        Ok(true) => tracing::info!("engine manifest: release {} available", m.kokon.as_ref().map_or("", |k| k.tag.as_str())),
+        Ok(true) => tracing::info!(
+            "engine manifest: release {} available",
+            m.kokon.as_ref().map_or("", |k| k.tag.as_str())
+        ),
         Ok(false) => {}
         Err(e) => tracing::warn!("engine manifest ignored: {e}"),
     }
 }
 
 async fn fetch() -> Result<EngineManifest, String> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).user_agent("kokon-service").build().map_err(|e| e.to_string())?;
-    let r = client.get(MANIFEST_URL).send().await.map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("kokon-service")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let r = client
+        .get(MANIFEST_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !r.status().is_success() {
         return Err(format!("HTTP {}", r.status()));
     }
@@ -58,14 +73,24 @@ async fn fetch() -> Result<EngineManifest, String> {
 /// it and applies it. Failures keep the last good release.
 pub async fn check(app_version: &str, force: bool) {
     let cached = read_cache();
-    if !force && cached.as_ref().is_some_and(|c| now().saturating_sub(c.checked_at) < CHECK_EVERY.as_secs()) {
+    if !force
+        && cached
+            .as_ref()
+            .is_some_and(|c| now().saturating_sub(c.checked_at) < CHECK_EVERY.as_secs())
+    {
         return;
     }
     match fetch().await {
         Ok(m) => {
             apply(&m, app_version);
-            let c = Cached { checked_at: now(), manifest: m };
-            if let Err(e) = std::fs::write(cache_path(), serde_json::to_vec_pretty(&c).unwrap_or_default()) {
+            let c = Cached {
+                checked_at: now(),
+                manifest: m,
+            };
+            if let Err(e) = std::fs::write(
+                cache_path(),
+                serde_json::to_vec_pretty(&c).unwrap_or_default(),
+            ) {
                 tracing::warn!("engine manifest: could not save the cache: {e}");
             }
         }

@@ -36,7 +36,7 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
       case "error":
         cls = "dot error";
         text = server.error?.message ?? "Inference server error";
-        title = isMissingModel(server.error) ? "Find or download the missing file" : "Open Diagnostics";
+        title = isMissingModel(server.error) && !external ? "Find or download the missing file" : "Open Diagnostics";
         break;
       default:
         text = external ? "No model loaded" : "Model not loaded";
@@ -49,7 +49,7 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
       className="status"
       title={title}
       onClick={() => {
-        if (server.state === "error" && isMissingModel(server.error)) openModelSetup();
+        if (server.state === "error" && isMissingModel(server.error) && !external) openModelSetup();
         else if (server.state === "error") setState({ overlay: "settings" });
         else if (server.state === "stopped" && connected) api.startBackend().then(refreshStatus, toastError);
       }}

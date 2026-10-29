@@ -114,8 +114,13 @@ impl Failure {
 
 fn http_failure(status: reqwest::StatusCode, d: &Download) -> Failure {
     match status.as_u16() {
-        404 | 410 => Failure::Permanent(format!("The file is no longer at {} (HTTP {status}).", d.url)),
-        401 | 403 => Failure::Permanent(format!("The server refused the download (HTTP {status}).")),
+        404 | 410 => Failure::Permanent(format!(
+            "The file is no longer at {} (HTTP {status}).",
+            d.url
+        )),
+        401 | 403 => {
+            Failure::Permanent(format!("The server refused the download (HTTP {status})."))
+        }
         _ => Failure::Transient(format!("HTTP {status}")),
     }
 }
@@ -144,7 +149,13 @@ struct Segmented<'a> {
 impl Segmented<'_> {
     fn received(&self) -> u64 {
         (0..self.done.len())
-            .map(|i| if self.done[i].load(Ordering::SeqCst) { segment_len(i, self.d.size) } else { self.progress[i].load(Ordering::SeqCst) })
+            .map(|i| {
+                if self.done[i].load(Ordering::SeqCst) {
+                    segment_len(i, self.d.size)
+                } else {
+                    self.progress[i].load(Ordering::SeqCst)
+                }
+            })
             .sum()
     }
 
@@ -163,7 +174,13 @@ impl Segmented<'_> {
         } else {
             (0..self.done.len())
                 .filter(|&i| workers[i] == 1 && !self.done[i].load(Ordering::SeqCst))
-                .map(|i| (i, segment_len(i, self.d.size).saturating_sub(self.progress[i].load(Ordering::SeqCst))))
+                .map(|i| {
+                    (
+                        i,
+                        segment_len(i, self.d.size)
+                            .saturating_sub(self.progress[i].load(Ordering::SeqCst)),
+                    )
+                })
                 .filter(|&(_, left)| left >= RACE_MIN_LEFT)
                 .max_by_key(|&(_, left)| left)
                 .map(|(i, _)| (i, true))
@@ -193,11 +210,20 @@ impl Installer {
     }
 
     /// Starts installing `downloads` into `dir` in the background.
-    pub fn start(self: &Arc<Self>, dir: PathBuf, preset: &str, downloads: Vec<Download>, on_finish: OnFinish) -> AppResult<()> {
+    pub fn start(
+        self: &Arc<Self>,
+        dir: PathBuf,
+        preset: &str,
+        downloads: Vec<Download>,
+        on_finish: OnFinish,
+    ) -> AppResult<()> {
         {
             let mut st = self.status.lock().unwrap();
             if st.running {
-                return Err(AppError::new(ErrorCode::QueueFull, "An installation is already running."));
+                return Err(AppError::new(
+                    ErrorCode::QueueFull,
+                    "An installation is already running.",
+                ));
             }
             *st = InstallStatus {
                 running: true,
@@ -224,7 +250,11 @@ impl Installer {
                 if !st.running {
                     break;
                 }
-                st.bytes_per_sec = if st.bytes_per_sec > 0.0 { st.bytes_per_sec * 0.7 + rate * 0.3 } else { rate };
+                st.bytes_per_sec = if st.bytes_per_sec > 0.0 {
+                    st.bytes_per_sec * 0.7 + rate * 0.3
+                } else {
+                    rate
+                };
             }
         });
         let this = self.clone();
@@ -311,10 +341,17 @@ impl Installer {
         all_ok
     }
 
-    async fn install_one(&self, client: &reqwest::Client, d: &Download, dir: &Path) -> Result<(), Failure> {
+    async fn install_one(
+        &self,
+        client: &reqwest::Client,
+        d: &Download,
+        dir: &Path,
+    ) -> Result<(), Failure> {
         let target = d.path(dir);
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Failure::Permanent(format!("Cannot create {}: {e}", parent.display())))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Failure::Permanent(format!("Cannot create {}: {e}", parent.display()))
+            })?;
         }
         let part = part_path(&target);
         // A link that still fails after its retries moves on to the next one (mirror, then
@@ -352,16 +389,25 @@ impl Installer {
                 .map_err(|e| Failure::Transient(e.to_string()))?
                 .map_err(Failure::Permanent)?;
             let _ = std::fs::remove_file(&part);
-            d.write_tag(dir).map_err(|e| Failure::Permanent(format!("Cannot mark the engine as installed: {e}")))?;
+            d.write_tag(dir).map_err(|e| {
+                Failure::Permanent(format!("Cannot mark the engine as installed: {e}"))
+            })?;
         } else {
-            std::fs::rename(&part, &target).map_err(|e| Failure::Permanent(format!("Cannot save {}: {e}", target.display())))?;
+            std::fs::rename(&part, &target).map_err(|e| {
+                Failure::Permanent(format!("Cannot save {}: {e}", target.display()))
+            })?;
         }
         Ok(())
     }
 
     /// Downloads `d` from `d.url` into `part` and checks its hash (retrying interruptions and
     /// one checksum mismatch).
-    async fn fetch_verified(&self, client: &reqwest::Client, d: &Download, part: &Path) -> Result<(), Failure> {
+    async fn fetch_verified(
+        &self,
+        client: &reqwest::Client,
+        d: &Download,
+        part: &Path,
+    ) -> Result<(), Failure> {
         let part = part.to_path_buf();
         let mut mismatches = 0;
         let mut attempt = 0;
@@ -378,15 +424,21 @@ impl Installer {
             }
             self.set(d.id, |i| i.state = ItemState::Verifying);
             let p = part.clone();
-            let hash = tokio::task::spawn_blocking(move || sha256_file(&p)).await.map_err(|e| Failure::Transient(e.to_string()))?;
-            let hash = hash.map_err(|e| Failure::Transient(format!("Cannot read the download: {e}")))?;
+            let hash = tokio::task::spawn_blocking(move || sha256_file(&p))
+                .await
+                .map_err(|e| Failure::Transient(e.to_string()))?;
+            let hash =
+                hash.map_err(|e| Failure::Transient(format!("Cannot read the download: {e}")))?;
             if hash == d.sha256 {
                 break;
             }
             remove_part(&part);
             mismatches += 1;
             if mismatches >= 2 {
-                return Err(Failure::Permanent(format!("The downloaded file does not match the expected checksum (got {}…). The file may have changed on the server.", &hash[..12])));
+                return Err(Failure::Permanent(format!(
+                    "The downloaded file does not match the expected checksum (got {}…). The file may have changed on the server.",
+                    &hash[..12]
+                )));
             }
             tracing::warn!("{}: checksum mismatch, downloading again", d.id);
             attempt = 0;
@@ -395,7 +447,12 @@ impl Installer {
     }
 
     /// Downloads (or resumes) `d` into `part` until it has `d.size` bytes.
-    async fn download(&self, client: &reqwest::Client, d: &Download, part: &Path) -> Result<(), Failure> {
+    async fn download(
+        &self,
+        client: &reqwest::Client,
+        d: &Download,
+        part: &Path,
+    ) -> Result<(), Failure> {
         if d.size >= 2 * SEGMENT {
             match self.download_segmented(client, d, part).await {
                 Err(Failure::NoRanges) => {
@@ -408,7 +465,12 @@ impl Installer {
         self.download_single(client, d, part).await
     }
 
-    async fn download_segmented(&self, client: &reqwest::Client, d: &Download, part: &Path) -> Result<(), Failure> {
+    async fn download_segmented(
+        &self,
+        client: &reqwest::Client,
+        d: &Download,
+        part: &Path,
+    ) -> Result<(), Failure> {
         let done = done_segments(part, d.size);
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -416,7 +478,13 @@ impl Installer {
             .truncate(false)
             .open(part)
             .map_err(|e| Failure::Permanent(format!("Cannot write {}: {e}", part.display())))?;
-        file.set_len(d.size).map_err(|e| Failure::Permanent(format!("Cannot reserve {} for {}: {e} (is the disk full?)", human(d.size), part.display())))?;
+        file.set_len(d.size).map_err(|e| {
+            Failure::Permanent(format!(
+                "Cannot reserve {} for {}: {e} (is the disk full?)",
+                human(d.size),
+                part.display()
+            ))
+        })?;
         write_segment_state(part, d.size, &done);
         let s = Segmented {
             d,
@@ -438,7 +506,9 @@ impl Installer {
         });
         let finished = AtomicBool::new(false);
         let work = async {
-            let r = futures_util::future::join_all((0..CONNECTIONS).map(|_| self.segment_worker(&s))).await;
+            let r =
+                futures_util::future::join_all((0..CONNECTIONS).map(|_| self.segment_worker(&s)))
+                    .await;
             finished.store(true, Ordering::SeqCst);
             r
         };
@@ -454,9 +524,13 @@ impl Installer {
         let mut outcome = Ok(());
         for r in results {
             outcome = match (outcome, r) {
-                (Err(Failure::Permanent(m)), _) | (_, Err(Failure::Permanent(m))) => Err(Failure::Permanent(m)),
+                (Err(Failure::Permanent(m)), _) | (_, Err(Failure::Permanent(m))) => {
+                    Err(Failure::Permanent(m))
+                }
                 (Err(Failure::NoRanges), _) | (_, Err(Failure::NoRanges)) => Err(Failure::NoRanges),
-                (Err(Failure::Cancelled), _) | (_, Err(Failure::Cancelled)) => Err(Failure::Cancelled),
+                (Err(Failure::Cancelled), _) | (_, Err(Failure::Cancelled)) => {
+                    Err(Failure::Cancelled)
+                }
                 (Err(e), _) | (_, Err(e)) => Err(e),
                 (Ok(()), Ok(())) => Ok(()),
             };
@@ -465,7 +539,9 @@ impl Installer {
         if s.done.iter().any(|x| !x.load(Ordering::SeqCst)) {
             return Err(Failure::Transient("Some parts are still missing.".into()));
         }
-        s.file.sync_all().map_err(|e| Failure::Transient(e.to_string()))?;
+        s.file
+            .sync_all()
+            .map_err(|e| Failure::Transient(e.to_string()))?;
         drop(s);
         let _ = std::fs::remove_file(segments_path(part));
         Ok(())
@@ -480,7 +556,9 @@ impl Installer {
             if s.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let Some((i, race)) = s.next() else { return Ok(()) };
+            let Some((i, race)) = s.next() else {
+                return Ok(());
+            };
             let mut attempt = 0;
             let r = loop {
                 attempt += 1;
@@ -516,7 +594,13 @@ impl Installer {
         }
         let start = i as u64 * SEGMENT;
         let end = start + segment_len(i, s.d.size); // exclusive
-        let resp = s.client.get(s.d.url).header(reqwest::header::RANGE, format!("bytes={start}-{}", end - 1)).send().await.map_err(|e| Failure::Transient(describe(&e)))?;
+        let resp = s
+            .client
+            .get(s.d.url)
+            .header(reqwest::header::RANGE, format!("bytes={start}-{}", end - 1))
+            .send()
+            .await
+            .map_err(|e| Failure::Transient(describe(&e)))?;
         match resp.status().as_u16() {
             206 => {}
             200 => return Err(Failure::NoRanges),
@@ -525,7 +609,10 @@ impl Installer {
         if let Some(total) = content_range_total(resp.headers())
             && total != s.d.size
         {
-            return Err(Failure::Permanent(format!("The server offers {total} bytes, expected {}. The file may have changed on the server.", s.d.size)));
+            return Err(Failure::Permanent(format!(
+                "The server offers {total} bytes, expected {}. The file may have changed on the server.",
+                s.d.size
+            )));
         }
         let mut pos = start;
         let mut stream = resp.bytes_stream();
@@ -540,7 +627,8 @@ impl Installer {
             if s.done[i].load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let chunk = match tokio::select! { c = stream.next() => Some(c), _ = tokio::time::sleep(POLL) => None } {
+            let chunk = match tokio::select! { c = stream.next() => Some(c), _ = tokio::time::sleep(POLL) => None }
+            {
                 None => {
                     idle += POLL;
                     if idle >= CHUNK_TIMEOUT {
@@ -554,16 +642,27 @@ impl Installer {
             };
             idle = Duration::ZERO;
             if pos + chunk.len() as u64 > end {
-                break Err(Failure::Transient("The server sent more than requested.".into()));
+                break Err(Failure::Transient(
+                    "The server sent more than requested.".into(),
+                ));
             }
             if let Err(e) = write_all_at(&s.file, &chunk, pos) {
-                break Err(Failure::Permanent(format!("Cannot write {}: {e} (is the disk full?)", s.part.display())));
+                break Err(Failure::Permanent(format!(
+                    "Cannot write {}: {e} (is the disk full?)",
+                    s.part.display()
+                )));
             }
             pos += chunk.len() as u64;
             s.progress[i].fetch_max(pos - start, Ordering::SeqCst);
             self.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
         };
-        let r = r.and_then(|()| if pos == end { Ok(()) } else { Err(Failure::Transient("A part ended early.".into())) });
+        let r = r.and_then(|()| {
+            if pos == end {
+                Ok(())
+            } else {
+                Err(Failure::Transient("A part ended early.".into()))
+            }
+        });
         if r.is_err() && s.workers.lock().unwrap()[i] <= 1 && !s.done[i].load(Ordering::SeqCst) {
             // Nobody else is on this piece: it starts over, so its bytes no longer count.
             s.progress[i].store(0, Ordering::SeqCst);
@@ -572,7 +671,12 @@ impl Installer {
     }
 
     /// One plain connection, appending to `part` (small files, servers without ranges).
-    async fn download_single(&self, client: &reqwest::Client, d: &Download, part: &Path) -> Result<(), Failure> {
+    async fn download_single(
+        &self,
+        client: &reqwest::Client,
+        d: &Download,
+        part: &Path,
+    ) -> Result<(), Failure> {
         let mut have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
         if have > d.size {
             let _ = std::fs::remove_file(part);
@@ -590,7 +694,10 @@ impl Installer {
         if have > 0 {
             req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
-        let resp = req.send().await.map_err(|e| Failure::Transient(describe(&e)))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Failure::Transient(describe(&e)))?;
         let status = resp.status();
         let append = match status.as_u16() {
             206 => true,
@@ -598,14 +705,19 @@ impl Installer {
             416 => {
                 // The range starts at or past the end: start over.
                 let _ = std::fs::remove_file(part);
-                return Err(Failure::Transient("The partial download was not accepted; starting over.".into()));
+                return Err(Failure::Transient(
+                    "The partial download was not accepted; starting over.".into(),
+                ));
             }
             _ => return Err(http_failure(status, d)),
         };
         if let Some(len) = resp.content_length() {
             let total = if append { have + len } else { len };
             if total != d.size {
-                return Err(Failure::Permanent(format!("The server offers {total} bytes, expected {}. The file may have changed on the server.", d.size)));
+                return Err(Failure::Permanent(format!(
+                    "The server offers {total} bytes, expected {}. The file may have changed on the server.",
+                    d.size
+                )));
             }
         }
         let mut file = std::fs::OpenOptions::new()
@@ -622,7 +734,8 @@ impl Installer {
             if self.cancel.load(Ordering::SeqCst) {
                 return Err(Failure::Cancelled);
             }
-            let chunk = match tokio::select! { c = stream.next() => Some(c), _ = tokio::time::sleep(POLL) => None } {
+            let chunk = match tokio::select! { c = stream.next() => Some(c), _ = tokio::time::sleep(POLL) => None }
+            {
                 None => {
                     idle += POLL;
                     if idle >= CHUNK_TIMEOUT {
@@ -635,14 +748,23 @@ impl Installer {
                 Some(Some(Ok(c))) => c,
             };
             idle = Duration::ZERO;
-            file.write_all(&chunk).map_err(|e| Failure::Permanent(format!("Cannot write {}: {e} (is the disk full?)", part.display())))?;
+            file.write_all(&chunk).map_err(|e| {
+                Failure::Permanent(format!(
+                    "Cannot write {}: {e} (is the disk full?)",
+                    part.display()
+                ))
+            })?;
             received += chunk.len() as u64;
             self.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
             self.set(d.id, |i| i.received = received);
         }
-        file.flush().map_err(|e| Failure::Permanent(e.to_string()))?;
+        file.flush()
+            .map_err(|e| Failure::Permanent(e.to_string()))?;
         if received != d.size {
-            return Err(Failure::Transient(format!("The download ended early ({received} of {} bytes).", d.size)));
+            return Err(Failure::Transient(format!(
+                "The download ended early ({received} of {} bytes).",
+                d.size
+            )));
         }
         Ok(())
     }
@@ -655,13 +777,25 @@ fn item_status(d: &Download, dir: &Path) -> ItemStatus {
         label: d.label,
         kind: d.kind,
         size: d.size,
-        received: if present { d.size } else { part_progress(&d.path(dir), d.size) },
-        state: if present { ItemState::Present } else { ItemState::Pending },
+        received: if present {
+            d.size
+        } else {
+            part_progress(&d.path(dir), d.size)
+        },
+        state: if present {
+            ItemState::Present
+        } else {
+            ItemState::Pending
+        },
         error: None,
         hint: None,
         url: d.url,
         page: d.page,
-        path: if d.is_zip() { dir.display().to_string() } else { d.path(dir).display().to_string() },
+        path: if d.is_zip() {
+            dir.display().to_string()
+        } else {
+            d.path(dir).display().to_string()
+        },
     }
 }
 
@@ -673,8 +807,14 @@ pub fn preview(dir: &Path, downloads: &[Download]) -> Vec<ItemStatus> {
 /// Bytes still to download, and the disk space that needs (zips are also extracted).
 pub fn space_needed(dir: &Path, downloads: &[Download]) -> (u64, u64) {
     let missing: Vec<&Download> = downloads.iter().filter(|d| !d.is_present(dir)).collect();
-    let download: u64 = missing.iter().map(|d| d.size - part_progress(&d.path(dir), d.size)).sum();
-    let disk: u64 = missing.iter().map(|d| if d.is_zip() { d.size * 5 / 2 } else { d.size }).sum();
+    let download: u64 = missing
+        .iter()
+        .map(|d| d.size - part_progress(&d.path(dir), d.size))
+        .sum();
+    let disk: u64 = missing
+        .iter()
+        .map(|d| if d.is_zip() { d.size * 5 / 2 } else { d.size })
+        .sum();
     (download, disk)
 }
 
@@ -688,7 +828,14 @@ pub fn bundle_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let lib = dir.join("..").join("lib");
-    [dir.join("bundled"), dir.join("..").join("Resources").join("bundled"), lib.join("Kokon").join("bundled"), lib.join("kokon").join("bundled")].into_iter().find(|p| p.is_dir())
+    [
+        dir.join("bundled"),
+        dir.join("..").join("Resources").join("bundled"),
+        lib.join("Kokon").join("bundled"),
+        lib.join("kokon").join("bundled"),
+    ]
+    .into_iter()
+    .find(|p| p.is_dir())
 }
 
 /// Copies `d` from the app's bundle into the stable-diffusion.cpp folder when it is missing
@@ -696,7 +843,8 @@ pub fn bundle_dir() -> Option<PathBuf> {
 pub fn install_bundled(d: &Download, dir: &Path, bundle: &Path) -> std::io::Result<bool> {
     let name = d.dest.rsplit('/').next().unwrap_or(d.dest);
     let src = bundle.join(name);
-    if d.is_zip() || d.is_present(dir) || !std::fs::metadata(&src).is_ok_and(|m| m.len() == d.size) {
+    if d.is_zip() || d.is_present(dir) || !std::fs::metadata(&src).is_ok_and(|m| m.len() == d.size)
+    {
         return Ok(false);
     }
     let target = d.path(dir);
@@ -707,7 +855,9 @@ pub fn install_bundled(d: &Download, dir: &Path, bundle: &Path) -> std::io::Resu
     std::fs::copy(&src, &tmp)?;
     if sha256_file(&tmp)? != d.sha256 {
         remove_part(&tmp);
-        return Err(std::io::Error::other(format!("the bundled {name} is damaged")));
+        return Err(std::io::Error::other(format!(
+            "the bundled {name} is damaged"
+        )));
     }
     std::fs::rename(&tmp, &target)?;
     Ok(true)
@@ -719,8 +869,17 @@ pub fn legacy_upscalers(dir: &Path, keep: &[&str]) -> Vec<(PathBuf, u64)> {
     crate::catalog::LEGACY_UPSCALERS
         .iter()
         .map(|f| crate::catalog::join_rel(dir, f))
-        .filter(|p| p.file_stem().and_then(|s| s.to_str()).is_none_or(|s| !keep.contains(&s)))
-        .filter_map(|p| std::fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| (p, m.len())))
+        .filter(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_none_or(|s| !keep.contains(&s))
+        })
+        .filter_map(|p| {
+            std::fs::metadata(&p)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| (p, m.len()))
+        })
         .collect()
 }
 
@@ -768,7 +927,16 @@ fn segment_len(i: usize, size: u64) -> u64 {
 }
 
 fn write_segment_state(part: &Path, size: u64, done: &[bool]) {
-    let st = SegmentState { size, segment: SEGMENT, done: done.iter().enumerate().filter(|(_, d)| **d).map(|(i, _)| i).collect() };
+    let st = SegmentState {
+        size,
+        segment: SEGMENT,
+        done: done
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| **d)
+            .map(|(i, _)| i)
+            .collect(),
+    };
     let p = segments_path(part);
     let tmp = p.with_extension("tmp");
     if std::fs::write(&tmp, serde_json::to_vec(&st).unwrap_or_default()).is_ok() {
@@ -784,7 +952,9 @@ fn done_segments(part: &Path, size: u64) -> Vec<bool> {
     let state_file = segments_path(part);
     if state_file.exists() {
         // A state file for another size or segment length (or a damaged one): start over.
-        let st = std::fs::read(&state_file).ok().and_then(|b| serde_json::from_slice::<SegmentState>(&b).ok());
+        let st = std::fs::read(&state_file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SegmentState>(&b).ok());
         if let Some(st) = st.filter(|st| st.size == size && st.segment == SEGMENT) {
             for i in st.done.into_iter().filter(|i| *i < n) {
                 done[i] = true;
@@ -793,7 +963,11 @@ fn done_segments(part: &Path, size: u64) -> Vec<bool> {
     } else {
         {
             let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
-            let whole = if have == size { n } else { (have.min(size) / SEGMENT) as usize };
+            let whole = if have == size {
+                n
+            } else {
+                (have.min(size) / SEGMENT) as usize
+            };
             done.iter_mut().take(whole).for_each(|d| *d = true);
         }
     }
@@ -807,9 +981,16 @@ fn part_progress(target: &Path, size: u64) -> u64 {
         return 0;
     }
     if size < 2 * SEGMENT {
-        return std::fs::metadata(&part).map(|m| m.len().min(size)).unwrap_or(0);
+        return std::fs::metadata(&part)
+            .map(|m| m.len().min(size))
+            .unwrap_or(0);
     }
-    done_segments(&part, size).iter().enumerate().filter(|(_, d)| **d).map(|(i, _)| segment_len(i, size)).sum()
+    done_segments(&part, size)
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| **d)
+        .map(|(i, _)| segment_len(i, size))
+        .sum()
 }
 
 fn remove_part(part: &Path) {
@@ -819,7 +1000,13 @@ fn remove_part(part: &Path) {
 
 /// `Content-Range: bytes a-b/total` → total.
 fn content_range_total(h: &reqwest::header::HeaderMap) -> Option<u64> {
-    h.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?.rsplit('/').next()?.parse().ok()
+    h.get(reqwest::header::CONTENT_RANGE)?
+        .to_str()
+        .ok()?
+        .rsplit('/')
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn write_all_at(f: &std::fs::File, mut buf: &[u8], mut pos: u64) -> std::io::Result<()> {
@@ -877,8 +1064,12 @@ pub fn extract_zip(zip: &Path, out: &Path) -> Result<(), String> {
     let f = std::fs::File::open(zip).map_err(|e| e.to_string())?;
     let mut ar = zip::ZipArchive::new(f).map_err(|e| format!("The archive is damaged: {e}"))?;
     for i in 0..ar.len() {
-        let mut entry = ar.by_index(i).map_err(|e| format!("The archive is damaged: {e}"))?;
-        let Some(rel) = entry.enclosed_name() else { return Err(format!("Unsafe path in the archive: {}", entry.name())) };
+        let mut entry = ar
+            .by_index(i)
+            .map_err(|e| format!("The archive is damaged: {e}"))?;
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(format!("Unsafe path in the archive: {}", entry.name()));
+        };
         let dest = out.join(rel);
         if entry.is_dir() {
             std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
@@ -888,8 +1079,10 @@ pub fn extract_zip(zip: &Path, out: &Path) -> Result<(), String> {
             std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
         }
         let tmp = part_path(&dest);
-        let mut w = std::fs::File::create(&tmp).map_err(|e| format!("Cannot write {}: {e}", tmp.display()))?;
-        std::io::copy(&mut entry, &mut w).map_err(|e| format!("Cannot extract {}: {e}", dest.display()))?;
+        let mut w = std::fs::File::create(&tmp)
+            .map_err(|e| format!("Cannot write {}: {e}", tmp.display()))?;
+        std::io::copy(&mut entry, &mut w)
+            .map_err(|e| format!("Cannot extract {}: {e}", dest.display()))?;
         drop(w);
         // Keep the executable bit of the macOS/Linux engine (sd-server).
         #[cfg(unix)]
@@ -899,7 +1092,10 @@ pub fn extract_zip(zip: &Path, out: &Path) -> Result<(), String> {
         }
         std::fs::rename(&tmp, &dest).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            format!("Cannot replace {} (is stable-diffusion.cpp still running?): {e}", dest.display())
+            format!(
+                "Cannot replace {} (is stable-diffusion.cpp still running?): {e}",
+                dest.display()
+            )
         })?;
     }
     Ok(())
@@ -926,13 +1122,18 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         std::fs::write(out.join("sd-server.exe"), b"old").unwrap();
         extract_zip(&zp, &out).unwrap();
-        assert_eq!(std::fs::read(out.join("sd-server.exe")).unwrap(), b"exe", "replaced");
+        assert_eq!(
+            std::fs::read(out.join("sd-server.exe")).unwrap(),
+            b"exe",
+            "replaced"
+        );
         assert!(out.join("sub").join("x.txt").is_file());
 
         let evil = dir.path().join("evil.zip");
         {
             let mut z = zip::ZipWriter::new(std::fs::File::create(&evil).unwrap());
-            z.start_file("../escape.txt", zip::write::SimpleFileOptions::default()).unwrap();
+            z.start_file("../escape.txt", zip::write::SimpleFileOptions::default())
+                .unwrap();
             z.write_all(b"x").unwrap();
             z.finish().unwrap();
         }
@@ -945,7 +1146,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("f");
         std::fs::write(&f, b"abc").unwrap();
-        assert_eq!(sha256_file(&f).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_file(&f).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         let p = crate::catalog::preset("16gb").unwrap();
         let all = crate::catalog::downloads_for(p, crate::config::GpuBackend::Cuda, dir.path());
         let (dl, disk) = space_needed(dir.path(), &all);
@@ -954,10 +1158,22 @@ mod tests {
         // A partial download counts toward what is left.
         let vae = crate::catalog::VAE;
         std::fs::create_dir_all(vae.path(dir.path()).parent().unwrap()).unwrap();
-        std::fs::write(part_path(&vae.path(dir.path())), vec![0u8; (SEGMENT + 1000) as usize]).unwrap();
-        assert_eq!(space_needed(dir.path(), &all).0, dl - SEGMENT, "whole segments count");
+        std::fs::write(
+            part_path(&vae.path(dir.path())),
+            vec![0u8; (SEGMENT + 1000) as usize],
+        )
+        .unwrap();
+        assert_eq!(
+            space_needed(dir.path(), &all).0,
+            dl - SEGMENT,
+            "whole segments count"
+        );
         assert!(free_space(dir.path()).unwrap_or(1) > 0);
-        assert!(preview(dir.path(), &all).iter().all(|i| i.state == ItemState::Pending));
+        assert!(
+            preview(dir.path(), &all)
+                .iter()
+                .all(|i| i.state == ItemState::Pending)
+        );
     }
 
     #[test]
@@ -969,34 +1185,62 @@ mod tests {
         assert_eq!(part_progress(&target, size), 0);
         // A prefix left by a single-connection download counts in whole segments.
         std::fs::write(&part, vec![0u8; (2 * SEGMENT + 10) as usize]).unwrap();
-        assert_eq!(done_segments(&part, size), vec![true, true, false, false, false, false]);
+        assert_eq!(
+            done_segments(&part, size),
+            vec![true, true, false, false, false, false]
+        );
         // A segmented download records what is done, in any order (the file is preallocated).
-        std::fs::OpenOptions::new().write(true).open(&part).unwrap().set_len(size).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&part)
+            .unwrap()
+            .set_len(size)
+            .unwrap();
         write_segment_state(&part, size, &[true, false, false, false, false, true]);
         assert_eq!(part_progress(&target, size), SEGMENT + 123);
         assert_eq!(segment_len(5, size), 123);
         // State from another file size is ignored.
         write_segment_state(&part, size + 1, &[true; 6]);
-        assert_eq!(done_segments(&part, size).iter().filter(|d| **d).count(), 0, "full-size preallocation is not a finished prefix");
+        assert_eq!(
+            done_segments(&part, size).iter().filter(|d| **d).count(),
+            0,
+            "full-size preallocation is not a finished prefix"
+        );
         remove_part(&part);
         assert!(!part.exists() && !segments_path(&part).exists());
         let mut h = reqwest::header::HeaderMap::new();
-        h.insert(reqwest::header::CONTENT_RANGE, "bytes 0-99/337915440".parse().unwrap());
+        h.insert(
+            reqwest::header::CONTENT_RANGE,
+            "bytes 0-99/337915440".parse().unwrap(),
+        );
         assert_eq!(content_range_total(&h), Some(337_915_440));
     }
 
     #[test]
     fn bundled_upscaler_is_copied_once_and_checked() {
         let (dir, bundle) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let d = Download { size: 3, sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", ..crate::catalog::UPSCALER };
-        assert!(!install_bundled(&d, dir.path(), bundle.path()).unwrap(), "nothing bundled (dev build)");
+        let d = Download {
+            size: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ..crate::catalog::UPSCALER
+        };
+        assert!(
+            !install_bundled(&d, dir.path(), bundle.path()).unwrap(),
+            "nothing bundled (dev build)"
+        );
         std::fs::write(bundle.path().join("4xNomos2_hq_mosr.pth"), b"abd").unwrap();
-        assert!(install_bundled(&d, dir.path(), bundle.path()).is_err(), "a damaged copy is refused");
+        assert!(
+            install_bundled(&d, dir.path(), bundle.path()).is_err(),
+            "a damaged copy is refused"
+        );
         assert!(!d.is_present(dir.path()) && !part_path(&d.path(dir.path())).exists());
         std::fs::write(bundle.path().join("4xNomos2_hq_mosr.pth"), b"abc").unwrap();
         assert!(install_bundled(&d, dir.path(), bundle.path()).unwrap());
         assert!(d.is_present(dir.path()));
-        assert!(!install_bundled(&d, dir.path(), bundle.path()).unwrap(), "already in place");
+        assert!(
+            !install_bundled(&d, dir.path(), bundle.path()).unwrap(),
+            "already in place"
+        );
     }
 
     #[test]
@@ -1010,9 +1254,17 @@ mod tests {
         std::fs::write(up.join("my-own.pth"), b"keep").unwrap();
         std::fs::write(up.join("4x_NMKD-Superscale-SP_178000_G.pth"), b"in use").unwrap();
         let ss = &["4x_NMKD-Superscale-SP_178000_G"][..];
-        assert_eq!(legacy_upscalers(dir.path(), ss), vec![(up.join("4x-UltraSharp.pth"), 100)], "the selected model is never offered");
+        assert_eq!(
+            legacy_upscalers(dir.path(), ss),
+            vec![(up.join("4x-UltraSharp.pth"), 100)],
+            "the selected model is never offered"
+        );
         assert_eq!(remove_legacy_upscalers(dir.path(), ss).unwrap(), 100);
-        assert!(!up.join("4x-UltraSharp.pth").exists() && up.join("4xNomos2_hq_mosr.pth").exists() && up.join("my-own.pth").exists());
+        assert!(
+            !up.join("4x-UltraSharp.pth").exists()
+                && up.join("4xNomos2_hq_mosr.pth").exists()
+                && up.join("my-own.pth").exists()
+        );
         assert!(up.join("4x_NMKD-Superscale-SP_178000_G.pth").exists());
         assert_eq!(remove_legacy_upscalers(dir.path(), ss).unwrap(), 0);
     }
@@ -1031,13 +1283,31 @@ mod tests {
         let inst = Installer::new();
         let client = reqwest::Client::new();
         {
-            let resp = client.get(d.url).header(reqwest::header::RANGE, "bytes=0-1048575").send().await.unwrap();
-            assert_eq!(resp.status().as_u16(), 206, "GitHub's release CDN supports ranges");
+            let resp = client
+                .get(d.url)
+                .header(reqwest::header::RANGE, "bytes=0-1048575")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status().as_u16(),
+                206,
+                "GitHub's release CDN supports ranges"
+            );
             std::fs::write(part_path(&target), resp.bytes().await.unwrap()).unwrap();
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        inst.start(dir.path().to_path_buf(), "test", vec![d], Box::new(move |ok| tx.send(ok).unwrap())).unwrap();
-        let ok = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(600)).unwrap()).await.unwrap();
+        inst.start(
+            dir.path().to_path_buf(),
+            "test",
+            vec![d],
+            Box::new(move |ok| tx.send(ok).unwrap()),
+        )
+        .unwrap();
+        let ok =
+            tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(600)).unwrap())
+                .await
+                .unwrap();
         assert!(ok, "{:?}", inst.status());
         assert!(d.is_present(dir.path()));
         assert_eq!(sha256_file(&target).unwrap(), d.sha256);

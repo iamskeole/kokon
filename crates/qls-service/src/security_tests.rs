@@ -80,27 +80,48 @@ impl Reply {
     }
 }
 
-async fn send(app: &Router, method: &str, path: &str, headers: &[(&str, &str)], body: Option<Value>) -> Reply {
+async fn send(
+    app: &Router,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<Value>,
+) -> Reply {
     let mut req = Request::builder().method(method).uri(path);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
     let req = match body {
-        Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
+        Some(b) => req
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(b.to_string())),
         None => req.body(Body::empty()),
     }
     .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
     let headers = res.headers().clone();
-    let bytes = axum::body::to_bytes(res.into_body(), 16 << 20).await.unwrap();
-    Reply { status, headers, body: serde_json::from_slice(&bytes).unwrap_or(Value::Null) }
+    let bytes = axum::body::to_bytes(res.into_body(), 16 << 20)
+        .await
+        .unwrap();
+    Reply {
+        status,
+        headers,
+        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    }
 }
 
 const CSRF: (&str, &str) = ("x-kokon-csrf", "1");
 
 async fn login(app: &Router, password: &str) -> Reply {
-    send(app, "POST", "/api/v1/auth/login", &[CSRF], Some(json!({ "password": password }))).await
+    send(
+        app,
+        "POST",
+        "/api/v1/auth/login",
+        &[CSRF],
+        Some(json!({ "password": password })),
+    )
+    .await
 }
 
 /// The `Cookie` header value for a successful login.
@@ -119,7 +140,12 @@ async fn nothing_without_credentials() {
     let f = fixture(true);
     for lan in [false, true] {
         let a = app(&f, lan, "192.168.1.50");
-        for (m, p) in [("GET", "/api/v1/status"), ("GET", "/api/v1/gallery"), ("GET", "/api/v1/events"), ("POST", "/api/v1/jobs")] {
+        for (m, p) in [
+            ("GET", "/api/v1/status"),
+            ("GET", "/api/v1/gallery"),
+            ("GET", "/api/v1/events"),
+            ("POST", "/api/v1/jobs"),
+        ] {
             let r = send(&a, m, p, &[], None).await;
             assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{m} {p} lan={lan}");
             assert_eq!(r.code(), "login_required");
@@ -127,7 +153,14 @@ async fn nothing_without_credentials() {
         let r = send(&a, "GET", "/api/v1/gallery/x/image?token=", &[], None).await;
         assert_eq!(r.status, StatusCode::UNAUTHORIZED);
         // A cookie that no login handed out.
-        let r = send(&a, "GET", "/api/v1/status", &[("cookie", "kokon_session=0123456789abcdef")], None).await;
+        let r = send(
+            &a,
+            "GET",
+            "/api/v1/status",
+            &[("cookie", "kokon_session=0123456789abcdef")],
+            None,
+        )
+        .await;
         assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     }
 }
@@ -137,17 +170,62 @@ async fn the_token_works_on_loopback_only() {
     let f = fixture(true);
     let auth = format!("Bearer {}", f.state.token);
     let local = app(&f, false, "127.0.0.1");
-    assert_eq!(send(&local, "GET", "/api/v1/remote", &[("authorization", &auth)], None).await.status, StatusCode::OK);
-    let wrong = send(&local, "GET", "/api/v1/status", &[("authorization", "Bearer nope")], None).await;
-    assert_eq!((wrong.status, wrong.code()), (StatusCode::UNAUTHORIZED, "unauthorized"));
+    assert_eq!(
+        send(
+            &local,
+            "GET",
+            "/api/v1/remote",
+            &[("authorization", &auth)],
+            None
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let wrong = send(
+        &local,
+        "GET",
+        "/api/v1/status",
+        &[("authorization", "Bearer nope")],
+        None,
+    )
+    .await;
+    assert_eq!(
+        (wrong.status, wrong.code()),
+        (StatusCode::UNAUTHORIZED, "unauthorized")
+    );
     // From a web page in a browser, even with the token.
-    let page = send(&local, "GET", "/api/v1/status", &[("authorization", &auth), ("origin", "http://evil.example")], None).await;
+    let page = send(
+        &local,
+        "GET",
+        "/api/v1/status",
+        &[("authorization", &auth), ("origin", "http://evil.example")],
+        None,
+    )
+    .await;
     assert_eq!(page.status, StatusCode::UNAUTHORIZED);
     // The network listener never takes it.
     let lan = app(&f, true, "192.168.1.50");
-    let r = send(&lan, "GET", "/api/v1/status", &[("authorization", &auth)], None).await;
-    assert_eq!((r.status, r.code()), (StatusCode::UNAUTHORIZED, "login_required"));
-    let r = send(&lan, "GET", &format!("/api/v1/status?token={}", f.state.token), &[], None).await;
+    let r = send(
+        &lan,
+        "GET",
+        "/api/v1/status",
+        &[("authorization", &auth)],
+        None,
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::UNAUTHORIZED, "login_required")
+    );
+    let r = send(
+        &lan,
+        "GET",
+        &format!("/api/v1/status?token={}", f.state.token),
+        &[],
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -165,7 +243,14 @@ async fn no_login_without_a_password() {
 async fn login_needs_the_csrf_header() {
     let f = fixture(true);
     let a = app(&f, true, "192.168.1.50");
-    let r = send(&a, "POST", "/api/v1/auth/login", &[], Some(json!({ "password": PASSWORD }))).await;
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/login",
+        &[],
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     assert!(!r.headers.contains_key(header::SET_COOKIE));
 }
@@ -176,10 +261,16 @@ async fn wrong_passwords_lock_the_address() {
     let a = app(&f, true, "192.168.1.66");
     for _ in 0..4 {
         let r = login(&a, "guess guess").await;
-        assert_eq!((r.status, r.code()), (StatusCode::UNAUTHORIZED, "login_required"));
+        assert_eq!(
+            (r.status, r.code()),
+            (StatusCode::UNAUTHORIZED, "login_required")
+        );
     }
     let r = login(&a, "guess guess").await;
-    assert_eq!((r.status, r.code()), (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts"));
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts")
+    );
     assert_eq!(r.body["retry_after_s"], 60);
     assert_eq!(r.headers[header::RETRY_AFTER], "60");
     // Locked: even the right password gets the same answer, and no cookie.
@@ -196,33 +287,85 @@ async fn a_browser_gets_the_ui_api_but_no_paths_on_the_server() {
     let a = app(&f, true, "192.168.1.50");
     let cookie = sign_in(&a).await;
     let c = ("cookie", cookie.as_str());
-    assert_eq!(send(&a, "GET", "/api/v1/status", &[c], None).await.status, StatusCode::OK);
-    assert_eq!(send(&a, "GET", "/api/v1/gallery", &[c], None).await.status, StatusCode::OK);
+    assert_eq!(
+        send(&a, "GET", "/api/v1/status", &[c], None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/gallery", &[c], None).await.status,
+        StatusCode::OK
+    );
     let s = send(&a, "GET", "/api/v1/auth/session", &[c], None).await;
     assert_eq!(s.body, json!({ "signed_in": true, "password_set": true }));
     for (m, p, body) in [
-        ("POST", "/api/v1/inputs/import", json!({ "path": "/etc/passwd" })),
+        (
+            "POST",
+            "/api/v1/inputs/import",
+            json!({ "path": "/etc/passwd" }),
+        ),
         ("POST", "/api/v1/models/scan", json!({ "dir": "/" })),
-        ("POST", "/api/v1/models/inspect", json!({ "path": "/etc/shadow" })),
-        ("POST", "/api/v1/gallery/x/export", json!({ "path": "/tmp/x.png" })),
-        ("POST", "/api/v1/image-info", json!({ "path": "/etc/passwd" })),
-        ("POST", "/api/v1/loras", json!({ "path": "/tmp/x.safetensors" })),
-        ("POST", "/api/v1/luts/import", json!({ "path": "/tmp/x.cube" })),
-        ("POST", "/api/v1/generate", json!({ "prompt": "x", "output_path": "/tmp/x.png" })),
+        (
+            "POST",
+            "/api/v1/models/inspect",
+            json!({ "path": "/etc/shadow" }),
+        ),
+        (
+            "POST",
+            "/api/v1/gallery/x/export",
+            json!({ "path": "/tmp/x.png" }),
+        ),
+        (
+            "POST",
+            "/api/v1/image-info",
+            json!({ "path": "/etc/passwd" }),
+        ),
+        (
+            "POST",
+            "/api/v1/loras",
+            json!({ "path": "/tmp/x.safetensors" }),
+        ),
+        (
+            "POST",
+            "/api/v1/luts/import",
+            json!({ "path": "/tmp/x.cube" }),
+        ),
+        (
+            "POST",
+            "/api/v1/generate",
+            json!({ "prompt": "x", "output_path": "/tmp/x.png" }),
+        ),
         ("POST", "/api/v1/shutdown", json!({})),
-        ("POST", "/api/v1/remote/password", json!({ "password": "taken over!" })),
+        (
+            "POST",
+            "/api/v1/remote/password",
+            json!({ "password": "taken over!" }),
+        ),
         ("POST", "/api/v1/remote", json!({ "enabled": true })),
         ("GET", "/api/v1/remote", Value::Null),
     ] {
         let body = (!body.is_null()).then_some(body);
         let r = send(&a, m, p, &[c, CSRF], body).await;
-        assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, "forbidden"), "{m} {p}");
+        assert_eq!(
+            (r.status, r.code()),
+            (StatusCode::FORBIDDEN, "forbidden"),
+            "{m} {p}"
+        );
     }
     // A job may only use images already in Kokon, and saves to the gallery.
-    for job in [json!({ "prompt": "x", "mode": "edit", "images": ["/etc/passwd"] }), json!({ "prompt": "x", "output_path": "/tmp/x.png" })] {
+    for job in [
+        json!({ "prompt": "x", "mode": "edit", "images": ["/etc/passwd"] }),
+        json!({ "prompt": "x", "output_path": "/tmp/x.png" }),
+    ] {
         let r = send(&a, "POST", "/api/v1/jobs", &[c, CSRF], Some(job)).await;
         assert_eq!(r.status, StatusCode::FORBIDDEN);
-        let r = send(&a, "POST", "/api/v1/plan", &[c, CSRF], Some(json!({ "prompt": "x", "mode": "edit", "images": ["C:\\Users\\me\\x.png"] }))).await;
+        let r = send(
+            &a,
+            "POST",
+            "/api/v1/plan",
+            &[c, CSRF],
+            Some(json!({ "prompt": "x", "mode": "edit", "images": ["C:\\Users\\me\\x.png"] })),
+        )
+        .await;
         assert_eq!(r.status, StatusCode::FORBIDDEN);
     }
     // The password is never in the settings the API returns.
@@ -237,9 +380,23 @@ async fn browser_changes_need_the_csrf_header() {
     let cookie = sign_in(&a).await;
     let c = ("cookie", cookie.as_str());
     let beat = json!({ "client_id": "tab-1" });
-    let r = send(&a, "POST", "/api/v1/session/heartbeat", &[c], Some(beat.clone())).await;
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/session/heartbeat",
+        &[c],
+        Some(beat.clone()),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    let r = send(&a, "POST", "/api/v1/session/heartbeat", &[c, CSRF], Some(beat)).await;
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/session/heartbeat",
+        &[c, CSRF],
+        Some(beat),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     // A browser's lease is never the desktop window's, and never kept alive by a pid.
     let l = f.state.leases.lock().unwrap();
@@ -264,7 +421,10 @@ async fn browser_settings_saves_keep_the_computers_settings() {
     assert_eq!(after.sdcpp_dir, before.sdcpp_dir);
     assert_eq!(after.extra_server_args, before.extra_server_args);
     assert!(!after.remote_access);
-    assert_eq!(after.flash_attention, !before.flash_attention, "an app setting does change");
+    assert_eq!(
+        after.flash_attention, !before.flash_attention,
+        "an app setting does change"
+    );
 }
 
 #[tokio::test]
@@ -273,20 +433,61 @@ async fn a_new_password_or_a_logout_ends_sessions() {
     let a = app(&f, true, "192.168.1.50");
     let phone = sign_in(&a).await;
     let laptop = sign_in(&a).await;
-    let r = send(&a, "POST", "/api/v1/auth/logout", &[("cookie", &laptop), CSRF], None).await;
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/logout",
+        &[("cookie", &laptop), CSRF],
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.headers[header::SET_COOKIE].to_str().unwrap().contains("Max-Age=0"));
-    assert_eq!(send(&a, "GET", "/api/v1/status", &[("cookie", &laptop)], None).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None).await.status, StatusCode::OK);
+    assert!(
+        r.headers[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/status", &[("cookie", &laptop)], None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None)
+            .await
+            .status,
+        StatusCode::OK
+    );
     // Changed from the desktop app (token, loopback).
     let local = app(&f, false, "127.0.0.1");
     let auth = format!("Bearer {}", f.state.token);
-    let r = send(&local, "POST", "/api/v1/remote/password", &[("authorization", &auth)], Some(json!({ "password": "a brand new one" }))).await;
+    let r = send(
+        &local,
+        "POST",
+        "/api/v1/remote/password",
+        &[("authorization", &auth)],
+        Some(json!({ "password": "a brand new one" })),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!(send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(login(&a, PASSWORD).await.status, StatusCode::UNAUTHORIZED);
     assert_eq!(login(&a, "a brand new one").await.status, StatusCode::OK);
-    let short = send(&local, "POST", "/api/v1/remote/password", &[("authorization", &auth)], Some(json!({ "password": "short" }))).await;
+    let short = send(
+        &local,
+        "POST",
+        "/api/v1/remote/password",
+        &[("authorization", &auth)],
+        Some(json!({ "password": "short" })),
+    )
+    .await;
     assert_eq!(short.status, StatusCode::BAD_REQUEST);
 }
 
@@ -296,15 +497,32 @@ async fn a_sign_in_survives_a_restart_until_the_password_changes() {
     let a = app(&f, true, "192.168.1.50");
     let phone = sign_in(&a).await;
     let kept = std::fs::read_to_string(f._dir.path().join("remote-sessions.json")).unwrap();
-    assert!(!kept.contains(phone.split_once('=').unwrap().1), "only a hash of the cookie is kept");
+    assert!(
+        !kept.contains(phone.split_once('=').unwrap().1),
+        "only a hash of the cookie is kept"
+    );
     f.state = start(f._dir.path());
     let a = app(&f, true, "192.168.1.50");
-    assert_eq!(send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None).await.status, StatusCode::OK);
+    assert_eq!(
+        send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None)
+            .await
+            .status,
+        StatusCode::OK
+    );
     // Set from a terminal while the service was off.
-    qls_core::remote::set_password(&qls_core::remote::password_file(f._dir.path()), "set while off").unwrap();
+    qls_core::remote::set_password(
+        &qls_core::remote::password_file(f._dir.path()),
+        "set while off",
+    )
+    .unwrap();
     f.state = start(f._dir.path());
     let a = app(&f, true, "192.168.1.50");
-    assert_eq!(send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        send(&a, "GET", "/api/v1/status", &[("cookie", &phone)], None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
@@ -312,13 +530,45 @@ async fn the_network_stays_closed_without_a_password() {
     let f = fixture(false);
     let local = app(&f, false, "127.0.0.1");
     let auth = format!("Bearer {}", f.state.token);
-    let r = send(&local, "POST", "/api/v1/remote", &[("authorization", &auth)], Some(json!({ "enabled": true }))).await;
+    let r = send(
+        &local,
+        "POST",
+        "/api/v1/remote",
+        &[("authorization", &auth)],
+        Some(json!({ "enabled": true })),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
-    let st = send(&local, "GET", "/api/v1/remote", &[("authorization", &auth)], None).await.body;
-    assert_eq!((st["enabled"].as_bool(), st["listening"].as_bool(), st["password_set"].as_bool()), (Some(false), Some(false), Some(false)));
+    let st = send(
+        &local,
+        "GET",
+        "/api/v1/remote",
+        &[("authorization", &auth)],
+        None,
+    )
+    .await
+    .body;
+    assert_eq!(
+        (
+            st["enabled"].as_bool(),
+            st["listening"].as_bool(),
+            st["password_set"].as_bool()
+        ),
+        (Some(false), Some(false), Some(false))
+    );
     // Removing the password turns access off.
-    f.state.engine.set_remote(true, f.state.engine.config().remote_port).unwrap();
-    let r = send(&local, "DELETE", "/api/v1/remote/password", &[("authorization", &auth)], None).await;
+    f.state
+        .engine
+        .set_remote(true, f.state.engine.config().remote_port)
+        .unwrap();
+    let r = send(
+        &local,
+        "DELETE",
+        "/api/v1/remote/password",
+        &[("authorization", &auth)],
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(!f.state.engine.config().remote_access);
     assert_eq!(r.body["listening"], false);
@@ -332,24 +582,74 @@ async fn a_browser_opens_a_project_with_one_request_and_previews() {
     let c = ("cookie", cookie.as_str());
     let img = image::RgbaImage::from_pixel(2000, 1000, image::Rgba([10, 20, 30, 255]));
     let png = qls_core::imaging::encode_png(&img, &[], None, true).unwrap();
-    let input = f.state.engine.store.put_input(&png, Some("a.png"), None).unwrap();
+    let input = f
+        .state
+        .engine
+        .store
+        .put_input(&png, Some("a.png"), None)
+        .unwrap();
     let project = json!({ "meta": { "id": "p", "title": "t", "updatedAt": 1.0 }, "items": [
         { "key": "i", "kind": "input", "inputId": input.id },
         { "key": "r-gone", "kind": "gen", "genId": "gone" },
     ] });
-    let r = send(&a, "PUT", "/api/v1/projects/p", &[c, CSRF], Some(json!({ "project": project }))).await;
+    let r = send(
+        &a,
+        "PUT",
+        "/api/v1/projects/p",
+        &[c, CSRF],
+        Some(json!({ "project": project })),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     let r = send(&a, "GET", "/api/v1/projects/p/records", &[c], None).await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.body["inputs"][&input.id]["width"], 2000);
-    assert_eq!(r.body["generations"], json!({}), "a deleted version is left out");
-    assert_eq!(send(&a, "GET", "/api/v1/projects/nope/records", &[c], None).await.status, StatusCode::NOT_FOUND);
-    let r = send(&a, "GET", &format!("/api/v1/inputs/{}/preview", input.id), &[c], None).await;
+    assert_eq!(
+        r.body["generations"],
+        json!({}),
+        "a deleted version is left out"
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/projects/nope/records", &[c], None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let r = send(
+        &a,
+        "GET",
+        &format!("/api/v1/inputs/{}/preview", input.id),
+        &[c],
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.headers[header::CONTENT_TYPE], "image/jpeg");
-    assert!(r.headers[header::CACHE_CONTROL].to_str().unwrap().contains("immutable"));
-    assert!(f.state.engine.store.input_preview_path(&input.id).with_extension("preview.jpg").is_file());
-    assert_eq!(send(&a, "GET", "/api/v1/gallery/gone/preview", &[c], None).await.status, StatusCode::NOT_FOUND);
+    assert!(
+        r.headers[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    assert!(
+        f.state
+            .engine
+            .store
+            .input_preview_path(&input.id)
+            .with_extension("preview.jpg")
+            .is_file()
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/gallery/gone/preview", &[c], None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
     // Signed out: nothing.
-    assert_eq!(send(&a, "GET", "/api/v1/projects/p/records", &[], None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        send(&a, "GET", "/api/v1/projects/p/records", &[], None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
 }

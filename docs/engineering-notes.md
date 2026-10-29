@@ -42,6 +42,47 @@ Internal names (`qls-core`, `qls-service`, `QLS_*` environment variables) come f
 during development (Qwen Local Studio) and are kept on purpose. Executables carry `.exe` only on
 Windows.
 
+## External engine mode
+
+When `config.json` has an `externalEngine` block, Kokon stops managing the engine process:
+a gateway (something that loads and evicts models on demand) owns it, and Kokon only talks
+to it over HTTP.
+
+```json
+{
+  "externalEngine": {
+    "gateway": "http://127.0.0.1:8080/engine",
+    "model": "model-a",
+    "modelName": "the-model.gguf",
+    "sample": { "steps": 20, "cfg": 6.0 }
+  },
+  "flavors": [
+    { "label": "Fast", "model": "model-a", "modelName": "the-model.gguf" },
+    { "label": "Quality", "sub": "slower, more detail", "model": "model-b", "modelName": "other-model.gguf" }
+  ]
+}
+```
+
+- Every engine call goes to `{gateway}/{model}/sdcpp/v1/...`. The gateway is expected to
+  load the named model on demand (and to evict it when it is idle) and to report the
+  loaded model through `/capabilities`.
+- Kokon never starts, restarts, idle-unloads or stops the engine. The probe in
+  `ensure_ready` adopts a running engine only when the model it reports matches
+  `modelName`, and marks it as not owned. A different model, or no answer, is a visible
+  error state; nothing is ever spawned in this mode.
+- A load in progress at the gateway shows as the "loading" server state: the probe waits
+  out the load (a long timeout) instead of giving up after a few seconds, so a slow first
+  image is visible and cancellable, not a failure.
+- `flavors` is the list the UI's model picker shows: the active flavor's `model` is what
+  the engine runs, and each flavor may carry `sample` overrides (steps, cfg, sampler) that
+  apply to the jobs it starts. Empty or absent means there is no picker.
+- Switching flavors is `POST /api/v1/models/flavor` with the chosen flavor: the config is
+  saved and the probe runs again. It returns at once; the UI follows the server state.
+- Each generation records the model name the engine reports, so the gallery and the image
+  details can tell the models apart.
+- In this mode "no model loaded" is the resting state: opening the UI starts nothing, and
+  the settings' models tab says the model is managed outside Kokon.
+
 ## Platforms and engines
 
 Details and the reasoning are in [platforms.md](platforms.md); the short version:

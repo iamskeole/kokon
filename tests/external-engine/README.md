@@ -1,4 +1,9 @@
-# External engine integration test
+# External engine integration test (deployment-local)
+
+> **Not for upstream.** This harness targets *this deployment's* gateway
+> (llama-swap's `/upstream/<model>` proxy) with *its* model ids; the Rust-side
+> behavior it exercises is covered generically by the unit tests in
+> `crates/qls-core/src/process.rs`.
 
 End-to-end check of the `externalEngine` mode: a `kokon-service` configured with an
 external gateway (a mock of llama-swap's `/upstream/<model>` proxy) instead of a
