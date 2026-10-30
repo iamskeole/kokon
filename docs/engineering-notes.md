@@ -83,6 +83,11 @@ to it over HTTP.
   flavor therefore never evicts whatever the gateway is serving.
 - Each generation records the model name the engine reports, so the gallery and the image
   details can tell the models apart.
+- Failed jobs in this mode surface through the engine's job API, not its log: a job
+  that fails inside the engine (a reference it cannot condition on, a missing model
+  feature) usually comes back as a generic "no results"-style message. The actual
+  error line is in the engine's own log — with a gateway, the gateway's — so
+  diagnose failures there, not in Kokon's.
 - In this mode "no model loaded" is the resting state: opening the UI starts nothing, and
   the settings' models tab says the model is managed outside Kokon.
 
