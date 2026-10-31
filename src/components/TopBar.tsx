@@ -40,7 +40,10 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
         break;
       default:
         text = external ? "No model loaded" : "Model not loaded";
-        title = external ? "Click to request the model" : "Click to load the model now";
+        // An externally managed engine loads on its own schedule (it loads when a job runs):
+        // this is a display, not a request. A click that asks the endpoint to load can evict
+        // whatever it is serving, so only Settings → Performance makes that explicit request.
+        title = external ? "The model loads when you generate an image" : "Click to load the model now";
     }
   }
   if (quiet && cls === "dot ready" && !busy) return null;
@@ -51,7 +54,7 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
       onClick={() => {
         if (server.state === "error" && isMissingModel(server.error) && !external) openModelSetup();
         else if (server.state === "error") setState({ overlay: "settings" });
-        else if (server.state === "stopped" && connected) api.startBackend().then(refreshStatus, toastError);
+        else if (server.state === "stopped" && connected && !external) api.startBackend().then(refreshStatus, toastError);
       }}
     >
       {cls === "dot busy" || (cls === "dot ready" && busy) ? <SilkSpin size={18} /> : <span className={cls} />}
