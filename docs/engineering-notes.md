@@ -81,6 +81,12 @@ to it over HTTP.
   the model — the next generation (or an explicit start) runs the probe, which evicts the
   current tenant and waits out the load, shown in the usual loading state. Picking a
   flavor therefore never evicts whatever the gateway is serving.
+- The engine's capabilities are only learned while it runs (asking the gateway about it
+  would load it). Each adoption is therefore remembered per model id
+  (`external-caps.json` in the data folder) and restored when the service starts, so the
+  UI can report what the model supports — e.g. that the prompt enhancer exists, showing
+  its switch — before the engine has loaded; the model itself is still reported as not
+  loaded, and the next job re-probes and replaces the remembered values.
 - Each generation records the model name the engine reports, so the gallery and the image
   details can tell the models apart.
 - Failed jobs in this mode surface through the engine's job API, not its log: a job
