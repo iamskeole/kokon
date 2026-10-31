@@ -1680,6 +1680,13 @@ impl Engine {
             ResolvedMode::Compose => "compose",
             ResolvedMode::Upscale => "upscale",
         };
+        // The external engine's sample overrides (config externalEngine.sample) change what is
+        // actually sent: the metadata records the values that were run, not the planned ones
+        // (which describe the quality preset, not the model's recipe).
+        let (rec_steps, rec_cfg, rec_sampler) = match cfg.external_engine() {
+            Some(ext) => pipeline::effective_sample(plan.steps, plan.cfg, &plan.sampler, &ext.sample),
+            None => (plan.steps, plan.cfg, plan.sampler.clone()),
+        };
         let mut rec = GenerationRecord {
             id: id.clone(),
             created_at: now_rfc3339(),
@@ -1702,10 +1709,10 @@ impl Engine {
                 .and_then(|_| self.server.capabilities())
                 .and_then(|c| (!c.model.name.is_empty()).then_some(c.model.name.clone()))
                 .unwrap_or_else(|| cfg.profile().model_name()),
-            sampler: plan.sampler.clone(),
+            sampler: rec_sampler,
             scheduler: None,
-            steps: plan.steps,
-            cfg: plan.cfg,
+            steps: rec_steps,
+            cfg: rec_cfg,
             strength: plan.strength,
             quality: serde_json::to_value(plan.quality).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
             resolution: serde_json::to_value(plan.resolution).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
