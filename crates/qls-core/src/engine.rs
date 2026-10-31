@@ -1691,14 +1691,14 @@ impl Engine {
                         pipeline::EnhancerKind::Area { action, color } => enhancer::area_request(*action, color, &request.prompt, v.image.clone(), seed),
                         pipeline::EnhancerKind::Expand { sides } => enhancer::expand_request(sides, &request.prompt, v.image.clone(), seed),
                     };
-                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg, plan.mode, &request.prompt, &[], seed, Some(req), request.enhance_detail).await?;
+                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg, cfg.external_engine.as_ref().map(|e| e.model.as_str()).unwrap_or(""), plan.mode, &request.prompt, &[], None, seed, Some(req), request.enhance_detail).await?;
                     if let Some(text) = &enhanced {
                         sd_req.prompt = v.prompt(&plan, text);
                     }
                 } else {
                     // Marks: an edit of the marked region (its one reference).
                     let as_mode = if plan.marks { ResolvedMode::Edit } else { plan.mode };
-                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg, as_mode, &request.prompt, &sd_req.ref_images, seed, None, request.enhance_detail).await?;
+                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg, cfg.external_engine.as_ref().map(|e| e.model.as_str()).unwrap_or(""), as_mode, &request.prompt, &sd_req.ref_images, None, seed, None, request.enhance_detail).await?;
                     if let Some(text) = &enhanced {
                         sd_req.prompt = pipeline::enhanced_prompt(&request.prompt, text);
                         // The rewrite understood a transparency request the keywords missed: keep the alpha.
@@ -2044,7 +2044,21 @@ impl Engine {
     /// new prompt, or None when the job keeps the user's prompt: the engine cannot write text,
     /// or the enhancer failed (both noted on the job). Errors only for a cancel or a crash.
     #[allow(clippy::too_many_arguments)]
-    async fn enhance_prompt(&self, id: &str, client: &SdcppClient, caps: &Capabilities, cfg: &AppConfig, mode: ResolvedMode, prompt: &str, images: &[String], seed: i64, own: Option<TextGenRequest>, detail: bool) -> AppResult<Option<String>> {
+    async fn enhance_prompt(
+        &self,
+        id: &str,
+        client: &SdcppClient,
+        caps: &Capabilities,
+        cfg: &AppConfig,
+        model: &str,
+        mode: ResolvedMode,
+        prompt: &str,
+        images: &[String],
+        canvas: Option<(u32, u32)>,
+        seed: i64,
+        own: Option<TextGenRequest>,
+        detail: bool,
+    ) -> AppResult<Option<String>> {
         // A retry after running out of memory keeps the first prompt.
         if let Some(done) = self
             .jobs
@@ -2070,7 +2084,7 @@ impl Engine {
         let req = if let Some(r) = own {
             // A painted area or an expansion: its request is made with its own view.
             r
-        } else if mode == ResolvedMode::Compose {
+        } else if mode == ResolvedMode::Compose && !enhancer::bfl_pup(model) {
             let mut labels = Vec::with_capacity(images.len());
             for img in images {
                 let r = client
@@ -2101,9 +2115,11 @@ impl Engine {
                 started.elapsed().as_secs_f32(),
                 labels
             );
-            enhancer::compose_request(cfg, &labels, prompt, seed)
+            enhancer::compose_request(cfg, model, &labels, prompt, seed)
         } else {
-            enhancer::request(cfg, mode, prompt, images.to_vec(), seed)
+            // BFL-style models (and every non-compose case) go straight to the upsampler
+            // with the references it sees.
+            enhancer::request(cfg, model, mode, prompt, images.to_vec(), canvas, seed)
         };
         let req = if detail { enhancer::detailed(req, mode) } else { req };
         let mut text = String::new();
@@ -3229,7 +3245,7 @@ mod tests {
         let id = submit();
         let mut events = e.events.subscribe();
         let (port, body) = fake_server(200, "text/event-stream", sse_answer(&["Change the cat's", " fur to black."], "stop"), Duration::from_millis(150)).await;
-        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Edit, "rendi il gatto nero", &images, 42, None, false).await.unwrap();
+        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Edit, "rendi il gatto nero", &images, None, 42, None, false).await.unwrap();
         assert_eq!(out.as_deref(), Some("Change the cat's fur to black."));
         let mut partial = false;
         while let Ok(ev) = events.try_recv() {
@@ -3258,14 +3274,14 @@ mod tests {
         );
         assert_eq!(sent["system_prompt"], enhancer::EDIT_SYSTEM_PROMPT);
         // A retry (out of memory) keeps that prompt without asking the server again.
-        let again = e.enhance_prompt(&id, &SdcppClient::new(1), &caps, &cfg, ResolvedMode::Edit, "rendi il gatto nero", &images, 43, None, false).await.unwrap();
+        let again = e.enhance_prompt(&id, &SdcppClient::new(1), &caps, &cfg, "kokon-turbo", ResolvedMode::Edit, "rendi il gatto nero", &images, None, 43, None, false).await.unwrap();
         assert_eq!(again, out);
 
         // A failure keeps the user's prompt, with a note.
         let id = submit();
         let chunks = vec!["event: delta\ndata: {\"text\":\"Chan\"}\n\n".into(), "event: error\ndata: {\"error\":\"out of memory\"}\n\n".into()];
         let (port, _) = fake_server(200, "text/event-stream", chunks, Duration::from_millis(1)).await;
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap(), None);
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap(), None);
         let v = e.job(&id).unwrap();
         assert_eq!(v.enhanced_prompt, None);
         assert!(
@@ -3280,17 +3296,17 @@ mod tests {
         // An empty answer too.
         let id = submit();
         let (port, _) = fake_server(200, "text/event-stream", sse_answer(&["  "], "stop"), Duration::ZERO).await;
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap(), None);
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap(), None);
         assert!(e.job(&id).unwrap().notes.last().unwrap().contains("wrote nothing"));
         // A cut-off answer is used, with a note.
         let id = submit();
         let (port, _) = fake_server(200, "text/event-stream", sse_answer(&["A cat on a"], "length"), Duration::ZERO).await;
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap().as_deref(), Some("A cat on a"));
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap().as_deref(), Some("A cat on a"));
         assert!(e.job(&id).unwrap().notes.last().unwrap().contains("length limit"));
 
         // An engine without text generation (official builds): note, no request.
         let id = submit();
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(1), &Capabilities::default(), &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap(), None);
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(1), &Capabilities::default(), &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap(), None);
         assert!(e.job(&id).unwrap().notes.last().unwrap().contains("no prompt enhancer"));
         assert_eq!(e.job(&id).unwrap().status, JobStatus::Queued, "status untouched");
 
@@ -3308,7 +3324,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(300)).await;
             e2.cancel(&id2).unwrap();
         });
-        let err = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap_err();
+        let err = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::Cancelled);
     }
 
@@ -3396,7 +3412,7 @@ mod tests {
         ])
         .await;
         let images = vec!["PNG1".to_string(), "PNG2".to_string()];
-        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Compose, "lei sul divano con il gatto", &images, 9, None, false).await.unwrap();
+        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Compose, "lei sul divano con il gatto", &images, None, 9, None, false).await.unwrap();
         assert_eq!(out.as_deref(), Some("A photograph of the woman from <image1> on a sofa."));
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 3);
