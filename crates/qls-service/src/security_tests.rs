@@ -353,3 +353,164 @@ async fn a_browser_opens_a_project_with_one_request_and_previews() {
     // Signed out: nothing.
     assert_eq!(send(&a, "GET", "/api/v1/projects/p/records", &[], None).await.status, StatusCode::UNAUTHORIZED);
 }
+
+/// Behind a reverse proxy on the private network (the one serving the public subdomain) the
+/// lockout follows the address the proxy reports, so one client being locked out does not
+/// lock out everyone behind the proxy.
+#[tokio::test]
+async fn a_reverse_proxy_reports_the_real_address() {
+    let f = fixture(true);
+    // The proxy's own address is where the socket comes from; the client is what it reports.
+    let proxy = app(&f, true, "192.168.1.20");
+    for _ in 0..4 {
+        let r = send(
+            &proxy,
+            "POST",
+            "/api/v1/auth/login",
+            &[("x-forwarded-for", "203.0.113.7"), CSRF],
+            Some(json!({ "password": "guess guess" })),
+        )
+        .await;
+        assert_eq!((r.status, r.code()), (StatusCode::UNAUTHORIZED, "login_required"));
+    }
+    // The fifth wrong one locks the reported address (429, same answer for the right password).
+    let r = send(
+        &proxy,
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-for", "203.0.113.7"), CSRF],
+        Some(json!({ "password": "guess guess" })),
+    )
+    .await;
+    assert_eq!((r.status, r.code()), (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts"));
+    let r = send(
+        &proxy,
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-for", "203.0.113.7"), CSRF],
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    // Another client through the same proxy is unaffected.
+    let r = send(
+        &proxy,
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-for", "203.0.113.9"), CSRF],
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_direct_peers_own_forwarded_for_is_not_believed() {
+    let f = fixture(true);
+    // A peer off the private network (the firewall never lets one reach the port directly,
+    // but the rule must hold): its header can rotate, so the lock follows the socket.
+    let a = app(&f, true, "203.0.113.7");
+    for _ in 0..4 {
+        let r = send(
+            &a,
+            "POST",
+            "/api/v1/auth/login",
+            &[("x-forwarded-for", "10.9.9.9"), CSRF],
+            Some(json!({ "password": "guess guess" })),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-for", "10.9.9.9"), CSRF],
+        Some(json!({ "password": "guess guess" })),
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts")
+    );
+    // Rotating the header does not dodge the lock: it is keyed to the socket.
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-for", "10.8.8.8"), CSRF],
+        Some(json!({ "password": "anything else" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    // Nor does a direct peer's claim about the scheme: no Secure cookie for it.
+    let r = send(
+        &app(&f, true, "203.0.113.9"),
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-proto", "https"), CSRF],
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let set = r.headers[header::SET_COOKIE].to_str().unwrap();
+    assert!(!set.contains("Secure"), "{set}");
+}
+
+#[tokio::test]
+async fn the_secure_cookie_matches_the_tls_the_proxy_says() {
+    let f = fixture(true);
+    // Through the proxy, over TLS: the cookie carries Secure.
+    let proxy = app(&f, true, "192.168.1.20");
+    let r = send(
+        &proxy,
+        "POST",
+        "/api/v1/auth/login",
+        &[
+            ("x-forwarded-for", "203.0.113.7"),
+            ("x-forwarded-proto", "https"),
+            CSRF,
+        ],
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let set = r.headers[header::SET_COOKIE].to_str().unwrap();
+    assert!(set.contains("Secure"), "{set}");
+    let cookie = set.split(';').next().unwrap().trim().to_string();
+    // The clear mirrors it (a Secure cookie is only deleted by a Secure one).
+    let r = send(
+        &proxy,
+        "POST",
+        "/api/v1/auth/logout",
+        &[
+            ("cookie", cookie.as_str()),
+            ("x-forwarded-proto", "https"),
+            CSRF,
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let clear = r.headers[header::SET_COOKIE].to_str().unwrap();
+    assert!(clear.contains("Secure") && clear.contains("Max-Age=0"), "{clear}");
+    // And the browser is actually signed out: the (cleared) cookie no longer opens the API.
+    assert_eq!(
+        send(&proxy, "GET", "/api/v1/status", &[("cookie", cookie.as_str())], None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    // On plain HTTP (the LAN as it runs today) the cookie stays without Secure.
+    let r = send(
+        &proxy,
+        "POST",
+        "/api/v1/auth/login",
+        &[("x-forwarded-for", "203.0.113.7"), CSRF],
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let set = r.headers[header::SET_COOKIE].to_str().unwrap();
+    assert!(!set.contains("Secure"), "{set}");
+}
