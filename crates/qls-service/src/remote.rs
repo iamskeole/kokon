@@ -243,7 +243,8 @@ pub fn browser_session(state: &AppState, headers: &HeaderMap) -> bool {
     cookie_value(headers).is_some_and(|id| state.remote.sessions.valid(&id, SystemTime::now()))
 }
 
-fn peer_ip(req: &Request) -> IpAddr {
+/// The direct TCP peer (`ConnectInfo`, or the mock in tests).
+fn direct_peer(req: &Request) -> IpAddr {
     let ext = req.extensions();
     ext.get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
@@ -252,6 +253,51 @@ fn peer_ip(req: &Request) -> IpAddr {
                 .map(|c| c.0.ip())
         })
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+}
+
+/// A peer on the private network: a reverse proxy on the LAN (the one serving the public
+/// subdomain), never a direct internet client.
+fn private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
+        // Unique-local fc00::/7 (no stable `Ipv6Addr::is_private` yet).
+        IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfc00) == 0xfc00,
+    }
+}
+
+/// The client's address: the TCP peer, or — when that peer is on the private network — the
+/// address it reports in `X-Forwarded-For` (rightmost entry: the client as the proxy sees
+/// it, the value the proxy appends or sets). A direct peer's own header is never believed:
+/// it could rotate values to dodge the lockout.
+fn peer_ip(req: &Request) -> IpAddr {
+    let peer = direct_peer(req);
+    if !private(peer) {
+        return peer;
+    }
+    req.headers()
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .last()
+        .and_then(|v| v.rsplit(',').next())
+        .map(str::trim)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(peer)
+}
+
+/// The connection reached the listener over TLS: a trusted (private) proxy says
+/// `X-Forwarded-Proto: https` (rightmost entry, the scheme as the proxy sees it). The
+/// session cookie may then carry `Secure`, so the browser never sends it on a plain-HTTP
+/// hop; a direct peer's claim about the scheme is not believed.
+fn forwarded_tls(req: &Request) -> bool {
+    private(direct_peer(req))
+        && req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.rsplit(',').next())
+            .map(str::trim)
+            == Some("https")
 }
 
 pub fn has_csrf_header(headers: &HeaderMap) -> bool {
@@ -281,7 +327,9 @@ pub struct LoginBody {
 
 /// `POST /api/v1/auth/login`: the password for a session cookie. 5 wrong passwords in a row
 /// from one address lock it (1 min, doubling up to 15); a locked address gets 429 whatever
-/// it sends, so the lock tells nothing about the password.
+/// it sends, so the lock tells nothing about the password. Behind a reverse proxy on the
+/// private network the address is what the proxy reports (`X-Forwarded-For`), and the
+/// cookie carries `Secure` when the proxy says the connection was TLS.
 pub async fn login(State(s): State<Arc<AppState>>, req: Request) -> Response {
     if !has_csrf_header(req.headers()) {
         return err(
@@ -290,6 +338,7 @@ pub async fn login(State(s): State<Arc<AppState>>, req: Request) -> Response {
         );
     }
     let ip = peer_ip(&req);
+    let over_tls = forwarded_tls(&req);
     let bytes = match axum::body::to_bytes(req.into_body(), 64 * 1024).await {
         Ok(b) => b,
         Err(_) => return err(ErrorCode::InvalidInput, "The request was too large."),
@@ -324,8 +373,9 @@ pub async fn login(State(s): State<Arc<AppState>>, req: Request) -> Response {
     s.remote.limiter.succeed(ip);
     let id = s.remote.sessions.create(SystemTime::now());
     tracing::info!("browser signed in from {ip}");
+    let secure = if over_tls { "; Secure" } else { "" };
     let cookie = format!(
-        "{SESSION_COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+        "{SESSION_COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict{secure}; Max-Age={}",
         SESSION_TTL.as_secs()
     );
     let mut r = Json(json!({ "signed_in": true })).into_response();
@@ -354,21 +404,25 @@ fn locked(wait: u64) -> Response {
 }
 
 /// `POST /api/v1/auth/logout`.
-pub async fn logout(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !has_csrf_header(&headers) {
+pub async fn logout(State(s): State<Arc<AppState>>, req: Request) -> Response {
+    let headers = req.headers();
+    if !has_csrf_header(headers) {
         return err(
             ErrorCode::Forbidden,
             "Requests from other sites are not allowed.",
         );
     }
-    if let Some(id) = cookie_value(&headers) {
+    if let Some(id) = cookie_value(headers) {
         s.remote.sessions.remove(&id);
     }
+    // A Secure cookie is cleared only by a Secure one (same Path): mirror how it was issued,
+    // or the browser would keep a cookie the server no longer knows.
+    let secure = if forwarded_tls(&req) { "; Secure" } else { "" };
     let mut r = Json(json!({ "signed_in": false })).into_response();
     r.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
-            "{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            "{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict{secure}; Max-Age=0"
         ))
         .unwrap(),
     );

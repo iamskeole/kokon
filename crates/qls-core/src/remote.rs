@@ -7,6 +7,8 @@
 //!   SHA-256 of each value, so browsers stay signed in across a restart (an app update, a
 //!   reboot); changing the password ends every session;
 //! - 5 wrong passwords in a row from one address lock it for 1 minute, doubling up to 15;
+//!   behind a reverse proxy on the private network the address is what the proxy reports in
+//!   `X-Forwarded-For`;
 //! - a browser session may use only the endpoints the UI needs, and never one that takes a
 //!   path on the server or changes what the computer runs (see [`browser_allowed`]).
 
