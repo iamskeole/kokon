@@ -1784,11 +1784,15 @@ async fn models_use(State(s): St, Json(b): Json<UseBody>) -> ApiResult<Json<Valu
 /// Only available when the service runs with an external engine configured — the config
 /// file is the entry point into that mode, this endpoint only changes the flavor within it.
 async fn models_flavor(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult<Json<Value>> {
+    let model_id = b.model.clone();
     let mut cfg = s.engine.config();
     if cfg.external_engine.is_none() {
         return Err(AppError::invalid("This service has no external engine configured.").into());
     }
     cfg.external_engine = Some(b);
     s.engine.set_config(cfg)?;
+    // The switch leaves the engine alone; the remembered capabilities follow the newly
+    // configured model (or are dropped if it has never run).
+    s.engine.server.switch_external_caps(&model_id);
     Ok(Json(json!({ "requested": true })))
 }

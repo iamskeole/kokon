@@ -285,7 +285,7 @@ impl Engine {
         }
         let private_store = Arc::new(Store::open_in_memory(&private_dir)?);
         let (events, _) = broadcast::channel(512);
-        Ok(Arc::new(Self {
+        let engine = Arc::new(Self {
             cfg: RwLock::new(cfg),
             server: ServerManager::new(data_dir.to_path_buf()),
             store,
@@ -313,7 +313,14 @@ impl Engine {
             mac_bench: crate::mac_bench::MacBench::new(),
             backend_version: Mutex::new(None),
             last_activity: Mutex::new(Instant::now()),
-        }))
+        });
+        // In external mode the engine only runs on demand, so its capabilities are only
+        // known once it has run: restore what the configured model reported last time
+        // (without claiming it is loaded), so the UI can show what it supports at once.
+        if let Some(ext) = engine.cfg.read().unwrap().external_engine.as_ref() {
+            engine.server.restore_external_caps(&ext.model);
+        }
+        Ok(engine)
     }
 
     pub fn config(&self) -> AppConfig {

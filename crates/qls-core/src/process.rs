@@ -1,7 +1,7 @@
 //! sd-server process management: launch arguments, reuse/spawn/stop, log capture and
 //! truthful progress parsing from the server's own log output.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -497,6 +497,55 @@ impl ServerManager {
         serde_json::from_str(&std::fs::read_to_string(self.record_path()).ok()?).ok()
     }
 
+    /// What an external engine can do, last seen, per gateway model id. In external mode
+    /// asking the gateway about the engine loads the engine (and evicts its current tenant),
+    /// so capabilities are only learned while doing real work — remembered here so a
+    /// restarted app can report them again (for instance that the prompt enhancer exists)
+    /// without touching the gateway.
+    fn external_caps_path(&self) -> PathBuf {
+        self.data_dir.join("external-caps.json")
+    }
+
+    fn load_external_caps(&self) -> BTreeMap<String, Capabilities> {
+        match std::fs::read_to_string(self.external_caps_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(m) => m,
+            None => BTreeMap::new(),
+        }
+    }
+
+    fn remember_external_caps(&self, model_id: &str, caps: &Capabilities) {
+        let mut map = self.load_external_caps();
+        map.insert(model_id.to_string(), caps.clone());
+        if let Ok(json) = serde_json::to_string_pretty(&map) {
+            let _ = std::fs::write(self.external_caps_path(), json);
+        }
+    }
+
+    /// After a restart: what the configured external model reported last time. The engine
+    /// is not claimed to be loaded (`state` stays stopped); only its capabilities are known.
+    pub fn restore_external_caps(&self, model_id: &str) {
+        let Some(caps) = self.load_external_caps().get(model_id).cloned() else {
+            return;
+        };
+        self.set_state(|g| {
+            if g.state == ServerState::Stopped {
+                g.caps = Some(caps);
+            }
+        });
+    }
+
+    /// A flavor switch changes which model is configured (without touching the engine): the
+    /// remembered capabilities follow the new model, or are dropped if it has never run.
+    pub fn switch_external_caps(&self, model_id: &str) {
+        let caps = self.load_external_caps().get(model_id).cloned();
+        self.set_state(|g| {
+            g.caps = caps;
+        });
+    }
+
     fn set_state(&self, f: impl FnOnce(&mut Inner)) {
         let mut g = self.inner.lock().unwrap();
         f(&mut g);
@@ -656,6 +705,9 @@ impl ServerManager {
                 g.started_at = Some(chrono::Utc::now());
             }
         });
+        if let Some(ext) = cfg.external_engine() {
+            self.remember_external_caps(&ext.model, caps);
+        }
         tracing::info!(
             "external engine ready at {} (model \"{}\"; not owned)",
             cfg.engine_base_url(),
@@ -1595,7 +1647,7 @@ CPU	Apple M2 Pro
         conns: usize,
     ) -> (u16, tokio::sync::oneshot::Receiver<Vec<String>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let body = serde_json::json!({ "model": { "name": name }, "supported_modes": ["img_gen"] })
+        let body = serde_json::json!({ "model": { "name": name }, "supported_modes": ["img_gen"], "text_generation": true })
             .to_string();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1712,11 +1764,62 @@ CPU	Apple M2 Pro
         }
     }
 
+    #[tokio::test]
+    async fn external_engine_caps_are_remembered_and_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, reqs) = caps_server("qwen-image-2.1-turbo-Q4_K_M.gguf", 1).await;
+        let cfg = external_cfg(
+            format!("http://127.0.0.1:{port}"),
+            "qwen-image-2.1-turbo-Q4_K_M.gguf",
+        );
+        let m = ServerManager::new(dir.path().to_path_buf());
+        m.ensure_ready(&cfg).await.unwrap();
+        assert!(m.status().capabilities.unwrap().text_generation);
+        assert!(
+            m.external_caps_path().exists(),
+            "adopting an external engine remembers its capabilities"
+        );
+
+        // A restarted app (a fresh manager on the same data folder) reports them again
+        // without asking the gateway anything.
+        let m2 = ServerManager::new(dir.path().to_path_buf());
+        m2.restore_external_caps("model-a");
+        let st = m2.status();
+        assert_eq!(
+            st.state,
+            ServerState::Stopped,
+            "restored caps do not claim the engine is loaded"
+        );
+        assert!(st.capabilities.as_ref().unwrap().text_generation);
+        let seen = reqs.await.unwrap();
+        assert_eq!(seen.len(), 1, "the restore does not touch the gateway");
+    }
+
+    #[tokio::test]
+    async fn external_engine_caps_follow_a_flavor_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, _) = caps_server("qwen-image-2.1-turbo-Q4_K_M.gguf", 1).await;
+        let cfg = external_cfg(
+            format!("http://127.0.0.1:{port}"),
+            "qwen-image-2.1-turbo-Q4_K_M.gguf",
+        );
+        let m = ServerManager::new(dir.path().to_path_buf());
+        m.ensure_ready(&cfg).await.unwrap();
+        assert!(m.status().capabilities.unwrap().text_generation);
+
+        // The newly configured model has never run: nothing remembered about it.
+        m.switch_external_caps("model-b");
+        assert!(m.status().capabilities.is_none());
+        // Switching back: the remembered values come back.
+        m.switch_external_caps("model-a");
+        assert!(m.status().capabilities.as_ref().unwrap().text_generation);
+    }
+
     /// A fake capabilities server that answers each connection only after `delay`:
     /// the 3s quick probe times out, the long ensure waits it out.
     async fn slow_caps_server(name: &str, delay: Duration, conns: usize) -> u16 {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let body = serde_json::json!({ "model": { "name": name }, "supported_modes": ["img_gen"] })
+        let body = serde_json::json!({ "model": { "name": name }, "supported_modes": ["img_gen"], "text_generation": true })
             .to_string();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
