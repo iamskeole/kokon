@@ -211,22 +211,36 @@ pub fn enhanced_prompt(original: &str, enhanced: &str) -> String {
     p.to_string()
 }
 
+/// What the external engine's overrides leave of the planned values: the `steps`, `cfg`
+/// and `sampler` the request is sent with (and the image's metadata records). Keys that
+/// are absent leave the planned values untouched.
+pub fn effective_sample(steps: u32, cfg: f32, sampler: &str, sample: &serde_json::Value) -> (u32, f32, String) {
+    let (mut steps, mut cfg, mut sampler) = (steps, cfg, sampler.to_string());
+    if let Some(v) = sample.get("steps").and_then(|v| v.as_u64())
+        && v > 0
+    {
+        steps = v as u32;
+    }
+    if let Some(v) = sample.get("cfg").and_then(|v| v.as_f64()) {
+        cfg = v as f32;
+    }
+    if let Some(v) = sample.get("sampler").and_then(|v| v.as_str()) {
+        sampler = v.to_string();
+    }
+    (steps, cfg, sampler)
+}
+
 /// The external engine's per-request sample overrides (config `externalEngine.sample`):
 /// `steps` (sample steps), `cfg` (prompt guidance), `sampler` (sample method) and
 /// `clear_sigmas` (drop the built-in Turbo schedule, which a non-distilled model must not run
 /// on). Keys that are absent leave the planned values untouched.
 pub fn apply_sample_overrides(req: &mut ImgGenRequest, sample: &serde_json::Value) {
     let sp = &mut req.sample_params;
-    if let Some(steps) = sample.get("steps").and_then(|v| v.as_u64())
-        && steps > 0
-    {
-        sp.sample_steps = steps as u32;
-    }
-    if let Some(cfg) = sample.get("cfg").and_then(|v| v.as_f64()) {
-        sp.guidance.txt_cfg = cfg as f32;
-    }
-    if let Some(sampler) = sample.get("sampler").and_then(|v| v.as_str()) {
-        sp.sample_method = Some(sampler.to_string());
+    let (steps, cfg, sampler) = effective_sample(sp.sample_steps, sp.guidance.txt_cfg, sp.sample_method.as_deref().unwrap_or_default(), sample);
+    sp.sample_steps = steps;
+    sp.guidance.txt_cfg = cfg;
+    if !sampler.is_empty() {
+        sp.sample_method = Some(sampler);
     }
     if sample.get("clear_sigmas").and_then(|v| v.as_bool()) == Some(true) {
         sp.custom_sigmas.clear();
@@ -1228,6 +1242,23 @@ mod tests {
         );
         assert_eq!(j2.request.sample_params.sample_steps, before.sample_steps);
         assert_eq!(j2.request.sample_params.sample_method, before.sample_method);
+    }
+
+    #[test]
+    fn effective_sample_matches_the_request_overrides() {
+        // The metadata shows what the request is sent with: the same math, on the record's fields.
+        let s = serde_json::json!({ "steps": 40, "cfg": 1.0, "sampler": "euler", "clear_sigmas": true });
+        assert_eq!(effective_sample(8, 4.0, "lms", &s), (40, 1.0, "euler".into()));
+        // Absent keys leave the planned values untouched.
+        assert_eq!(
+            effective_sample(8, 4.0, "lms", &serde_json::json!({})),
+            (8, 4.0, "lms".into())
+        );
+        // Zero steps and a non-string sampler are ignored, as on the request.
+        assert_eq!(
+            effective_sample(8, 4.0, "lms", &serde_json::json!({ "steps": 0, "sampler": 42 })),
+            (8, 4.0, "lms".into())
+        );
     }
     fn decode(b: &str) -> RgbaImage {
         imaging::decode_image(&b64_decode(b).unwrap())
