@@ -320,8 +320,8 @@ export interface AppConfig {
    * spawned by Kokon itself. The browser UI never preloads one.
    */
   externalEngine?: ExternalEngine;
-  /** Selectable flavors of the external engine (config); empty or absent = no model picker. */
-  flavors?: FlavorProfile[];
+  /** Selectable models of the external engine (config); empty or absent = no model picker. */
+  models?: ExternalModel[];
 }
 
 export interface ExternalEngine {
@@ -335,10 +335,10 @@ export interface ExternalEngine {
   sample?: Record<string, unknown>;
 }
 
-/** A selectable flavor of an externally managed engine (config `flavors`). */
-export interface FlavorProfile {
+/** One selectable model behind an externally managed engine (config `models`). */
+export interface ExternalModel {
   label: string;
-  /** Short description of what the flavor trades off. */
+  /** Short description of what this model trades off. */
   sub?: string;
   /** The model the gateway loads on demand. */
   model: string;

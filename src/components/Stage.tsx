@@ -4,7 +4,7 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import {
-  compareBase, composerFromRecord, flavorForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
+  compareBase, composerFromRecord, entryForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
   upscalerLabel, upscaleTargets, variationRequest, imageName, type LinkKind, type TimelineLink,
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
@@ -843,7 +843,7 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
   // The model that made the picture: it goes in the viewer's standard hint row.
   const modelLabel = useStore((s) => {
     const g = item.gen;
-    return s.external && g ? (flavorForModel(s.flavors, g.model)?.label ?? null) : null;
+    return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
   });
   const nav = useMemo<ViewerNav>(() => {
     const at = session.findIndex((i) => i.key === item.key);
@@ -889,11 +889,11 @@ export function Stage() {
   // A phone: swipe between versions, a row of actions and a filmstrip (PhoneStage.tsx).
   const phone = useNarrow();
   const job = useStore((s) => (item?.jobId ? s.jobs[item.jobId] : undefined));
-  // External engine mode: the configured flavor name of the model that made the shown image
+  // External engine mode: the configured model name of the model that made the shown image
   // (each record carries the engine's own reported model name).
   const modelLabel = useStore((s) => {
     const g = item?.gen;
-    return s.external && g ? (flavorForModel(s.flavors, g.model)?.label ?? null) : null;
+    return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
   });
   const labels = useMemo(() => sessionLabels(session), [session]);
   // The result whose pre-upscale original is on screen instead of it.
