@@ -78,7 +78,7 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/models/use", post(models_use))
         .route("/models/vae", post(models_improve_vae))
         .route("/models/dit", post(models_new_dit))
-        .route("/models/flavor", post(models_flavor))
+        .route("/models/switch", post(models_switch))
         .route("/upscalers", get(list_upscalers))
         .route("/upscalers/{name}/download", post(download_upscaler))
         .route("/config", get(get_config).put(put_config))
@@ -1650,8 +1650,8 @@ async fn models_use(State(s): St, Json(b): Json<UseBody>) -> ApiResult<Json<Valu
 /// which evicts the gateway's current tenant and waits out the load. Switching therefore
 /// never touches the GPU, so picking a model cannot evict whatever the gateway is serving.
 /// Only available when the service runs with an external engine configured — the config
-/// file is the entry point into that mode, this endpoint only changes the flavor within it.
-async fn models_flavor(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult<Json<Value>> {
+/// file is the entry point into that mode, this endpoint only changes the active model within it.
+async fn models_switch(State(s): St, Json(b): Json<ExternalEngine>) -> ApiResult<Json<Value>> {
     let model_id = b.model.clone();
     let mut cfg = s.engine.config();
     if cfg.external_engine.is_none() {

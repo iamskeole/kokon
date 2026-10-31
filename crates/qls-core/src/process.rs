@@ -490,7 +490,7 @@ impl ServerManager {
         });
     }
 
-    /// A flavor switch changes which model is configured (without touching the engine): the
+    /// A model switch changes which model is configured (without touching the engine): the
     /// remembered capabilities follow the new model, or are dropped if it has never run.
     pub fn switch_external_caps(&self, model_id: &str) {
         let caps = self.load_external_caps().get(model_id).cloned();
@@ -1440,7 +1440,7 @@ CPU	Apple M2 Pro
     }
 
     #[tokio::test]
-    async fn external_engine_caps_follow_a_flavor_switch() {
+    async fn external_engine_caps_follow_a_model_switch() {
         let dir = tempfile::tempdir().unwrap();
         let (port, _) = caps_server("qwen-image-2.1-turbo-Q4_K_M.gguf", 1).await;
         let cfg = external_cfg(
