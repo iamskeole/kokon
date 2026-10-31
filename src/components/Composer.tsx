@@ -1,7 +1,7 @@
 import { ArrowUp, Brush, Check, ChevronDown, Cpu, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
-import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, expansionPixels, flavorRequest, formatDuration, hasOutpaint, imageName, MAX_LORAS, moveRef, needsPrompt, parseRatio, toggleLora, type Ref, typedWords, wantsPromptReview, withActionVerb } from "../lib/logic";
+import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, modelRequest, moveRef, needsPrompt, parseRatio, toggleLora, type Ref, typedWords, wantsPromptReview, withActionVerb } from "../lib/logic";
 import { native } from "../lib/native";
 import { haptic } from "../lib/haptics";
 import { inBrowser, useNarrow } from "../lib/platform";
@@ -507,7 +507,7 @@ export function Composer() {
   const c = useStore((s) => s.composer);
   const external = useStore((s) => s.external);
   const server = useStore((s) => s.server);
-  const flavors = useStore((s) => s.flavors);
+  const models = useStore((s) => s.models);
   const hasProject = useStore((s) => s.session.length > 0);
   const { plan, error } = usePlanPreview();
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -731,35 +731,35 @@ export function Composer() {
               {(close) => <ResolutionMenu plan={plan} close={close} />}
             </Popover>
 
-            {external && flavors.length > 0 && (
+            {external && models.length > 0 && (
               <Popover
                 trigger={(open, toggle) => (
                   <button
                     className={`pill ${open ? "on" : ""}`}
                     onClick={toggle}
-                    title="Model: which flavor you picked. The engine loads it when you generate (or when you ask in the status bar)."
+                    title="Model: the model you picked. The engine loads it when you generate (or when you ask in Settings → Performance)."
                   >
                     <Cpu size={15} />
-                    <span className="lbl">{server.state === "starting" ? "Loading…" : flavors.find((f) => f.model === external.model)?.label ?? external.model}</span>
+                    <span className="lbl">{server.state === "starting" ? "Loading…" : models.find((m) => m.model === external.model)?.label ?? external.model}</span>
                     <ChevronDown size={13} className="chev" />
                   </button>
                 )}
               >
                 {(close) =>
-                  flavors.map((f) => (
+                  models.map((m) => (
                     <Option
-                      key={f.model}
-                      selected={f.model === external.model}
-                      label={f.label}
-                      sub={f.sub}
+                      key={m.model}
+                      selected={m.model === external.model}
+                      label={m.label}
+                      sub={m.sub}
                       onClick={() => {
-                        if (f.model === external.model) return close();
+                        if (m.model === external.model) return close();
                         if (server.state === "starting") return toastError(new Error("A model switch is already in progress"));
-                        const req = flavorRequest(external, f);
+                        const req = modelRequest(external, m);
                         // Switching only records the pick; the engine is loaded by the next
                         // generation. The server saves the config before answering, so the
-                        // picker can show the new flavor at once.
-                        api.switchFlavor(req).then(() => { setState({ external: req }); refreshStatus(); }, toastError).finally(close);
+                        // picker can show the new model at once.
+                        api.switchModel(req).then(() => { setState({ external: req }); refreshStatus(); }, toastError).finally(close);
                       }}
                     />
                   ))
@@ -802,7 +802,6 @@ export function Composer() {
             >
               {() => <AdvancedPanel plan={plan} />}
             </Popover>
-
 
             <button className="icon-btn" onClick={() => setState({ overlay: "prompt-tips" })} title="Prompt tips" aria-label="Prompt tips">
               <Lightbulb size={17} />

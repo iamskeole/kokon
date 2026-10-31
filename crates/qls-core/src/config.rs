@@ -26,7 +26,7 @@ pub const DEFAULT_REMOTE_PORT: u16 = 39152;
 /// Schema 10 (2026-10-19): the 8 GB preset's VRAM reserve 1 -> 1.5 GiB (unless set by hand).
 /// Schema 11: additive `externalEngine` (an externally managed inference engine); older files
 /// load with the field unset.
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
 /// `upscaler_model` value for a plain Lanczos resize (no model).
 pub const LANCZOS: &str = "lanczos";
 /// Upscalers offered in Settings: (file stem, label). Superscale-SP is a setup download, MoSR is
@@ -350,15 +350,15 @@ pub struct ExternalEngine {
     pub sample: serde_json::Value,
 }
 
-/// A selectable flavor of an externally managed engine (config `flavors`): what the UI lists in
-/// its model picker. Switching to a flavor sets it as the active `externalEngine` (the gateway
-/// loads it on demand). Unset or empty = no picker.
+/// One selectable model behind an externally managed engine (config `models`): what the UI
+/// lists in its model picker. Switching to a model sets it as the active `externalEngine`
+/// (the gateway loads it on demand). Empty = no picker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FlavorProfile {
+pub struct ExternalModel {
     /// Label in the UI, e.g. "Turbo".
     pub label: String,
-    /// Short description of what the flavor trades off (UI sub-line).
+    /// Short description of what this model trades off (UI sub-line).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub sub: Option<String>,
     /// The model the gateway loads on demand (its id in the gateway's vocabulary).
@@ -461,9 +461,10 @@ pub struct AppConfig {
     /// Externally managed inference engine (see [`ExternalEngine`]); unset = Kokon runs its own.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub external_engine: Option<ExternalEngine>,
-    /// Selectable flavors of the external engine (see [`FlavorProfile`]); empty = no picker.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub flavors: Vec<FlavorProfile>,
+    /// Selectable models of the external engine (see [`ExternalModel`]); empty = no picker.
+    /// Key renamed from `flavors` in schema 12; the old key is still read.
+    #[serde(alias = "flavors", skip_serializing_if = "Vec::is_empty", default)]
+    pub models: Vec<ExternalModel>,
 }
 
 impl Default for AppConfig {
@@ -509,7 +510,7 @@ impl Default for AppConfig {
             loras: vec![],
             ui: serde_json::json!({}),
             external_engine: None,
-            flavors: vec![],
+            models: vec![],
         }
     }
 }
@@ -711,6 +712,12 @@ impl AppConfig {
                         && c.vram_reserve_gib == 1.0
                     {
                         c.vram_reserve_gib = c.preset().vram_reserve_gib;
+                    }
+                    if c.schema_version < 12 {
+                        // The picker's key was renamed `flavors` to `models`: it lists whole
+                        // models, not just variants of one. Old files still read through the
+                        // serde alias; the first save writes the new key.
+                        tracing::debug!("config migrated to schema 12 (`flavors` -> `models`)");
                     }
                     // The official weights are always available as a profile, built for the
                     // configured folder and preset; the active one stays as it is.
@@ -1700,6 +1707,25 @@ mod tests {
         // A tile size chosen after the change is kept.
         std::fs::write(&p, r#"{"schemaVersion":8,"upscaleTileSize":512}"#).unwrap();
         assert_eq!(AppConfig::load_from(&p).upscale_tile_size, 512);
+    }
+
+    #[test]
+    fn schema_12_renames_flavors_to_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        let old = r#"{"schemaVersion":11,"externalEngine":{"gateway":"http://gw","model":"a","modelName":"a.gguf"},
+            "flavors":[{"label":"Fast","model":"a","modelName":"a.gguf"},{"label":"Quality","sub":"slower","model":"b","modelName":"b.gguf"}]}"#;
+        std::fs::write(&p, old).unwrap();
+        let c = AppConfig::load_from(&p);
+        assert_eq!(c.schema_version, SCHEMA_VERSION);
+        assert_eq!(c.models.len(), 2, "the old `flavors` key is still read");
+        assert_eq!(c.models[0].label, "Fast");
+        assert_eq!(c.models[1].sub.as_deref(), Some("slower"));
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(
+            saved.contains("\"models\"") && !saved.contains("\"flavors\""),
+            "the new key is written on save"
+        );
     }
 
     #[test]

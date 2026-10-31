@@ -558,7 +558,7 @@ export function Settings() {
                     <span className="muted">
                       {cfg.externalEngine.modelName} is managed outside Kokon by a gateway ({cfg.externalEngine.gateway}); Kokon never
                       starts, stops or downloads it, and "no model loaded" is its resting state.
-                      {(cfg.flavors?.length ?? 0) > 0 ? " Pick another model with the model picker in the prompt box." : ""}
+                      {(cfg.models?.length ?? 0) > 0 ? " Pick another model with the model picker in the prompt box." : ""}
                     </span>
                   </div>
                 </div>

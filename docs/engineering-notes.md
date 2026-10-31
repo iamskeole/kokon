@@ -56,7 +56,7 @@ to it over HTTP.
     "modelName": "the-model.gguf",
     "sample": { "steps": 20, "cfg": 6.0 }
   },
-  "flavors": [
+  "models": [
     { "label": "Fast", "model": "model-a", "modelName": "the-model.gguf" },
     { "label": "Quality", "sub": "slower, more detail", "model": "model-b", "modelName": "other-model.gguf" }
   ]
@@ -73,14 +73,15 @@ to it over HTTP.
 - A load in progress at the gateway shows as the "loading" server state: the probe waits
   out the load (a long timeout) instead of giving up after a few seconds, so a slow first
   image is visible and cancellable, not a failure.
-- `flavors` is the list the UI's model picker shows: the active flavor's `model` is what
-  the engine runs, and each flavor may carry `sample` overrides (steps, cfg, sampler) that
-  apply to the jobs it starts. Empty or absent means there is no picker.
-- Switching flavors is `POST /api/v1/models/flavor` with the chosen flavor: only the
+- `models` is the list the UI's model picker shows: the active entry's `model` is what
+  the engine runs, and each entry may carry `sample` overrides (steps, cfg, sampler) that
+  apply to the jobs it starts. Empty or absent means there is no picker. (The key used to
+  be called `flavors` — older config files still load; the first save rewrites the key.)
+- Switching models is `POST /api/v1/models/switch` with the chosen entry: only the
   config is saved, the engine is left alone. The gateway is first touched when work needs
   the model — the next generation (or an explicit start) runs the probe, which evicts the
   current tenant and waits out the load, shown in the usual loading state. Picking a
-  flavor therefore never evicts whatever the gateway is serving.
+  model therefore never evicts whatever the gateway is serving.
 - The engine's capabilities are only learned while it runs (asking the gateway about it
   would load it). Each adoption is therefore remembered per model id
   (`external-caps.json` in the data folder) and restored when the service starts, so the

@@ -185,7 +185,9 @@ export default function App() {
         // Preload the model so the first generation starts immediately (on the Mac engine when it was just switched
         // on). After What's new instead (afterStartScreens): not a file or engine about to be replaced.
         // Never for an externally managed engine: visiting the UI must not put a model on the GPU.
-        if (cfg.externalEngine) setState({ external: cfg.externalEngine, flavors: cfg.flavors ?? [] });
+        if (cfg.externalEngine) setState({ external: cfg.externalEngine, models: cfg.models ?? [] });
+        // Never for an externally managed engine: visiting the UI must not put a model on the GPU.
+        if (cfg.externalEngine) setState({ external: cfg.externalEngine, models: cfg.models ?? [] });
         if (cfg.setupComplete && !whatsNew && !cfg.externalEngine && st && st.server.state === "stopped") api.startBackend().then(refreshStatus, () => refreshStatus());
       } catch (e) {
         setBoot(String(e));

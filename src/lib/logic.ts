@@ -1,6 +1,6 @@
 // Pure UI logic (unit-tested in logic.test.ts).
 
-import type { Advanced, ExternalEngine, FlavorProfile, GenerationRecord, GenerationRequest, InpaintAction, InputRecord, InstallItem, InstallStatus, JobView, LoraItem, LutInfo, MacBenchState, Mode, ModelsStatus, OutpaintSpec, Plan, Quality, ResolutionMode, Size, StatusResponse } from "./types";
+import type { Advanced, ExternalEngine, ExternalModel, GenerationRecord, GenerationRequest, InpaintAction, InputRecord, InstallItem, InstallStatus, JobView, LoraItem, LutInfo, MacBenchState, Mode, ModelsStatus, OutpaintSpec, Plan, Quality, ResolutionMode, Size, StatusResponse } from "./types";
 
 export interface Ref {
   key: string;
@@ -1069,17 +1069,23 @@ export function downloadIsFor(st: Pick<InstallStatus, "running" | "preset"> | nu
   return !!st?.running && st.preset === preset;
 }
 
-/** The full external-engine definition for a flavor: the gateway comes from the configured
- * engine, the model and sample overrides from the flavor (config `flavors`). */
-export function flavorRequest(external: ExternalEngine, f: FlavorProfile): ExternalEngine {
-  return { gateway: external.gateway, model: f.model, modelName: f.modelName, sample: f.sample };
+/** The full external-engine definition for one selectable model: the gateway comes from the
+ * configured engine, the model and sample overrides from the entry (config `models`). */
+export function modelRequest(external: ExternalEngine, m: ExternalModel): ExternalEngine {
+  return { gateway: external.gateway, model: m.model, modelName: m.modelName, sample: m.sample };
 }
 
-/** The configured flavor that made a generation, matched on the model name recorded on it
+/** The configured model entry that made a generation, matched on the model name recorded on it
  * (the engine's own name). The full name is tried first, then the file stem, in case one
  * side keeps the extension and the other does not. */
-export function flavorForModel(flavors: FlavorProfile[], model: string | null | undefined): FlavorProfile | null {
+export function entryForModel(models: ExternalModel[], model: string | null | undefined): ExternalModel | null {
   if (!model) return null;
   const stem = (s: string) => s.replace(/\.[^.]+$/, "");
-  return flavors.find((f) => f.modelName === model) ?? flavors.find((f) => stem(f.modelName) === stem(model)) ?? null;
+  return models.find((m) => m.modelName === model) ?? models.find((m) => stem(m.modelName) === stem(model)) ?? null;
+}
+
+/** The prompt enhancer works on new images, edits and combines; a painted area or an expansion
+ * wraps the prompt in its own instruction. */
+export function enhancerApplies(c: Composer): boolean {
+  return !maskInUse(c) && !outpaintInUse(c);
 }

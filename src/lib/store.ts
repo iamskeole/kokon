@@ -11,7 +11,7 @@ import { markFresh } from "../components/Cocoon";
 import { api, ApiError, setPrivateInputs, subscribe, urls } from "./api";
 import { activeLoras, buildRequest, composing, emptyComposer, goneVersions, isGenericName, macEngineDefaultDue, needsPrompt, newKey, pageOutdated, persistentAdvanced, refFromGen, refFromInput, reviewRequest, stageFitsPreview, starPromptDue, timelineLinks, typedWords, undoTarget, versionLabels, wantsPromptReview, type CompareMode, type Composer, type Ref } from "./logic";
 import { keepLabsIn, labsChanged, labSources, loadLab, type LabStore } from "./layerDoc";
-import type { AppErrorBody, ExternalEngine, FlavorProfile, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
+import type { AppErrorBody, ExternalEngine, ExternalModel, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
 
 export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "layers" | "welcome" | "whats-new" | "prompt-tips" | "shortcuts" | "ai-check";
 
@@ -60,8 +60,8 @@ export interface State {
   server: { state: ServerState; owned: boolean; error: AppErrorBody | null; model: string | null };
   /** An externally managed engine is configured (the UI never preloads one on visit). */
   external: ExternalEngine | null;
-  /** Selectable flavors of the external engine (config); empty = no model picker. */
-  flavors: FlavorProfile[];
+  /** Selectable models of the external engine (config); empty = no model picker. */
+  models: ExternalModel[];
   status: StatusResponse | null;
   /** Versions of the open project, in order. */
   session: SessionItem[];
@@ -463,7 +463,7 @@ let state: State = {
   connectError: null,
   server: { state: "stopped", owned: false, error: null, model: null },
   external: null,
-  flavors: [],
+  models: [],
   status: null,
   session: [],
   selected: null,
