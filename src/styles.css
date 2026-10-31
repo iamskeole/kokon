@@ -463,7 +463,13 @@ svg { display: block; flex: none; }
 .send:disabled { opacity: 0.25; box-shadow: none; }
 
 /* popovers */
-.popover { position: absolute; z-index: 40; min-width: 200px; background: var(--bg); border-radius: 16px; box-shadow: var(--shadow); padding: 6px; animation: pop-in 0.22s var(--ease) both; }
+/* A 200px floor wrapped several of the built-in menus' own descriptions (the longest word
+   pair in each row exceeded what 200px minus the row's check, gaps and paddings leaves) onto
+   two lines next to their one-line neighbours. 268px is the smallest floor that keeps every
+   built-in description on one line except the one written to be long ("the model's native
+   size"); menus with their own width (aspect, upscalers, the advanced panel) and the phone
+   sheet (min-width: 0) are unaffected. */
+.popover { position: absolute; z-index: 40; min-width: 268px; background: var(--bg); border-radius: 16px; box-shadow: var(--shadow); padding: 6px; animation: pop-in 0.22s var(--ease) both; }
 @keyframes pop-in { from { opacity: 0; filter: blur(4px); transform: translateY(4px) scale(0.985); } to { opacity: 1; filter: none; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .popover { animation: none; } }
 .popover .opt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 10px; text-align: left; font-size: 13px; }
