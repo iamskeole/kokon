@@ -821,7 +821,6 @@ pre.diag { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font
 
 /* image box + full-screen button */
 .image-box { position: relative; }
-.image-box .model-badge { position: absolute; left: 8px; bottom: 8px; padding: 3px 10px; border-radius: 999px; background: var(--scrim); color: var(--text); font-size: 11px; line-height: 16px; pointer-events: none; user-select: none; }
 /* LUT preview: the LUT image over the result, its opacity = the intensity. */
 .lut-overlay { position: absolute; inset: 0; pointer-events: none; background: none; }
 .lut-loading { position: absolute; top: 10px; left: 10px; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--bg); color: var(--text-2); }

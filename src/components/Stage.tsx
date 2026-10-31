@@ -1118,7 +1118,6 @@ export function Stage() {
     };
     // The preview is made for the screen: the image's own size at most.
     const previewMax = Math.min(Math.max(w, h), Math.round(1600 * Math.min(2, window.devicePixelRatio || 1)), 4096);
-    const modelBadge = modelLabel ? <span className="model-badge">{modelLabel}</span> : undefined;
     const lutBar = lutActive && (
       <LutBar
         lut={lutActive.lut}
@@ -1144,11 +1143,11 @@ export function Stage() {
             onFullscreen={openFull}
           />
         ) : g && from && showOriginal ? (
-          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} overlay={modelBadge} onFullscreen={openFull} />
+          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} onFullscreen={openFull} />
         ) : item.gen && base ? (
           <CompareFrame key={`compare-${item.gen.id}`} g={item.gen} base={base} maskSrc={maskSrc} onFullscreen={openFull} />
         ) : (
-          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} overlay={modelBadge} onFullscreen={openFull} />
+          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} onFullscreen={openFull} />
         )}
         </Hatch>
     );
