@@ -364,7 +364,15 @@ pub fn reconcile(text: &str, locked: &[BoxRow]) -> String {
     }
     for row in &rows {
         if let Some(added) = valid_added(row, &caption) {
-            if !out.iter().any(|r| r.id() == added.id()) {
+            if out.iter().any(|r| r.id() == added.id()) {
+                continue;
+            }
+            // A row that re-covers an element a locked row already owns only
+            // duplicates the instruction; the locked row stays authoritative.
+            let dup = added.identity_box().is_some_and(|ab| {
+                locked.iter().any(|l| l.identity_box().is_some_and(|lb| iou(&ab, &lb) >= 0.5))
+            });
+            if !dup {
                 out.push(added);
             }
         }
@@ -378,36 +386,113 @@ pub fn reconcile(text: &str, locked: &[BoxRow]) -> String {
 }
 
 /// The DiT follows the caption's sentences, not the table: a locked removal (a target
-/// box of null) that the model reworded as a move or a keep leaves the object standing.
-/// For every locked removal whose sentence never says it is gone, re-assert the
-/// removal in the caption in plain words. Already-removed ids are left alone, and a
-/// caption without any locked removal passes through untouched.
+/// box of null) phrased as a change ("change X to a dark wall") or a move leaves the
+/// object standing. The clause that talks about the id is rewritten into an
+/// unambiguous removal; already-removed ids are left alone, and a caption without
+/// any locked removal passes through untouched.
+/// The DiT follows the caption's sentences, not the table: if the upsampler
+/// reworded a locked removal as a change ("change the background X to a dark
+/// wall"), the object stays. The clause that talks about the id is rewritten
+/// into an unambiguous removal; a sentence is appended only when the id is
+/// missing entirely or the clause is shared with another id.
 pub fn fix_remove_actions(caption: &str, locked: &[BoxRow]) -> String {
     let mut out = caption.to_string();
     for r in locked.iter().filter(|r| matches!(r, BoxRow::Edit { tgt_bbox: None, .. })) {
         let id = r.id();
-        let has = out
-            .split(|c: char| matches!(c, '.' | '!' | '?'))
-            .any(|s| {
-                s.contains(&format!("<{id}>"))
-                    && {
-                        let l = s.to_lowercase();
-                        l.contains("remov") || l.contains("no longer") || l.contains(" gone") || l.contains("without")
-                    }
-            });
-        if has {
-            continue;
-        }
+        let tag = format!("<{id}>");
         let desc = match r {
             BoxRow::Edit { desc, .. } => desc.trim().to_string(),
             _ => unreachable!(),
         };
-        let sentence = if desc.is_empty() {
-            format!("The object <{id}> is removed from the scene.")
-        } else {
-            format!("The {desc} <{id}> is removed from the scene.")
+        let mut noun = if desc.is_empty() { "the object".to_string() } else { desc };
+        // A bare noun ("mug") reads wrong in "Remove mug <id>": give it a definite article.
+        if !noun.starts_with("a ") && !noun.starts_with("an ") && !noun.starts_with("the ") {
+            noun = format!("the {noun}");
+        }
+
+        // A sentence that already says removed / gone / no longer stands.
+        let ok = out
+            .split(|c: char| matches!(c, '.' | '!' | '?'))
+            .any(|s| s.contains(&tag) && {
+                let l = s.to_lowercase();
+                l.contains("remov") || l.contains("no longer") || l.contains(" gone") || l.contains("without")
+            });
+        if ok {
+            continue;
+        }
+
+        // The clause around the id: from after the previous delimiter to the
+        // first delimiter after it.
+        let Some(start) = out.find(&tag) else {
+            out = format!("{out} Remove {noun} {tag} from the scene.");
+            continue;
         };
-        out = format!("{out} {sentence}");
+        let clause_end = out
+            .get(start + tag.len()..)
+            .and_then(|rest| rest.find(|c: char| matches!(c, ',' | '.' | '!' | '?')))
+            .map(|i| start + tag.len() + i)
+            .unwrap_or(out.len());
+        let clause = out[start..clause_end].to_string();
+        let delim = if clause_end < out.len() {
+            out.as_bytes()[clause_end] as char
+        } else {
+            '.'
+        };
+        let c_begin = out[..start]
+            .rfind(|c: char| matches!(c, ',' | '.' | '!' | '?'))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // Another <id> in the same clause: replacing it would eat that
+        // instruction, so append instead of rewrite.
+        let shared = tag_tokens(&clause).into_iter().any(|t| t != id);
+        if shared {
+            out = format!("{out} Remove {noun} {tag} from the scene.");
+            continue;
+        }
+
+        let lc = out[c_begin..clause_end].trim_start().to_lowercase();
+        let lead = if lc.starts_with("and ") {
+            "and "
+        } else if lc.starts_with("while ") {
+            "while "
+        } else if lc.starts_with("plus ") {
+            "plus "
+        } else if lc.starts_with("then ") {
+            "then "
+        } else {
+            ""
+        };
+        let (verb, sep) = if lead.is_empty() {
+            if c_begin == 0 {
+                ("Remove", "")
+            } else {
+                ("remove", " ")
+            }
+        } else {
+            (lead, "")
+        };
+        let phrase = format!("{sep}{verb} {noun} {tag} from the scene");
+        let tail = if delim == ',' { ',' } else { '.' };
+        let skip = if clause_end < out.len() { 1 } else { 0 };
+        out = format!("{}{}{}{}", &out[..c_begin], phrase, tail, &out[clause_end + skip..]);
+    }
+    out
+}
+
+/// The <...> tokens in a piece of text, in order.
+fn tag_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(a) = rest.find('<') {
+        let after = &rest[a + 1..];
+        match after.find('>') {
+            Some(b) => {
+                out.push(after[..b].to_string());
+                rest = &after[b + 1..];
+            }
+            None => break,
+        }
     }
     out
 }
@@ -660,7 +745,35 @@ mod tests {
     fn a_reworded_removal_is_reasserted() {
         let locked = vec![Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
         let cap = "Change the position of the mug <mug_2> to the right side of the desk, and move the notebook <book_2> to the left side of the desk, while keeping the teapot <teapot_1> in its new position on the right.";
-        assert_eq!(out_check(cap, &locked), format!("{cap} The mug <mug_2> is removed from the scene."));
+        assert_eq!(
+            out_check(cap, &locked),
+            "Remove the mug <mug_2> from the scene, and move the notebook <book_2> to the left side of the desk, while keeping the teapot <teapot_1> in its new position on the right."
+        );
+    }
+
+    #[test]
+    fn a_change_phrased_removal_is_rewritten_in_place() {
+        // The user's T4: the PUP said "change the background to a dark wall"
+        // for a removed object and the model obeyed the prose.
+        let locked = vec![Edit_row_fixture("obj_2", "", Some([537, 4, 970, 176]), None)];
+        let cap = "Change the background <obj_2> to a plain dark wall, move the notebook <obj_6> to the right side of the desk, and keep the teapot <obj_7> in place.";
+        assert_eq!(
+            out_check(cap, &locked),
+            "Remove the object <obj_2> from the scene, move the notebook <obj_6> to the right side of the desk, and keep the teapot <obj_7> in place."
+        );
+    }
+
+    #[test]
+    fn a_clause_shared_with_other_ids_is_appended_not_rewritten() {
+        let locked = vec![
+            Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None),
+            Edit_row_fixture("book_2", "book", Some([450, 620, 800, 900]), Some([500, 350, 750, 600])),
+        ];
+        let cap = "Keep the mug <mug_2> next to the book <book_2> on the shelf.";
+        assert_eq!(
+            out_check(cap, &locked),
+            "Keep the mug <mug_2> next to the book <book_2> on the shelf. Remove the mug <mug_2> from the scene."
+        );
     }
 
     fn out_check(cap: &str, locked: &[BoxRow]) -> String {
@@ -686,6 +799,29 @@ mod tests {
     #[test]
     fn an_empty_description_falls_back_to_the_object_word() {
         let locked = vec![Edit_row_fixture("cup_1", "", Some([100, 100, 300, 300]), None)];
-        assert_eq!(fix_remove_actions("A desk.", &locked), "A desk. The object <cup_1> is removed from the scene.");
+        assert_eq!(fix_remove_actions("A desk.", &locked), "A desk. Remove the object <cup_1> from the scene.");
+    }
+
+    #[test]
+    fn an_added_row_recovering_a_locked_element_is_dropped() {
+        // The T7 case: the upsampler annotates the same element a locked row
+        // already owns (a tighter box around the same object).
+        let locked = vec![Edit_row_fixture("obj_1", "", Some([50, 100, 950, 500]), Some([50, 100, 950, 500]))];
+        let rows = vec![
+            json!({"id": "obj_1", "from": "ref_image_0", "src_bbox": [50, 100, 950, 500], "tgt_bbox": [50, 100, 950, 500], "desc": ""}),
+            json!({"id": "lantern_1", "from": "ref_image_1", "src_bbox": [200, 150, 900, 450], "tgt_bbox": [200, 150, 900, 450], "desc": "a brass lantern"}),
+            json!({"id": "window_1", "from": "ref_image_1", "src_bbox": [10, 10, 200, 300], "tgt_bbox": [10, 10, 200, 300], "desc": "a window"}),
+        ];
+        let text = format!(
+            "A scene. <obj_1> <lantern_1> <window_1> {}
+",
+            serde_json::to_string(&rows).unwrap()
+        );
+        let out = reconcile(&text, &locked);
+        let i = out.rfind("[{").unwrap_or(0);
+        let table = &out[i..];
+        assert!(table.contains("\"obj_1\""));
+        assert!(!table.contains("lantern_1"));
+        assert!(table.contains("window_1"));
     }
 }
