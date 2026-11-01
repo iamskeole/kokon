@@ -17,15 +17,26 @@ export interface Ref {
  * (x1/y1 = top-left); the model reads them on a 0-1000 grid, converted in
  * `boxRows`. klein places them into the prompt string as a JSON table (BFL's
  * contract) - no separate payload. */
-export interface BoxRow {
-  id: string;
-  /** keep: the thing stays where it is (edit); new: put something here;
-   * remove: take the thing away (edit). */
-  kind: "keep" | "new" | "remove";
+/** A rectangle on the 0-1 canvas of its tab (fractions, top-left origin). */
+export interface BoxRect {
   x1: number;
   y1: number;
   x2: number;
   y2: number;
+}
+
+export interface BoxRow {
+  id: string;
+  /** Which tab the box was drawn on: null = the blank "New" canvas (a text-to-image
+   * placement); N = the Nth reference image. */
+  ref: number | null;
+  /** keep: the thing stays where it is; move: it goes from src to tgt; new: the described
+   * thing appears at tgt (in the output, so src is null); remove: the thing at src goes away. */
+  kind: "keep" | "move" | "new" | "remove";
+  /** Where the thing currently is. Null for `new` (and for placements on the blank canvas). */
+  src: BoxRect | null;
+  /** Where the thing ends up. Null for `remove`. */
+  tgt: BoxRect | null;
   desc: string;
 }
 
@@ -167,24 +178,29 @@ export function modelSupportsBoxes(model?: string | null): boolean {
 }
 
 /** One box as the model reads it, on BFL's 0-1000 canvas ([y_min, x_min, y_max, x_max],
- * top-left origin). A request with no reference images carries plain placement rows;
- * one with references carries edit rows against the first image (ref_image_0). */
+ * top-left origin). Boxes drawn on the blank canvas are plain placements (text-to-image);
+ * boxes drawn over a reference are edit rows - keep/move/remove against that reference
+ * (ref_image_N), "new" against the output image ("target"). */
 export function boxRows(c: Pick<Composer, "boxes" | "refs">): Record<string, unknown>[] {
   if (!c.boxes.length) return [];
-  const box = (r: BoxRow): [number, number, number, number] => {
-    const q = (v: number) => Math.min(1000, Math.max(0, Math.round(v * 1000)));
-    const [x1, y1, x2, y2] = [q(r.x1), q(r.y1), q(r.x2), q(r.y2)];
-    return [y1, x1, y2, x2];
-  };
-  const ref = c.refs.length > 0;
-  return c.boxes.map((r) => {
-    const b = box(r);
-    if (!ref) return { id: r.id, bbox: b, desc: r.desc };
-    const from = r.kind === "new" ? null : "ref_image_0";
-    const src = r.kind === "new" ? null : b;
-    const tgt = r.kind === "remove" ? null : b;
-    return { id: r.id, from, src_bbox: src, tgt_bbox: tgt, desc: r.desc };
-  });
+  const q = (v: number) => Math.min(1000, Math.max(0, Math.round(v * 1000)));
+  const rect = (r: BoxRect | null): [number, number, number, number] | null =>
+    r ? [q(r.y1), q(r.x1), q(r.y2), q(r.x2)] : null;
+  const out: Record<string, unknown>[] = [];
+  for (const r of c.boxes) {
+    // A box drawn on a reference that is no longer there has no meaning on the wire.
+    if (r.ref != null && (r.ref >= c.refs.length || !c.refs[r.ref])) continue;
+    const s = rect(r.src);
+    const t = rect(r.tgt);
+    if (r.ref == null) {
+      if (!t) continue;
+      out.push({ id: r.id, bbox: t, desc: r.desc });
+    } else {
+      const from = r.kind === "new" ? "target" : `ref_image_${r.ref}`;
+      out.push({ id: r.id, from, src_bbox: s, tgt_bbox: t, desc: r.desc });
+    }
+  }
+  return out;
 }
 
 /** The table the model reads: the caption, one space, the JSON array (BFL's exact form). */

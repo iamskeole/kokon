@@ -835,7 +835,10 @@ describe("entryForModel", () => {
 });
 
 describe("layout boxes", () => {
-  const box = (o: Partial<BoxRow> = {}): BoxRow => ({ id: "obj_1", kind: "new", x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4, desc: "a bird", ...o });
+  const rect = { x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 };
+  const box = (o: Partial<BoxRow> = {}): BoxRow => ({
+    id: "obj_1", ref: 0, kind: "new", src: null, tgt: { ...rect }, desc: "a bird", ...o,
+  });
 
   it("only klein models read the table", () => {
     expect(modelSupportsBoxes("kokon-klein")).toBe(true);
@@ -846,19 +849,35 @@ describe("layout boxes", () => {
   });
 
   it("text-to-image rows are plain placements on the 0-1000 canvas", () => {
-    const c = { ...emptyComposer(), refs: [], boxes: [box({ id: "obj_1" }), box({ id: "obj_2", x1: 0.5, y1: 0.5, x2: 0.9999, y2: 0.9999, desc: "text" })] };
+    const c = { ...emptyComposer(), refs: [], boxes: [
+      box({ id: "obj_1", ref: null }),
+      box({ id: "obj_2", ref: null, tgt: { x1: 0.5, y1: 0.5, x2: 0.9999, y2: 0.9999 }, desc: "text" }),
+    ]};
     expect(boxRows(c)).toEqual([
       { id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" },
       { id: "obj_2", bbox: [500, 500, 1000, 1000], desc: "text" },
     ]);
   });
 
-  it("edit rows carry the keep / new / remove provenance against ref_image_0", () => {
-    const c = { ...emptyComposer(), refs: [ref(1)], boxes: [box({ kind: "keep" }), box({ id: "obj_2", kind: "new", desc: "a mug" }), box({ id: "obj_3", kind: "remove" })] };
+  it("edit rows carry the keep / move / new / remove provenance against their reference", () => {
+    const c = { ...emptyComposer(), refs: [ref(1), ref(2)], boxes: [
+      box({ kind: "keep", src: { ...rect }, tgt: { ...rect } }),
+      box({ id: "obj_2", kind: "move", ref: 1, src: { ...rect }, tgt: { x1: 0.5, y1: 0.5, x2: 0.9999, y2: 0.9999 } }),
+      box({ id: "obj_3", kind: "new", desc: "a mug" }),
+      box({ id: "obj_4", kind: "remove", src: { ...rect }, tgt: null }),
+    ]};
     expect(boxRows(c)).toEqual([
       { id: "obj_1", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
-      { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a mug" },
-      { id: "obj_3", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: null, desc: "a bird" },
+      { id: "obj_2", from: "ref_image_1", src_bbox: [200, 100, 400, 300], tgt_bbox: [500, 500, 1000, 1000], desc: "a bird" },
+      { id: "obj_3", from: "target", src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a mug" },
+      { id: "obj_4", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: null, desc: "a bird" },
+    ]);
+  });
+
+  it("drops boxes drawn on references that are no longer there", () => {
+    const c = { ...emptyComposer(), refs: [ref(1)], boxes: [box(), box({ id: "obj_2", ref: 5 })] };
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", from: "target", src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
     ]);
   });
 
@@ -873,7 +892,7 @@ describe("layout boxes", () => {
   });
 
   it("buildRequest appends the table only for klein models", () => {
-    const c = { ...emptyComposer(), prompt: "  a lamp  ", boxes: [box()] };
+    const c = { ...emptyComposer(), prompt: "  a lamp  ", refs: [ref(1)], boxes: [box()] };
     const klein = buildRequest(c, undefined, "kokon-klein");
     expect(klein.prompt).toBe(`a lamp ${JSON.stringify(boxRows(c))}`);
     const turbo = buildRequest(c, undefined, "kokon-turbo");
