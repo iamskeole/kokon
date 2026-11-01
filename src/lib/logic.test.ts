@@ -9,11 +9,11 @@ import {
   whatsNewDue,
   macBenchProgress,
   dayGroup, isGenericName, placeInCanvas, projectTitle, typedWords, withActionVerb,
-  activeLoras, activeOverrides, buildRequest, composing, editing, reviewRequest, wantsPromptReview, toggleLora, MAX_LORAS, jobPercent, compareBase, composerFromRecord, diffPixels, emptyComposer, expansionPixels, expansionPreset, jobLabel, jobSecondsLeft, lutInfo, moveRef, needsPrompt, normalizeQuality, persistentAdvanced, pipelineSummary,
+  activeLoras, activeOverrides, buildRequest, enhancerApplies, composing, editing, reviewRequest, wantsPromptReview, toggleLora, MAX_LORAS, jobPercent, compareBase, composerFromRecord, diffPixels, emptyComposer, expansionPixels, expansionPreset, jobLabel, jobSecondsLeft, lutInfo, moveRef, needsPrompt, normalizeQuality, persistentAdvanced, pipelineSummary,
   planPipeline, remainingSeconds, sizeForWidth, timeAgo, upscaleRequest, upscaleTargets, versionLabels, type JobClock, type Ref,
   neighbourAfterRemoval, pageOutdated, previewIndex, starPromptDue, STAR_PROMPT_AFTER, formatBytes, formatDuration, installItemShort, installItemText, installProgress, installStep, installTimeLeft, timelineLinks, undoTarget, aspectLabel, parseRatio, sizeForRatio, sizeForLongSide, expandToRatio, expandToSize, arcLayout,
   goneVersions, PREVIEW_SIDE, stageFitsPreview, viewerWantsFull,
-  modelRequest, entryForModel, boxRows, appendBoxTable, splitBoxTable, modelSupportsBoxes, type BoxRow,
+  modelRequest, entryForModel, boxRows, appendBoxTable, splitBoxTable, modelSupportsBoxes, modelSupportsInpaint, type BoxRow,
 } from "./logic";
 import type { GenerationRecord, InstallItem, JobView, LoraItem, Plan } from "./types";
 
@@ -108,6 +108,28 @@ describe("buildRequest", () => {
     const moved = { ...c, refs: [ref(2), ref(1)] };
     expect("inpaint_action" in buildRequest(moved)).toBe(false);
     expect(needsPrompt(moved)).toBe(true);
+  });
+  it("drops the mask for box models (no inpaint pass there) and degrades to an edit", () => {
+    const c = { ...emptyComposer(), prompt: "take the handle off", refs: [ref(1)], mask: { inputId: "m", refKey: "k1" }, inpaintAction: "remove" as const };
+    // The non-box path sends the mask as before.
+    expect(buildRequest(c, undefined, "kokon-full").mask).toBe("input:m");
+    // Klein has no inpaint pass: no mask, no action - the job stays an edit.
+    const r = buildRequest(c, undefined, "kokon-klein");
+    expect(r.mask).toBeNull();
+    expect("inpaint_action" in r).toBe(false);
+    expect(r.images).toEqual(["input:1"]);
+    // The enhancer applies to that degraded edit, and needs a prompt like any edit.
+    expect(enhancerApplies(c, "kokon-klein")).toBe(true);
+    // 0.12: the Qwen painted area gets a prompt of its own too (in external mode the sidecar
+    // VLM writes it); only a maskless upscale has no prompt.
+    expect(enhancerApplies(c, "kokon-full")).toBe(true);
+    expect(needsPrompt(c, "kokon-klein")).toBe(true);
+  });
+  it("boxes and inpaint are complementary per model", () => {
+    expect(modelSupportsInpaint("kokon-klein")).toBe(false);
+    expect(modelSupportsInpaint("kokon-full")).toBe(true);
+    expect(modelSupportsInpaint(undefined)).toBe(true);
+    expect(modelSupportsBoxes("kokon-klein") && modelSupportsInpaint("kokon-klein")).toBe(false);
   });
   it("custom resolution sends dimensions", () => {
     const c = { ...emptyComposer(), prompt: "x", resolution: "custom" as const, customWidth: 1280, customHeight: 720 };

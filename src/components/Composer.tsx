@@ -205,9 +205,12 @@ function TargetBar() {
 
   const first = c.refs[0];
   const name = nameOf(first)?.toLowerCase() ?? (first.source.startsWith("gen:") ? "this result" : first.name);
+  // A painted mask only takes effect for models with an inpaint pass; for box models it
+  // degrades to an edit (the build would ignore it and re-denoise the whole image).
+  const maskLive = !!c.mask && !boxesOn;
   const outPx = hasOutpaint(c.outpaint) ? expansionPixels(c.outpaint!, first.width, first.height) : null;
   const what =
-    c.refs.length > 1 ? `Combining ${c.refs.length} images` : c.mask?.marks ? `Adding at the coloured marks on ${name}` : c.mask ? `${INPAINT_VERB[c.inpaintAction]} the painted area of ${name}` : outPx ? `Expanding ${name}` : `Editing ${name}`;
+    c.refs.length > 1 ? `Combining ${c.refs.length} images` : maskLive ? (c.mask?.marks ? `Adding at the coloured marks on ${name}` : `${INPAINT_VERB[c.inpaintAction]} the painted area of ${name}`) : outPx ? `Expanding ${name}` : `Editing ${name}`;
   const sub =
     c.refs.length > 1
       ? "Refer to them as image 1, image 2… in the prompt"
@@ -225,9 +228,11 @@ function TargetBar() {
       </span>
       <span className="spacer" />
       <span className="tool-group">
-        <button className={`tool ${c.mask ? "on" : ""}`} data-tour="paint" onClick={() => openEditor("inpaint")} title="Paint where things go (one colour each), or the area to change; the rest stays as it is">
-          <Brush size={14} /> <span className="lbl">{c.mask?.marks ? "Colours painted" : c.mask ? "Area painted" : "Paint area"}</span>
-        </button>
+{!boxesOn && (
+          <button className={`tool ${c.mask ? "on" : ""}`} data-tour="paint" onClick={() => openEditor("inpaint")} title="Paint where things go (one colour each), or the area to change; the rest stays as it is">
+            <Brush size={14} /> <span className="lbl">{c.mask?.marks ? "Colours painted" : c.mask ? "Area painted" : "Paint area"}</span>
+          </button>
+        )}
         {boxesOn && (
           <button className="tool" onClick={() => setState({ overlay: "boxes" })} title="Layout boxes: draw rectangles to place, keep or remove things">
             <Square size={14} /> <span className="lbl">Boxes</span>
@@ -522,9 +527,10 @@ export function Composer() {
   const { plan, error } = usePlanPreview();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const hasImages = c.refs.length > 0;
-  const boxesPillOn = modelSupportsBoxes(useStore((s) => s.external?.model)) && c.refs.length === 0;
+  const model = useStore((s) => s.external?.model);
+  const boxesPillOn = modelSupportsBoxes(model) && c.refs.length === 0;
   const overrides = activeOverrides(c.advanced);
-  const canEnhance = useStore(enhancerAvailable) && enhancerApplies(c);
+  const canEnhance = useStore(enhancerAvailable) && enhancerApplies(c, model);
   const newImage = !editing(c);
   // Prompt+ review: the prompt it is writing streams into the box, which is read-only meanwhile.
   const review = useStore((s) => s.review);
@@ -669,7 +675,7 @@ export function Composer() {
       className="send"
       title={wantsPromptReview(c) ? "Write the prompt with Prompt+ (Enter)" : newImage ? "Create (Enter)" : "Apply (Enter)"}
       aria-label={wantsPromptReview(c) ? "Write the prompt" : "Generate"}
-      disabled={!typedWords(c) && needsPrompt(c)}
+      disabled={!typedWords(c) && needsPrompt(c, model)}
       onClick={submit}
     >
       {wantsPromptReview(c) ? <WandSparkles size={17} strokeWidth={2.2} /> : <ArrowUp size={18} strokeWidth={2.4} />}

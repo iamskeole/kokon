@@ -1280,7 +1280,7 @@ export async function submitComposer() {
   const req: GenerationRequest = { ...buildRequest(s.composer, parent, s.external?.model), loras: activeLoras(s.composer, s.loras) };
   // Made from the layers lab: a step, out of the gallery (only the image saved from the lab shows).
   if (s.overlay === "layers" || isLabStep(target)) req.hidden = true;
-  if (!req.prompt && needsPrompt(s.composer)) {
+  if (!req.prompt && needsPrompt(s.composer, s.external?.model)) {
     toastInfo("Describe what to create or change.");
     return;
   }

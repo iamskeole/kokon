@@ -177,6 +177,17 @@ export function modelSupportsBoxes(model?: string | null): boolean {
   return !!model && model.toLowerCase().includes("klein");
 }
 
+/** Inpaint (mask) works everywhere the box table does not. The klein build has no
+ * inpaint pass - a mask is silently ignored and the whole image re-denoises, which
+ * at full strength is a gray smear - so the client degrades a masked klein job to an
+ * edit instead of sending the mask. */
+export function modelSupportsInpaint(model?: string | null): boolean {
+  return !modelSupportsBoxes(model);
+}
+
+/** A painted mask the request will actually send, for `model` (see modelSupportsInpaint). */
+const maskLive = (c: Composer, model?: string | null) => maskInUse(c) && modelSupportsInpaint(model);
+
 /** One box as the model reads it, on BFL's 0-1000 canvas ([y_min, x_min, y_max, x_max],
  * top-left origin). Boxes drawn on the blank canvas are plain placements (text-to-image);
  * boxes drawn over a reference are edit rows - keep/move/remove against that reference
@@ -254,7 +265,8 @@ export function splitBoxTable(prompt: string): { caption: string; rows: BoxTable
 
 /** Composer state -> stable service request. */
 export function buildRequest(c: Composer, parentId?: string | null, model?: string | null): GenerationRequest {
-  const maskValid = maskInUse(c);
+  // A painted mask is dropped for box models (no inpaint pass there): the job becomes an edit.
+  const maskValid = maskLive(c, model);
   const custom = c.resolution === "custom";
   // Inpaint and expand keep the source's shape; create, edit and combine take the chosen ratio.
   const shaped = !maskValid && !outpaintInUse(c);
@@ -279,7 +291,7 @@ export function buildRequest(c: Composer, parentId?: string | null, model?: stri
     client: "ui",
     parent_id: parentId ?? null,
     // A prompt Prompt+ wrote already is sent as it is, with the user's words kept beside it.
-    ...(reviewed ? { enhanced_from: c.enhancedFrom } : c.enhance ? { enhance: true, ...(c.enhanceDetail ? { enhance_detail: true } : {}) } : {}),
+    ...(reviewed ? { enhanced_from: c.enhancedFrom } : c.enhance && enhancerApplies(c, model) ? { enhance: true, ...(c.enhanceDetail ? { enhance_detail: true } : {}) } : {}),
   };
 }
 
@@ -317,10 +329,19 @@ export function typedWords(c: Composer): string {
   return maskInUse(c) && !c.mask!.marks ? c.prompt.replace(VERB_RE, "").trim() : c.prompt.trim();
 }
 
-/** False for a removal in a painted area, which needs no description, and for Expand, which
- * continues the scene (Prompt+ can write what the new areas show). */
-export function needsPrompt(c: Composer): boolean {
-  return !((maskInUse(c) && !c.mask!.marks && c.inpaintAction === "remove") || outpaintInUse(c));
+/** The prompt enhancer always applies (Prompt+ writes the area's and the expansion's prompt too,
+ * through its own request in Kokon's engine; with an external engine the sidecar VLM writes it).
+ * On a box model the mask is dropped, so the job is a plain edit the enhancer covers as well. */
+export function enhancerApplies(_c: Composer, _model?: string | null): boolean {
+  return true;
+}
+
+/** A removal in a painted area needs no description (the mask shows what goes) - except on a
+ * box model, whose mask is dropped: its removal degrades to an edit and needs the user's words.
+ * Expand needs none either: the enhancer continues the scene. */
+export function needsPrompt(c: Composer, model?: string | null): boolean {
+  const removal = maskInUse(c) && !c.mask!.marks && c.inpaintAction === "remove" && !modelSupportsBoxes(model);
+  return !(removal || outpaintInUse(c));
 }
 
 /** Advanced fields that change how the model samples. They last for the session only: a value
@@ -1196,8 +1217,3 @@ export function entryForModel(models: ExternalModel[], model: string | null | un
   return models.find((m) => m.modelName === model) ?? models.find((m) => stem(m.modelName) === stem(model)) ?? null;
 }
 
-/** The prompt enhancer works on new images, edits and combines; a painted area or an expansion
- * wraps the prompt in its own instruction. */
-export function enhancerApplies(c: Composer): boolean {
-  return !maskInUse(c) && !outpaintInUse(c);
-}

@@ -216,6 +216,10 @@ export function PhoneActions({ item, showOriginal, onLut }: { item: SessionItem;
     editShownImage();
     setState({ overlay });
   };
+  // Paint and Boxes are complementary: a box model removes with boxes (it has no inpaint
+  // pass - a mask would be ignored and the whole image re-denoised to gray), so Paint is
+  // hidden for those; every other model paints, not boxes.
+  const boxesOn = modelSupportsBoxes(useStore((s) => s.external?.model));
   const save = () => {
     const thumb = urls.sourceThumb(source);
     if (g) {
@@ -240,8 +244,8 @@ export function PhoneActions({ item, showOriginal, onLut }: { item: SessionItem;
           }}
         />
       )}
-      <ActionButton title="Paint the area to change" icon={<Brush size={17} />} label="Paint" onClick={() => paint("inpaint")} />
-      {modelSupportsBoxes(useStore((s) => s.external?.model)) && (
+      {!boxesOn && <ActionButton title="Paint the area to change" icon={<Brush size={17} />} label="Paint" onClick={() => paint("inpaint")} />}
+      {boxesOn && (
         <ActionButton title="Draw layout boxes: place, keep or remove things" icon={<Square size={17} />} label="Boxes" onClick={() => paint("boxes")} />
       )}
       <ActionButton title="Extend the image beyond its borders" icon={<Expand size={17} />} label="Expand" onClick={() => paint("expand")} />
