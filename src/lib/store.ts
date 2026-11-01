@@ -9,11 +9,11 @@ import { inBrowser, isNarrow } from "./platform";
 import { useSyncExternalStore } from "react";
 import { markFresh } from "../components/Cocoon";
 import { api, ApiError, setPrivateInputs, subscribe, urls } from "./api";
-import { activeLoras, buildRequest, composing, emptyComposer, goneVersions, isGenericName, macEngineDefaultDue, needsPrompt, newKey, pageOutdated, persistentAdvanced, refFromGen, refFromInput, reviewRequest, stageFitsPreview, starPromptDue, timelineLinks, typedWords, undoTarget, versionLabels, wantsPromptReview, type CompareMode, type Composer, type Ref } from "./logic";
+import { activeLoras, buildRequest, composing, emptyComposer, goneVersions, isGenericName, macEngineDefaultDue, needsPrompt, newKey, pageOutdated, persistentAdvanced, refFromGen, refFromInput, reviewRequest, stageFitsPreview, starPromptDue, timelineLinks, undoTarget, versionLabels, wantsPromptReview, type CompareMode, type Composer, type Ref } from "./logic";
 import { keepLabsIn, labsChanged, labSources, loadLab, type LabStore } from "./layerDoc";
 import type { AppErrorBody, ExternalEngine, ExternalModel, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
 
-export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "layers" | "welcome" | "whats-new" | "prompt-tips" | "shortcuts" | "ai-check";
+export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "layers" | "boxes" | "welcome" | "whats-new" | "prompt-tips" | "shortcuts" | "ai-check" | "mac-engine";
 
 export interface SessionItem {
   key: string;
@@ -1270,10 +1270,10 @@ export async function submitComposer() {
   if (wantsPromptReview(s.composer)) return startPromptReview();
   const target = composing(s.composer) ? undefined : s.composer.refs[0]?.source;
   const parent = target?.startsWith("gen:") ? target.slice(4) : null;
-  const req: GenerationRequest = { ...buildRequest(s.composer, parent), loras: activeLoras(s.composer, s.loras) };
+  const req: GenerationRequest = { ...buildRequest(s.composer, parent, s.external?.model), loras: activeLoras(s.composer, s.loras) };
   // Made from the layers lab: a step, out of the gallery (only the image saved from the lab shows).
   if (s.overlay === "layers" || isLabStep(target)) req.hidden = true;
-  if (!typedWords(s.composer) && needsPrompt(s.composer)) {
+  if (!req.prompt && needsPrompt(s.composer)) {
     toastInfo("Describe what to create or change.");
     return;
   }
@@ -1291,7 +1291,7 @@ export async function submitComposer() {
 /** Prompt+ review: the prompt is written into the box first (a job that makes no image). */
 async function startPromptReview() {
   const s = getState();
-  let req = reviewRequest(s.composer);
+  let req = reviewRequest(s.composer, s.external?.model);
   if (s.privateMode) req = { ...req, private: true };
   try {
     const job = await api.submit(req);

@@ -13,6 +13,22 @@ export interface Ref {
   hdr?: boolean;
 }
 
+/** One layout box drawn in the box editor. Coordinates are 0-1 on the canvas
+ * (x1/y1 = top-left); the model reads them on a 0-1000 grid, converted in
+ * `boxRows`. klein places them into the prompt string as a JSON table (BFL's
+ * contract) - no separate payload. */
+export interface BoxRow {
+  id: string;
+  /** keep: the thing stays where it is (edit); new: put something here;
+   * remove: take the thing away (edit). */
+  kind: "keep" | "new" | "remove";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  desc: string;
+}
+
 export interface Composer {
   prompt: string;
   refs: Ref[];
@@ -45,6 +61,9 @@ export interface Composer {
   create: boolean;
   /** LoRAs switched on in this project; null = the ones on by default (`activeLoras`). */
   loras: string[] | null;
+  /** Layout boxes drawn in the box editor (session-only; sent as a JSON table the
+   * model reads in the prompt - klein only). */
+  boxes: BoxRow[];
 }
 
 /** A preset name from any version: older ones also had "turbo" (now Fast) and "ultra" (now Quality). */
@@ -76,6 +95,7 @@ export const emptyComposer = (prefs?: Partial<Composer>): Composer => ({
   enhancedFrom: null,
   create: false,
   loras: null,
+  boxes: [],
 });
 
 /** The prompt makes a new image from the reference images (rather than editing image 1). */
@@ -140,8 +160,66 @@ export function hasOutpaint(o: OutpaintSpec | null): boolean {
 const maskInUse = (c: Composer) => !composing(c) && !!c.mask && !!c.refs[0] && c.mask.refKey === c.refs[0].key;
 const outpaintInUse = (c: Composer) => !composing(c) && hasOutpaint(c.outpaint);
 
+/** The model reads layout boxes: klein does (BFL's prompt-embedded table contract).
+ * Other models would just see JSON in the prompt, so the client gates on this. */
+export function modelSupportsBoxes(model?: string | null): boolean {
+  return !!model && model.toLowerCase().includes("klein");
+}
+
+/** One box as the model reads it, on BFL's 0-1000 canvas ([y_min, x_min, y_max, x_max],
+ * top-left origin). A request with no reference images carries plain placement rows;
+ * one with references carries edit rows against the first image (ref_image_0). */
+export function boxRows(c: Pick<Composer, "boxes" | "refs">): Record<string, unknown>[] {
+  if (!c.boxes.length) return [];
+  const box = (r: BoxRow): [number, number, number, number] => {
+    const q = (v: number) => Math.min(1000, Math.max(0, Math.round(v * 1000)));
+    const [x1, y1, x2, y2] = [q(r.x1), q(r.y1), q(r.x2), q(r.y2)];
+    return [y1, x1, y2, x2];
+  };
+  const ref = c.refs.length > 0;
+  return c.boxes.map((r) => {
+    const b = box(r);
+    if (!ref) return { id: r.id, bbox: b, desc: r.desc };
+    const from = r.kind === "new" ? null : "ref_image_0";
+    const src = r.kind === "new" ? null : b;
+    const tgt = r.kind === "remove" ? null : b;
+    return { id: r.id, from, src_bbox: src, tgt_bbox: tgt, desc: r.desc };
+  });
+}
+
+/** The table the model reads: the caption, one space, the JSON array (BFL's exact form). */
+export function appendBoxTable(prompt: string, rows: Record<string, unknown>[]): string {
+  if (!rows.length) return prompt;
+  return `${prompt} ${JSON.stringify(rows)}`;
+}
+
+/** A layout-box table at the end of a stored prompt: the caption plus the parsed rows. Display
+ * only - the service is the source of truth, so stay lenient: every row needs an id and at
+ * least one of the box fields. */
+export function splitBoxTable(prompt: string): { caption: string; rows: { id: string; desc?: string }[] } | null {
+  for (let i = prompt.lastIndexOf("["); i >= 0; i = prompt.lastIndexOf("[", i - 1)) {
+    let v: unknown;
+    try {
+      v = JSON.parse(prompt.slice(i).trim());
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(v) || !v.length) continue;
+    const rows: { id: string; desc?: string }[] = [];
+    for (const r of v) {
+      if (!r || typeof r !== "object") return null;
+      const o = r as Record<string, unknown>;
+      if (typeof o.id !== "string") return null;
+      if (!Array.isArray(o.bbox) && !Array.isArray(o.src_bbox) && !Array.isArray(o.tgt_bbox)) return null;
+      rows.push({ id: o.id, desc: typeof o.desc === "string" && o.desc ? o.desc : undefined });
+    }
+    return { caption: prompt.slice(0, i).trimEnd(), rows };
+  }
+  return null;
+}
+
 /** Composer state -> stable service request. */
-export function buildRequest(c: Composer, parentId?: string | null): GenerationRequest {
+export function buildRequest(c: Composer, parentId?: string | null, model?: string | null): GenerationRequest {
   const maskValid = maskInUse(c);
   const custom = c.resolution === "custom";
   // Inpaint and expand keep the source's shape; create, edit and combine take the chosen ratio.
@@ -149,7 +227,7 @@ export function buildRequest(c: Composer, parentId?: string | null): GenerationR
   // Written by Prompt+ already (from the user's words, or from none: "" for a removal or Expand).
   const reviewed = c.enhancedFrom != null && !!c.prompt.trim();
   return {
-    prompt: c.prompt.trim(),
+    prompt: modelSupportsBoxes(model) ? appendBoxTable(c.prompt.trim(), boxRows(c)) : c.prompt.trim(),
     mode: composing(c) ? "compose" : c.mode,
     images: c.mode === "generate" && !composing(c) ? [] : c.refs.map((r) => r.source),
     mask: maskValid ? `input:${c.mask!.inputId}` : null,
@@ -183,8 +261,8 @@ export function wantsPromptReview(c: Composer): boolean {
 }
 
 /** The request that only writes the prompt (Prompt+ review). */
-export function reviewRequest(c: Composer): GenerationRequest {
-  return { ...buildRequest(c), enhance: true, enhance_only: true };
+export function reviewRequest(c: Composer, model?: string | null): GenerationRequest {
+  return { ...buildRequest(c, undefined, model), enhance: true, enhance_only: true };
 }
 
 /** The painted area in use is coloured marks (the prompt names them by colour). */

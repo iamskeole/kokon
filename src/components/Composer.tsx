@@ -1,7 +1,7 @@
 import { ArrowUp, Brush, Check, ChevronDown, Cpu, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
-import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, modelRequest, moveRef, needsPrompt, parseRatio, toggleLora, type Ref, typedWords, wantsPromptReview, withActionVerb } from "../lib/logic";
+import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, enhancerApplies, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, modelRequest, modelSupportsBoxes, moveRef, needsPrompt, parseRatio, toggleLora, type Ref, typedWords, wantsPromptReview, withActionVerb } from "../lib/logic";
 import { native } from "../lib/native";
 import { haptic } from "../lib/haptics";
 import { inBrowser, useNarrow } from "../lib/platform";
@@ -315,12 +315,13 @@ function AddImage() {
 
 function usePlanPreview(): { plan: Plan | null; error: string | null } {
   const c = useStore((s) => s.composer);
+  const model = useStore((s) => s.external?.model);
   const connected = useStore((s) => s.connected);
   const [res, setRes] = useState<{ plan: Plan | null; error: string | null }>({ plan: null, error: null });
   useEffect(() => {
     if (!connected) return;
     const prompt = c.prompt.trim() || "image";
-    const req = { ...buildRequest(c), prompt };
+    const req = { ...buildRequest(c, undefined, model), prompt };
     let cancelled = false;
     const t = window.setTimeout(() => {
       api.plan(req).then(
@@ -488,6 +489,29 @@ function PromptContext() {
   );
 }
 
+/** Layout boxes: draw rectangles to place, keep or remove things. klein reads them as a JSON
+ * table at the end of the prompt (BFL's contract); other models would just see JSON, so the
+ * button appears for them never. */
+function BoxesButton() {
+  const boxes = useStore((s) => s.composer.boxes);
+  const has = boxes.length > 0;
+  return (
+    <button
+      className={`pill ${has ? "on" : ""}`}
+      onClick={() => setState({ overlay: "boxes" })}
+      title={
+        has
+          ? `Layout boxes: ${boxes.length} drawn. Open to change or clear them.`
+          : "Layout boxes: draw rectangles to place, keep or remove things."
+      }
+      aria-label={`Layout boxes: ${has ? `${boxes.length} drawn` : "off"}`}
+    >
+      <Square size={15} />
+      <span className="lbl">Box{has ? ` ${boxes.length}` : ""}</span>
+    </button>
+  );
+}
+
 /** Under the prompt: the prompt in the box was written by Prompt+ from the user's words. */
 function EnhancedFrom({ words }: { words: string }) {
   return (
@@ -513,7 +537,8 @@ export function Composer() {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const hasImages = c.refs.length > 0;
   const overrides = activeOverrides(c.advanced);
-  const canEnhance = useStore(enhancerAvailable);
+  const canEnhance = useStore(enhancerAvailable) && enhancerApplies(c);
+  const boxesOn = modelSupportsBoxes(useStore((s) => s.external?.model));
   const newImage = !editing(c);
   // Prompt+ review: the prompt it is writing streams into the box, which is read-only meanwhile.
   const review = useStore((s) => s.review);
@@ -782,6 +807,8 @@ export function Composer() {
             </Popover>
 
             {canEnhance && <PromptPlus />}
+
+            {boxesOn && <BoxesButton />}
 
             <LoraBadge />
 

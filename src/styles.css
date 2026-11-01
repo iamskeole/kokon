@@ -1301,6 +1301,7 @@ kbd { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; display
   .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; padding: 4px 10px calc(20px + env(safe-area-inset-bottom)); }
 }
 
+<<<<<<< HEAD
 /* Split into layers: how the objects are cut out (SplitChoice) */
 .split-choice { position: relative; width: min(680px, calc(100vw - 32px)); max-height: 90vh; overflow-y: auto; background: var(--bg); border-radius: 22px; box-shadow: var(--shadow); padding: 30px 30px 22px; display: flex; flex-direction: column; gap: 10px; animation: welcome-in 0.3s ease-out; }
 .split-choice h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
@@ -1344,3 +1345,25 @@ kbd { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; display
 .welcome-item .link-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; vertical-align: baseline; }
 .welcome-item .link-btn svg { margin: 0; }
 .row-btns { display: flex; gap: 6px; flex: none; }
+=======
+/* layout boxes (the klein box editor + the i-panel's collapsed table) */
+.box-stage { position: relative; }
+.box-stage.blank { background: var(--surface-2); }
+.box-blank-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-2); font-size: 13px; pointer-events: none;
+}
+.box-svg .box-rect { cursor: move; }
+.box-svg text { user-select: none; }
+.box-desc {
+  flex: 1; min-width: 120px; height: 34px; padding: 0 12px; border-radius: 11px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text); font-size: 13px;
+}
+.box-desc:disabled { color: var(--text-2); }
+.box-desc:focus { outline: none; border-color: var(--border-2); }
+.btn.box-kind { padding: 0 10px; height: 32px; border-radius: 10px; color: var(--text-2); }
+.btn.box-kind.on { background: var(--invert-bg); color: var(--invert-text); }
+.box-table { font-size: 12px; }
+.box-table summary { color: var(--text-2); cursor: pointer; }
+.box-table ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+>>>>>>> a62c12e (UI: the layout-box editor - draw, describe and place things (klein))

@@ -4,7 +4,7 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import {
-  compareBase, composerFromRecord, entryForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
+  compareBase, composerFromRecord, entryForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, splitBoxTable, upscaleRequest, arcLayout,
   upscalerLabel, upscaleTargets, variationRequest, imageName, type LinkKind, type TimelineLink,
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
@@ -257,6 +257,7 @@ function CopyText({ text, title }: { text: string; title: string }) {
 export function InfoPanel({ g }: { g: GenerationRecord }) {
   const pipeline = pipelineSummary(g);
   const lut = lutInfo(g);
+  const table = splitBoxTable(g.prompt);
   const rows: [string, string][] = lut ? [
     ["Mode", MODE_LABEL[g.mode]],
     ["Size", `${g.width}×${g.height}`],
@@ -281,7 +282,20 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
   return (
     <div className="info-panel" style={{ padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       <div className="info-prompt">
-        <div style={{ fontSize: 13, maxHeight: 160, overflow: "auto" }}>{g.prompt}</div>
+        <div style={{ fontSize: 13, maxHeight: 160, overflow: "auto" }}>{table ? table.caption || " " : g.prompt}</div>
+        {table && (
+          <details className="box-table">
+            <summary>{table.rows.length} layout annotation{table.rows.length > 1 ? "s" : ""}</summary>
+            <ul>
+              {table.rows.map((r) => (
+                <li key={r.id}>
+                  <b>{r.id}</b>
+                  {r.desc ? ` — ${r.desc}` : ""}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         <CopyText text={g.prompt} title={g.original_prompt ? "Copy the prompt Prompt+ wrote" : "Copy the prompt"} />
       </div>
       {g.original_prompt && (

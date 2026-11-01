@@ -13,7 +13,7 @@ import {
   planPipeline, remainingSeconds, sizeForWidth, timeAgo, upscaleRequest, upscaleTargets, versionLabels, type JobClock, type Ref,
   neighbourAfterRemoval, pageOutdated, previewIndex, starPromptDue, STAR_PROMPT_AFTER, formatBytes, formatDuration, installItemShort, installItemText, installProgress, installStep, installTimeLeft, timelineLinks, undoTarget, aspectLabel, parseRatio, sizeForRatio, sizeForLongSide, expandToRatio, expandToSize, arcLayout,
   goneVersions, PREVIEW_SIDE, stageFitsPreview, viewerWantsFull,
-  modelRequest, entryForModel,
+  modelRequest, entryForModel, boxRows, appendBoxTable, splitBoxTable, modelSupportsBoxes, type BoxRow,
 } from "./logic";
 import type { GenerationRecord, InstallItem, JobView, LoraItem, Plan } from "./types";
 
@@ -832,4 +832,61 @@ describe("entryForModel", () => {
     expect(entryForModel(models, null)).toBeNull();
   });
   it("is null when there are no models", () => expect(entryForModel([], "m-turbo.gguf")).toBeNull());
+});
+
+describe("layout boxes", () => {
+  const box = (o: Partial<BoxRow> = {}): BoxRow => ({ id: "obj_1", kind: "new", x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4, desc: "a bird", ...o });
+
+  it("only klein models read the table", () => {
+    expect(modelSupportsBoxes("kokon-klein")).toBe(true);
+    expect(modelSupportsBoxes("FLUX.3 Image Klein Q8")).toBe(true);
+    expect(modelSupportsBoxes("kokon-turbo")).toBe(false);
+    expect(modelSupportsBoxes("")).toBe(false);
+    expect(modelSupportsBoxes(undefined)).toBe(false);
+  });
+
+  it("text-to-image rows are plain placements on the 0-1000 canvas", () => {
+    const c = { ...emptyComposer(), refs: [], boxes: [box({ id: "obj_1" }), box({ id: "obj_2", x1: 0.5, y1: 0.5, x2: 0.9999, y2: 0.9999, desc: "text" })] };
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" },
+      { id: "obj_2", bbox: [500, 500, 1000, 1000], desc: "text" },
+    ]);
+  });
+
+  it("edit rows carry the keep / new / remove provenance against ref_image_0", () => {
+    const c = { ...emptyComposer(), refs: [ref(1)], boxes: [box({ kind: "keep" }), box({ id: "obj_2", kind: "new", desc: "a mug" }), box({ id: "obj_3", kind: "remove" })] };
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
+      { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a mug" },
+      { id: "obj_3", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: null, desc: "a bird" },
+    ]);
+  });
+
+  it("no boxes, no table: the prompt is untouched", () => {
+    expect(boxRows(emptyComposer())).toEqual([]);
+    expect(appendBoxTable("a lamp", [])).toBe("a lamp");
+  });
+
+  it("the table is the caption, one space, the JSON array", () => {
+    const rows = [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }];
+    expect(appendBoxTable("a lamp", rows)).toBe(`a lamp ${JSON.stringify(rows)}`);
+  });
+
+  it("buildRequest appends the table only for klein models", () => {
+    const c = { ...emptyComposer(), prompt: "  a lamp  ", boxes: [box()] };
+    const klein = buildRequest(c, undefined, "kokon-klein");
+    expect(klein.prompt).toBe(`a lamp ${JSON.stringify(boxRows(c))}`);
+    const turbo = buildRequest(c, undefined, "kokon-turbo");
+    expect(turbo.prompt).toBe("a lamp");
+  });
+
+  it("splitBoxTable finds the trailing table and nothing else", () => {
+    const rows = [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }, { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [500, 500, 600, 600], desc: "" }];
+    const t = splitBoxTable(`a lamp on a bench ${JSON.stringify(rows)}`);
+    expect(t).toEqual({ caption: "a lamp on a bench", rows: [{ id: "obj_1", desc: "a bird" }, { id: "obj_2" }] });
+    expect(splitBoxTable("a lamp with [SALE] written on it")).toBeNull();
+    expect(splitBoxTable(`a lamp ${JSON.stringify([{ id: "obj_1" }])}`)).toBeNull();
+    expect(splitBoxTable(`a lamp ${JSON.stringify([1, 2, 3])}`)).toBeNull();
+    expect(splitBoxTable("a lamp")).toBeNull();
+  });
 });
