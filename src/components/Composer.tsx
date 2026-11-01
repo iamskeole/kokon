@@ -174,6 +174,7 @@ function TargetBar() {
   const session = useStore((s) => s.session);
   const nameOf = useRefNames();
   const narrow = useNarrow();
+  const boxesOn = modelSupportsBoxes(useStore((s) => s.external?.model));
 
   if (!c.refs.length) {
     if (!session.some((i) => i.gen || i.input)) return null;
@@ -227,6 +228,11 @@ function TargetBar() {
         <button className={`tool ${c.mask ? "on" : ""}`} data-tour="paint" onClick={() => openEditor("inpaint")} title="Paint where things go (one colour each), or the area to change; the rest stays as it is">
           <Brush size={14} /> <span className="lbl">{c.mask?.marks ? "Colours painted" : c.mask ? "Area painted" : "Paint area"}</span>
         </button>
+        {boxesOn && (
+          <button className="tool" onClick={() => setState({ overlay: "boxes" })} title="Layout boxes: draw rectangles to place, keep or remove things">
+            <Square size={14} /> <span className="lbl">Boxes</span>
+          </button>
+        )}
         {c.mask && (
           <button className="tool-x" title="Remove the painted area" onClick={() => updateComposer({ mask: null })}>
             <X size={13} />
@@ -492,26 +498,6 @@ function PromptContext() {
 /** Layout boxes: draw rectangles to place, keep or remove things. klein reads them as a JSON
  * table at the end of the prompt (BFL's contract); other models would just see JSON, so the
  * button appears for them never. */
-function BoxesButton() {
-  const boxes = useStore((s) => s.composer.boxes);
-  const has = boxes.length > 0;
-  return (
-    <button
-      className={`pill ${has ? "on" : ""}`}
-      onClick={() => setState({ overlay: "boxes" })}
-      title={
-        has
-          ? `Layout boxes: ${boxes.length} drawn. Open to change or clear them.`
-          : "Layout boxes: draw rectangles to place, keep or remove things."
-      }
-      aria-label={`Layout boxes: ${has ? `${boxes.length} drawn` : "off"}`}
-    >
-      <Square size={15} />
-      <span className="lbl">Box{has ? ` ${boxes.length}` : ""}</span>
-    </button>
-  );
-}
-
 /** Under the prompt: the prompt in the box was written by Prompt+ from the user's words. */
 function EnhancedFrom({ words }: { words: string }) {
   return (
@@ -538,7 +524,6 @@ export function Composer() {
   const hasImages = c.refs.length > 0;
   const overrides = activeOverrides(c.advanced);
   const canEnhance = useStore(enhancerAvailable) && enhancerApplies(c);
-  const boxesOn = modelSupportsBoxes(useStore((s) => s.external?.model));
   const newImage = !editing(c);
   // Prompt+ review: the prompt it is writing streams into the box, which is read-only meanwhile.
   const review = useStore((s) => s.review);
@@ -807,8 +792,6 @@ export function Composer() {
             </Popover>
 
             {canEnhance && <PromptPlus />}
-
-            {boxesOn && <BoxesButton />}
 
             <LoraBadge />
 
