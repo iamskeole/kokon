@@ -21,6 +21,7 @@ it is) happens here, at the end, with the whole picture in hand.
 ## blockers
 - task-016 (the final state first — you describe what works before you
   propose it).
+- user approval required, never autonomous.
 
 ## decisions
 - (deferred to the owner — their explicit "when we're done" item)
