@@ -1,3 +1,4 @@
+pub mod bbox;
 pub mod catalog;
 pub mod config;
 pub mod diagnostics;

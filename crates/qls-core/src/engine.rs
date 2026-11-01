@@ -11,6 +11,7 @@ use image::GrayImage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, broadcast};
 
+use crate::bbox;
 use crate::config::{AppConfig, LoraEntry};
 use crate::diagnostics::{GpuInfo, query_gpus};
 use crate::enhancer;
@@ -2073,6 +2074,12 @@ impl Engine {
             self.update(id, |j| j.view.notes.push("This inference engine has no prompt enhancer (update it in Setup); your prompt was used as written.".into()));
             return Ok(None);
         }
+        // BFL layout boxes: a finished caption (every table id cited) is the upsampler's
+        // own output. BFL skips re-upsampling it, and the DiT gets the table as written.
+        let boxes = enhancer::bfl_bbox(model, mode, prompt, canvas);
+        if boxes.as_ref().is_some_and(|b| b.finished) {
+            return Ok(Some(prompt.to_string()));
+        }
         self.update(id, |j| {
             j.view.status = JobStatus::EnhancingPrompt;
             j.view.stage = None;
@@ -2139,8 +2146,19 @@ impl Engine {
             })
             .await;
         let failure = match r {
-            Ok(done) => match enhancer::clean(&done.text) {
-                Some(t) => {
+            Ok(done) => {
+                let written: Option<String> = match &boxes {
+                    // The upsampler answered: the user's boxes go back in. A row that
+                    // re-plans a locked box (IoU ≥ 0.9) takes the locked id, the locked
+                    // rows stay verbatim (adopting its descriptions), its own rows follow.
+                    Some(b) => {
+                        let (caption, _) = bbox::split(&done.text);
+                        (!caption.trim().is_empty()).then(|| bbox::reconcile(&done.text, &b.locked))
+                    }
+                    None => enhancer::clean(&done.text),
+                };
+                match written {
+                    Some(t) => {
                     tracing::info!(
                         "prompt enhancer: {} tokens in {:.1} s ({}, seed {})",
                         done.usage.completion_tokens,
@@ -2157,8 +2175,9 @@ impl Engine {
                         }
                     });
                     return Ok(Some(t));
+                    }
+                    None => "it wrote nothing".to_string(),
                 }
-                None => "it wrote nothing".to_string(),
             },
             Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
             Err(e) => {

@@ -5,6 +5,7 @@
 //! system prompt, so Kokon always sends one: the user's from Settings or the defaults below.
 //! Design and the A/B behind these texts: docs/engineering-notes.md, "Prompt+".
 
+use crate::bbox::{self, BoxRow};
 use crate::config::AppConfig;
 use crate::planner::{InpaintAction, ResolvedMode};
 use crate::sdcpp::{TextGenRequest, TextSampling};
@@ -197,6 +198,59 @@ State only decided facts: visible in the source, demanded by the instruction, or
 
 Output only the paragraph and the table."#;
 
+/// The layout-box contract of a BFL model for one request: `Some` when the prompt already
+/// carries a 0-1000 box table (the UI appends one, or the user pasted a finished one).
+///
+/// `system` is the bbox system prompt variant the upsampler must use; `user_text` is the
+/// locked-annotation form that keeps every row verbatim; `locked` are the user's rows,
+/// re-imposed on the answer after the upsampler runs; `finished` prompts (the caption
+/// cites every table id) are the upsampler's own output — BFL skips re-upsampling them
+/// and the DiT gets the table as written.
+pub struct BflBoxes {
+    pub system: &'static str,
+    pub user_text: String,
+    pub locked: Vec<BoxRow>,
+    pub finished: bool,
+}
+
+/// See [`BflBoxes`]. `None` for non-BFL models or a prompt without a box table.
+pub fn bfl_bbox(
+    model: &str,
+    mode: ResolvedMode,
+    prompt: &str,
+    canvas: Option<(u32, u32)>,
+) -> Option<BflBoxes> {
+    if !bfl_pup(model) {
+        return None;
+    }
+    let (caption, rows) = bbox::detect(prompt)?;
+    let locked = rows.iter().filter_map(bbox::locked_row).collect::<Vec<_>>();
+    if locked.is_empty() {
+        return None;
+    }
+    let t2i = mode == ResolvedMode::Generate;
+    // The t2i variant composes for the requested canvas (BFL's service sends the line;
+    // here it rides inside the original prompt the locked form carries).
+    let original = if t2i {
+        match canvas {
+            Some((w, h)) => format!("TARGET CANVAS: {w}:{h}\n{caption}"),
+            None => caption.to_string(),
+        }
+    } else {
+        caption.to_string()
+    };
+    Some(BflBoxes {
+        system: if t2i {
+            BFL_T2I_BBOX_SYSTEM_PROMPT
+        } else {
+            BFL_I2I_BBOX_SYSTEM_PROMPT
+        },
+        user_text: bbox::upsampling_input(&original, &locked),
+        finished: bbox::is_finished(prompt),
+        locked,
+    })
+}
+
 /// BFL's user text for an image-conditioned request: the engine places the reference images
 /// before this text, one per input image, in order (its reference does the same).
 pub fn bfl_i2i_scaffold(request: &str) -> String {
@@ -294,32 +348,40 @@ pub fn request(
     seed: i64,
 ) -> TextGenRequest {
     let p = prompt.trim();
-    let (body, sampling, max_tokens) = if bfl_pup(model) {
-        let body = match mode {
-            // The canvas lets the upsampler compose for the requested size.
-            ResolvedMode::Generate => match canvas {
-                Some((w, h)) => bfl_t2i_request(p, w, h),
-                None => p.to_string(),
-            },
-            _ => bfl_i2i_scaffold(p),
-        };
+    let (body, sampling, max_tokens, system) = if bfl_pup(model) {
         let sampling = TextSampling {
             // The reference applies the presence penalty to the text-to-image task only.
             presence_penalty: (mode == ResolvedMode::Generate).then(|| 1.5).unwrap_or(0.0),
             seed,
             ..BFL_SAMPLING
         };
-        (body, sampling, BFL_MAX_TOKENS)
+        match bfl_bbox(model, mode, p, canvas) {
+            // The prompt already carries the layout table: the bbox system prompt, and the
+            // locked-annotation text, so the upsampler keeps every row and cites the ids.
+            Some(b) if !b.finished => (b.user_text, sampling, BFL_MAX_TOKENS, b.system.to_string()),
+            _ => {
+                let body = match mode {
+                    // The canvas lets the upsampler compose for the requested size.
+                    ResolvedMode::Generate => match canvas {
+                        Some((w, h)) => bfl_t2i_request(p, w, h),
+                        None => p.to_string(),
+                    },
+                    _ => bfl_i2i_scaffold(p),
+                };
+                (body, sampling, BFL_MAX_TOKENS, system_prompt(cfg, model, mode))
+            }
+        }
     } else {
         (
             p.to_string(),
             TextSampling { seed, ..SAMPLING },
             MAX_TOKENS,
+            system_prompt(cfg, model, mode),
         )
     };
     TextGenRequest {
         prompt: body,
-        system_prompt: system_prompt(cfg, model, mode),
+        system_prompt: system,
         images: if mode == ResolvedMode::Generate {
             Vec::new()
         } else {
