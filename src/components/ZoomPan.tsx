@@ -44,6 +44,8 @@ export interface ZoomPanProps {
   enablePan?: boolean;
   /** Image for the mini-map shown while zoomed in (defaults to `src`) */
   minimapSrc?: string;
+  /** Overlay drawn over the content (it follows the zoom/pan transform) */
+  overlay?: React.ReactNode;
   /** Reset key to reset transform when changed */
   resetKey?: string | number;
   /** Additional class name for the viewport */
@@ -187,6 +189,7 @@ export function ZoomPan({
   enableToggleZoom = true,
   enablePan = true,
   minimapSrc,
+  overlay,
   resetKey,
   className = "",
   zoomRef,
@@ -344,6 +347,7 @@ export function ZoomPan({
             }}
           />
         )}
+        {overlay}
       </div>
 
       {isMinimapVisible && (

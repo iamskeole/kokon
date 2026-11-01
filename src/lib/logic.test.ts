@@ -902,7 +902,7 @@ describe("layout boxes", () => {
   it("splitBoxTable finds the trailing table and nothing else", () => {
     const rows = [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }, { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [500, 500, 600, 600], desc: "" }];
     const t = splitBoxTable(`a lamp on a bench ${JSON.stringify(rows)}`);
-    expect(t).toEqual({ caption: "a lamp on a bench", rows: [{ id: "obj_1", desc: "a bird" }, { id: "obj_2" }] });
+    expect(t).toEqual({ caption: "a lamp on a bench", rows: [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }, { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [500, 500, 600, 600] }] });
     expect(splitBoxTable("a lamp with [SALE] written on it")).toBeNull();
     expect(splitBoxTable(`a lamp ${JSON.stringify([{ id: "obj_1" }])}`)).toBeNull();
     expect(splitBoxTable(`a lamp ${JSON.stringify([1, 2, 3])}`)).toBeNull();

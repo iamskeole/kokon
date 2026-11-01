@@ -285,7 +285,7 @@ function FullscreenShell({ children, hint, onClose, nav }: { children: ReactNode
  * With the image's `source` ("gen:…" / "input:…") and `size`, a browser shows the preview until
  * the zoom needs the full image, and the thumbnail in the mini-map; a browser always draws it
  * flat (see ZoomPan). The desktop app loads the full image at once. */
-export function ZoomImage({ src, alt, source, size }: { src: string; alt: string; source?: string; size?: { width: number; height: number } }) {
+export function ZoomImage({ src, alt, source, size, overlay }: { src: string; alt: string; source?: string; size?: { width: number; height: number }; overlay?: React.ReactNode }) {
   const known = inBrowser && source && size && size.width > 0 && size.height > 0;
   return (
     <ZoomPan
@@ -295,6 +295,7 @@ export function ZoomImage({ src, alt, source, size }: { src: string; alt: string
       contentSize={known ? size : undefined}
       previewSrc={known ? urls.sourcePreview(source) : undefined}
       minimapSrc={known ? urls.sourceThumb(source) : undefined}
+      overlay={overlay}
     />
   );
 }

@@ -92,6 +92,8 @@ export interface State {
   flickerMs: number;
   /** Private mode: nothing is saved to the gallery, the output folder or the project list. */
   privateMode: boolean;
+  /** Show the layout boxes a generation's prompt carried, on the image and its references. */
+  showBoxes: boolean;
   /** Versions left with Undo, most recent last (Redo walks back through them). */
   redo: string[];
   /** Step of the first-run tour on screen (components/Tour.tsx), or null. */
@@ -484,6 +486,7 @@ let state: State = {
   compare: "off",
   flickerMs: 500,
   privateMode: false,
+  showBoxes: false,
   redo: [],
   tour: null,
   starPrompt: false,
@@ -819,6 +822,10 @@ export function newProject() {
 
 /** Private mode on: a fresh project whose images stay out of the gallery, the output folder
  * and the project list. Off: those images are deleted (after confirming). */
+export function toggleBoxes() {
+  setState((s) => ({ showBoxes: !s.showBoxes }));
+}
+
 export async function setPrivateMode(on: boolean, confirmDiscard: () => Promise<boolean>) {
   const s = getState();
   if (on === s.privateMode) return;
@@ -1067,7 +1074,7 @@ export function selectItem(key: string, keepRedo = false) {
     const it = s.session.find((i) => i.key === key);
     if (!it) return {};
     const ref = s.composer.refs.length && !s.composer.create ? refOf(it) : null;
-    return { selected: key, composer: ref ? retarget(s.composer, ref) : s.composer, ...(keepRedo ? {} : { redo: [] }) };
+    return { selected: key, composer: ref ? retarget(s.composer, ref) : s.composer, showBoxes: false, ...(keepRedo ? {} : { redo: [] }) };
   });
 }
 

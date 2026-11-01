@@ -212,7 +212,16 @@ export function appendBoxTable(prompt: string, rows: Record<string, unknown>[]):
 /** A layout-box table at the end of a stored prompt: the caption plus the parsed rows. Display
  * only - the service is the source of truth, so stay lenient: every row needs an id and at
  * least one of the box fields. */
-export function splitBoxTable(prompt: string): { caption: string; rows: { id: string; desc?: string }[] } | null {
+export interface BoxTableRow {
+  id: string;
+  desc?: string;
+  bbox?: [number, number, number, number];
+  from?: string | null;
+  src_bbox?: [number, number, number, number] | null;
+  tgt_bbox?: [number, number, number, number] | null;
+}
+
+export function splitBoxTable(prompt: string): { caption: string; rows: BoxTableRow[] } | null {
   for (let i = prompt.lastIndexOf("["); i >= 0; i = prompt.lastIndexOf("[", i - 1)) {
     let v: unknown;
     try {
@@ -221,13 +230,20 @@ export function splitBoxTable(prompt: string): { caption: string; rows: { id: st
       continue;
     }
     if (!Array.isArray(v) || !v.length) continue;
-    const rows: { id: string; desc?: string }[] = [];
+    const rows: BoxTableRow[] = [];
     for (const r of v) {
       if (!r || typeof r !== "object") return null;
       const o = r as Record<string, unknown>;
       if (typeof o.id !== "string") return null;
       if (!Array.isArray(o.bbox) && !Array.isArray(o.src_bbox) && !Array.isArray(o.tgt_bbox)) return null;
-      rows.push({ id: o.id, desc: typeof o.desc === "string" && o.desc ? o.desc : undefined });
+      rows.push({
+        id: o.id,
+        desc: typeof o.desc === "string" && o.desc ? o.desc : undefined,
+        bbox: o.bbox as BoxTableRow["bbox"],
+        from: o.from as BoxTableRow["from"],
+        src_bbox: o.src_bbox as BoxTableRow["src_bbox"],
+        tgt_bbox: o.tgt_bbox as BoxTableRow["tgt_bbox"],
+      });
     }
     return { caption: prompt.slice(0, i).trimEnd(), rows };
   }

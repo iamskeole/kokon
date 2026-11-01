@@ -9,9 +9,10 @@ import {
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
 import {
-  addAsReference, addResult, cancelJob, focusPrompt, getState, itemSource, removeSessionItem, removeSessionItems, reusePrompt, selectedItem, selectItem, sessionLabels, sessionLinks, setState, stageImage, submitRequest, toastError, toastInfo, useStore, type SessionItem,
+addAsReference, addResult, cancelJob, focusPrompt, getState, itemSource, removeSessionItem, removeSessionItems, reusePrompt, selectedItem, selectItem, sessionLabels, sessionLinks, setState, stageImage, submitRequest, toastError, toastInfo, useStore, type SessionItem, toggleBoxes
 } from "../lib/store";
 import type { GenerationRecord, GenerationRequest, JobView, LutEntry, Mode, Size } from "../lib/types";
+import { BoxOverlay } from "./BoxOverlay";
 import { Cocoon, Hatch } from "./Cocoon";
 import { CompareFrame, CompareFullscreen } from "./Compare";
 import { PROMPT_FADE_MS, cardMemory, usePromptLeave, useTypewriter, useJobPercent, wordStyle, type CardMemory } from "./jobMotion";
@@ -254,10 +255,17 @@ function CopyText({ text, title }: { text: string; title: string }) {
   );
 }
 
+/** The layout boxes a record's prompt carried, drawn over an image (the result, or the Nth reference). */
+function recordBoxes(g: GenerationRecord, on: "result" | number) {
+  const t = splitBoxTable(g.prompt);
+  return t ? <BoxOverlay rows={t.rows} on={on} /> : null;
+}
+
 export function InfoPanel({ g }: { g: GenerationRecord }) {
   const pipeline = pipelineSummary(g);
   const lut = lutInfo(g);
   const table = splitBoxTable(g.prompt);
+  const showBoxes = useStore((s) => s.showBoxes);
   const rows: [string, string][] = lut ? [
     ["Mode", MODE_LABEL[g.mode]],
     ["Size", `${g.width}×${g.height}`],
@@ -273,7 +281,6 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
     ["CFG", String(g.cfg)],
     ["Sampler", `${g.sampler}${g.scheduler ? ` / ${g.scheduler}` : ""}`],
     ...(g.strength != null ? ([["Strength", String(g.strength)]] as [string, string][]) : []),
-    ["References", String(g.references.length)],
     ...(g.loras?.length ? ([["LoRA", g.loras.map((l) => `${l.name} (${Math.round(l.weight * 100)} %)`).join(", ")]] as [string, string][]) : []),
     ["Model", g.model],
     ["Time", formatDuration(g.duration_ms / 1000)],
@@ -298,6 +305,24 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
         )}
         <CopyText text={g.prompt} title={g.original_prompt ? "Copy the prompt Prompt+ wrote" : "Copy the prompt"} />
       </div>
+      {table && (
+        <button className={`box-toggle${showBoxes ? " on" : ""}`} onClick={toggleBoxes} title="Show the layout boxes this prompt used, on the image and its references">
+          <Square size={12} /> Show the boxes
+        </button>
+      )}
+      {g.references.length > 0 && (
+        <div className="ref-strip">
+          {g.references.map((r) => (
+            <figure className="ref-item" key={r.index}>
+              <div className="ref-thumb-wrap">
+                <img className="ref-thumb" src={urls.inputThumb(r.input_id)} alt="" />
+                {table && recordBoxes(g, r.index)}
+              </div>
+              <figcaption className="muted">Image {r.index + 1}{r.width > 0 ? ` · ${r.width}×${r.height}` : ""}</figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
       {g.original_prompt && (
         <div className="info-prompt">
           <div className="muted" style={{ maxHeight: 80, overflow: "auto" }}>
@@ -966,6 +991,7 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
     const g = item.gen;
     return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
   });
+  const showBoxes = useStore((s) => s.showBoxes);
   const nav = useMemo<ViewerNav>(() => {
     const at = session.findIndex((i) => i.key === item.key);
     const step = (d: number) => {
@@ -984,14 +1010,14 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
   const from = g?.pipeline?.original_path ? g.pipeline.enlarged_from : null;
   let content: React.ReactNode;
   let hint = "Scroll or click to zoom · Drag to pan";
-  if (g && from && showOriginal) content = <ZoomImage key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} />;
+  if (g && from && showOriginal) content = <ZoomImage key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} overlay={showBoxes ? recordBoxes(g, "result") : undefined} />;
   else if (g && base) {
     content = <CompareFullscreen key={g.id} g={g} base={base} />;
     hint = "Hold B for the original";
   } else {
     const src = g ? urls.gen(g.id) : urls.input(item.input!.id);
     const size = g ? { width: g.width, height: g.height } : { width: item.input!.width, height: item.input!.height };
-    content = <ZoomImage key={src} src={src} source={g ? `gen:${g.id}` : `input:${item.input!.id}`} size={size} alt={g?.prompt ?? item.input?.original_name ?? ""} />;
+    content = <ZoomImage key={src} src={src} source={g ? `gen:${g.id}` : `input:${item.input!.id}`} size={size} alt={g?.prompt ?? item.input?.original_name ?? ""} overlay={g && showBoxes ? recordBoxes(g, "result") : undefined} />;
   }
   if (modelLabel) hint = `${modelLabel} · ${hint}`;
   return (
@@ -1016,6 +1042,7 @@ export function Stage() {
     const g = item?.gen;
     return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
   });
+  const showBoxes = useStore((s) => s.showBoxes);
   const labels = useMemo(() => sessionLabels(session), [session]);
   const lab = useLab();
   // A version of a layer document is selected: the Stage shows that layered image instead.
@@ -1157,11 +1184,11 @@ export function Stage() {
             onFullscreen={openFull}
           />
         ) : g && from && showOriginal ? (
-          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} onFullscreen={openFull} />
+          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} onFullscreen={openFull} overlay={showBoxes ? recordBoxes(g, "result") : undefined} />
         ) : item.gen && base ? (
           <CompareFrame key={`compare-${item.gen.id}`} g={item.gen} base={base} maskSrc={maskSrc} onFullscreen={openFull} />
         ) : (
-          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} onFullscreen={openFull} />
+          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} onFullscreen={openFull} overlay={g && showBoxes ? recordBoxes(g, "result") : undefined} />
         )}
         </Hatch>
     );

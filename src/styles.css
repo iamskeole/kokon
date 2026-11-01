@@ -1301,7 +1301,6 @@ kbd { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; display
   .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; padding: 4px 10px calc(20px + env(safe-area-inset-bottom)); }
 }
 
-<<<<<<< HEAD
 /* Split into layers: how the objects are cut out (SplitChoice) */
 .split-choice { position: relative; width: min(680px, calc(100vw - 32px)); max-height: 90vh; overflow-y: auto; background: var(--bg); border-radius: 22px; box-shadow: var(--shadow); padding: 30px 30px 22px; display: flex; flex-direction: column; gap: 10px; animation: welcome-in 0.3s ease-out; }
 .split-choice h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
@@ -1345,7 +1344,6 @@ kbd { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; display
 .welcome-item .link-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; vertical-align: baseline; }
 .welcome-item .link-btn svg { margin: 0; }
 .row-btns { display: flex; gap: 6px; flex: none; }
-=======
 /* layout boxes (the klein box editor + the i-panel's collapsed table) */
 .box-stage { position: relative; color: var(--text); }
 .box-stage.blank { background: var(--surface-2); }
@@ -1408,4 +1406,14 @@ kbd { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; display
 .box-table { font-size: 12px; }
 .box-table summary { color: var(--text-2); cursor: pointer; }
 .box-table ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
->>>>>>> a62c12e (UI: the layout-box editor - draw, describe and place things (klein))
+/* The layout boxes a prompt carried, drawn over the image they act on. */
+.box-overlay { position: absolute; inset: 0; pointer-events: none; }
+/* The info panel's "show the boxes" toggle. */
+.box-toggle { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; padding: 5px 10px; font-size: 12px; color: var(--text-2); background: var(--lift); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; }
+.box-toggle.on { color: var(--text); border-color: var(--text-3); }
+/* The references a generation used, with the boxes they carried. */
+.ref-strip { display: flex; gap: 10px; flex-wrap: wrap; }
+.ref-item { margin: 0; }
+.ref-thumb-wrap { position: relative; }
+.ref-thumb { display: block; max-width: 110px; max-height: 76px; border-radius: 6px; border: 1px solid var(--border); }
+.ref-item figcaption { font-size: 11px; margin-top: 4px; }
