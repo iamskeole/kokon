@@ -881,6 +881,24 @@ describe("layout boxes", () => {
     ]);
   });
 
+  it("a blank-canvas placement becomes a target row when references are also edited", () => {
+    const c = { ...emptyComposer(), refs: [ref(1)], boxes: [
+      box({ id: "obj_1", kind: "keep", src: { ...rect }, tgt: { ...rect } }),
+      box({ id: "obj_2", ref: null, kind: "new", desc: "a small brass teapot" }),
+    ]};
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
+      { id: "obj_2", from: "target", src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a small brass teapot" },
+    ]);
+  });
+
+  it("a blank-canvas placement stays a plain row in a pure text-to-image", () => {
+    const c = { ...emptyComposer(), refs: [], boxes: [box({ id: "obj_1", ref: null })] };
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" },
+    ]);
+  });
+
   it("no boxes, no table: the prompt is untouched", () => {
     expect(boxRows(emptyComposer())).toEqual([]);
     expect(appendBoxTable("a lamp", [])).toBe("a lamp");

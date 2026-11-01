@@ -187,14 +187,16 @@ export function boxRows(c: Pick<Composer, "boxes" | "refs">): Record<string, unk
   const rect = (r: BoxRect | null): [number, number, number, number] | null =>
     r ? [q(r.y1), q(r.x1), q(r.y2), q(r.x2)] : null;
   const out: Record<string, unknown>[] = [];
-  for (const r of c.boxes) {
-    // A box drawn on a reference that is no longer there has no meaning on the wire.
-    if (r.ref != null && (r.ref >= c.refs.length || !c.refs[r.ref])) continue;
+  const live = c.boxes.filter((r) => r.ref == null || (r.ref < c.refs.length && !!c.refs[r.ref]));
+  // A placement drawn on the blank canvas is a plain row for a pure text-to-image, but a "target" row when the surviving rows also edit references.
+  const editContext = live.some((r) => r.ref != null);
+  for (const r of live) {
     const s = rect(r.src);
     const t = rect(r.tgt);
     if (r.ref == null) {
       if (!t) continue;
-      out.push({ id: r.id, bbox: t, desc: r.desc });
+      if (editContext) out.push({ id: r.id, from: "target", src_bbox: null, tgt_bbox: t, desc: r.desc });
+      else out.push({ id: r.id, bbox: t, desc: r.desc });
     } else {
       const from = r.kind === "new" ? "target" : `ref_image_${r.ref}`;
       out.push({ id: r.id, from, src_bbox: s, tgt_bbox: t, desc: r.desc });

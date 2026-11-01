@@ -49,7 +49,7 @@ export function BoxEditor() {
   const [hoverMove, setHoverMove] = useState(false);
   const past = useRef<BoxRow[][]>([]);
   const preDrag = useRef<BoxRow[] | null>(null);
-  const counter = useRef(Math.max(0, ...existing.map((r) => { const m = /^obj_(\d+)$/.exec(r.id); return m ? +m[1] : 0; })));
+  const counter = useRef(Math.max(0, ...existing.map((r) => { const m = /^obj_(\d+)$/.exec(r.id); return m ? +m[1] : 0; })) + 1);
   const drag = useRef<
     | { mode: "move"; idx: number; sx: number; sy: number; start: BoxRect; moved: boolean }
     | { mode: "resize"; idx: number; corner: "tl" | "tr" | "bl" | "br"; start: BoxRect; moved: boolean }
@@ -62,6 +62,17 @@ export function BoxEditor() {
   const selRow = selIdx != null ? tabRows[selIdx] : null;
   const color = (i: number) => PALETTE[i % PALETTE.length];
   const selColor = selIdx != null ? color(selIdx) : PALETTE[0];
+
+  // A move whose destination mostly covers the original will not move the
+  // object anywhere the model can see: warn before it is baked in.
+  const moveOverlap = useMemo(() => {
+    const r = selRow;
+    if (!r || r.kind !== "move" || !r.src || !r.tgt) return false;
+    const ix = Math.max(0, Math.min(r.tgt.x2, r.src.x2) - Math.max(r.tgt.x1, r.src.x1));
+    const iy = Math.max(0, Math.min(r.tgt.y2, r.src.y2) - Math.max(r.tgt.y1, r.src.y1));
+    const small = Math.min((r.src.x2 - r.src.x1) * (r.src.y2 - r.src.y1), (r.tgt.x2 - r.tgt.x1) * (r.tgt.y2 - r.tgt.y1));
+    return small > 0 && (ix * iy) / small >= 0.6;
+  }, [selRow]);
 
   // The canvas: the chosen reference, or the blank output shape.
   const ref = tab != null ? refs[tab] : null;
@@ -283,7 +294,7 @@ export function BoxEditor() {
       </div>
 
       <div className="box-tabs">
-        <button className={`box-tab ${tab === null ? "on" : ""}`} onClick={() => switchTab(null)} title="Boxes on the new image">
+        <button className={`box-tab ${tab === null ? "on" : ""}`} onClick={() => switchTab(null)} title="New: draw where new objects should appear in the result">
           <span className="box-tab__icon">
             <Square size={12} />
           </span>
@@ -311,7 +322,7 @@ export function BoxEditor() {
               {ref && <img src={src ?? undefined} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "fill" }} />}
               {!ref && !tabRows.length && (
                 <div className="box-blank-hint">
-                  <Crosshair size={14} style={{ marginRight: 8 }} /> Draw a rectangle where something should go
+                  <Crosshair size={14} style={{ marginRight: 8 }} /> Draw a box where you want a new object to appear in the result
                 </div>
               )}
               <svg
@@ -452,6 +463,7 @@ export function BoxEditor() {
             ))}
           </div>
         )}
+        {moveOverlap && <div className="box-hint">the destination covers most of the original — the model may keep it in place</div>}
         <input
           className="box-desc"
           value={desc}

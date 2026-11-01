@@ -522,6 +522,7 @@ export function Composer() {
   const { plan, error } = usePlanPreview();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const hasImages = c.refs.length > 0;
+  const boxesPillOn = modelSupportsBoxes(useStore((s) => s.external?.model)) && c.refs.length === 0;
   const overrides = activeOverrides(c.advanced);
   const canEnhance = useStore(enhancerAvailable) && enhancerApplies(c);
   const newImage = !editing(c);
@@ -792,6 +793,13 @@ export function Composer() {
             </Popover>
 
             {canEnhance && <PromptPlus />}
+
+            {boxesPillOn && (
+              <button className="pill" onClick={() => setState({ overlay: "boxes" })} title="Layout boxes: draw where new objects should appear in the image">
+                <Square size={14} />
+                <span className="lbl">Boxes{c.boxes.length ? ` ${c.boxes.length}` : ""}</span>
+              </button>
+            )}
 
             <LoraBadge />
 
