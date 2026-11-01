@@ -377,8 +377,46 @@ pub fn reconcile(text: &str, locked: &[BoxRow]) -> String {
     .to_string()
 }
 
+/// The DiT follows the caption's sentences, not the table: a locked removal (a target
+/// box of null) that the model reworded as a move or a keep leaves the object standing.
+/// For every locked removal whose sentence never says it is gone, re-assert the
+/// removal in the caption in plain words. Already-removed ids are left alone, and a
+/// caption without any locked removal passes through untouched.
+pub fn fix_remove_actions(caption: &str, locked: &[BoxRow]) -> String {
+    let mut out = caption.to_string();
+    for r in locked.iter().filter(|r| matches!(r, BoxRow::Edit { tgt_bbox: None, .. })) {
+        let id = r.id();
+        let has = out
+            .split(|c: char| matches!(c, '.' | '!' | '?'))
+            .any(|s| {
+                s.contains(&format!("<{id}>"))
+                    && {
+                        let l = s.to_lowercase();
+                        l.contains("remov") || l.contains("no longer") || l.contains(" gone") || l.contains("without")
+                    }
+            });
+        if has {
+            continue;
+        }
+        let desc = match r {
+            BoxRow::Edit { desc, .. } => desc.trim().to_string(),
+            _ => unreachable!(),
+        };
+        let sentence = if desc.is_empty() {
+            format!("The object <{id}> is removed from the scene.")
+        } else {
+            format!("The {desc} <{id}> is removed from the scene.")
+        };
+        out = format!("{out} {sentence}");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    fn Edit_row_fixture(id: &str, desc: &str, src: Option<[i64; 4]>, tgt: Option<[i64; 4]>) -> BoxRow {
+        BoxRow::Edit { id: id.into(), from: "ref_image_0".into(), src_bbox: src, tgt_bbox: tgt, desc: desc.into() }
+    }
     use super::*;
     use serde_json::json;
 
@@ -617,5 +655,37 @@ mod tests {
                 serde_json::to_string(&locked).unwrap()
             )
         );
+    }
+    #[test]
+    fn a_reworded_removal_is_reasserted() {
+        let locked = vec![Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
+        let cap = "Change the position of the mug <mug_2> to the right side of the desk, and move the notebook <book_2> to the left side of the desk, while keeping the teapot <teapot_1> in its new position on the right.";
+        assert_eq!(out_check(cap, &locked), format!("{cap} The mug <mug_2> is removed from the scene."));
+    }
+
+    fn out_check(cap: &str, locked: &[BoxRow]) -> String {
+        crate::bbox::fix_remove_actions(cap, locked)
+    }
+
+    #[test]
+    fn a_caption_that_already_says_gone_is_untouched() {
+        let locked = vec![Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
+        let cap = "Remove the mug <mug_2> from the desk.";
+        assert_eq!(fix_remove_actions(cap, &locked), cap);
+        let cap2 = "The mug <mug_2> is no longer on the desk.";
+        assert_eq!(fix_remove_actions(cap2, &locked), cap2);
+    }
+
+    #[test]
+    fn without_locked_removals_the_caption_passes_through() {
+        let locked = vec![Edit_row_fixture("book_2", "book", Some([450, 620, 800, 900]), Some([500, 350, 750, 600]))];
+        let cap = "Move the book <book_2> to the left side of the desk.";
+        assert_eq!(fix_remove_actions(cap, &locked), cap);
+    }
+
+    #[test]
+    fn an_empty_description_falls_back_to_the_object_word() {
+        let locked = vec![Edit_row_fixture("cup_1", "", Some([100, 100, 300, 300]), None)];
+        assert_eq!(fix_remove_actions("A desk.", &locked), "A desk. The object <cup_1> is removed from the scene.");
     }
 }

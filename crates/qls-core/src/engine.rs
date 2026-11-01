@@ -2153,7 +2153,19 @@ impl Engine {
                     // rows stay verbatim (adopting its descriptions), its own rows follow.
                     Some(b) => {
                         let (caption, _) = bbox::split(&done.text);
-                        (!caption.trim().is_empty()).then(|| bbox::reconcile(&done.text, &b.locked))
+                        if caption.trim().is_empty() {
+                            None
+                        } else {
+                            let reconciled = bbox::reconcile(&done.text, &b.locked);
+                            let (cap, rows) = bbox::split(&reconciled);
+                            // The DiT follows the caption's sentences, not the table: if the
+                            // model reworded a locked removal as a move, the object would stay.
+                            let fixed = bbox::fix_remove_actions(&cap, &b.locked);
+                            Some(match rows {
+                                Some(rows) => format!("{} {}", fixed, serde_json::to_string(&rows).unwrap_or_default()),
+                                None => fixed,
+                            })
+                        }
                     }
                     None => enhancer::clean(&done.text),
                 };
