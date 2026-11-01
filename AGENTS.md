@@ -1,7 +1,60 @@
 # AGENTS.md
 
+**Fork mission (iamskeole fork — read before anything else).** This fork
+unbundles Kokon from shipping built-in engines: the service in this repo is
+the only custom layer; every inference engine is **stock upstream**
+(stable-diffusion.cpp, llama.cpp — the host's `backends/` named slots)
+scheduled by the host's gateway (llama-swap); the service points only at
+**entrypoints, API keys, and prompts**. Where this file (upstream text below)
+and the fork direction disagree, **the fork direction wins** — notably,
+"Kokon's own build of sd-server" in the architecture below is the upstream
+bundled design; here engines are external and stock. The rest of this file
+(build/test, UI conventions, contracts, the model-change quality policy)
+stays in force for our work.
+
+**Working state.** The fork's plan is [tracker/PLAN.md](tracker/PLAN.md); what
+is in progress on this fork is [tracker/STATUS.md](tracker/STATUS.md), which
+supersedes `docs/STATUS.md` here. **The current task is always the oldest
+file in [`tracker/tasks/todo/`](tracker/tasks/todo/)** — when asked to "pick
+the next task": move that file to `tasks/doing/`, work it to its
+acceptance criteria, move it to `tasks/done/`, and update `STATUS.md`.
+Each task carries `## blockers` and `## decisions` — surface blockers
+before guessing, and record new decisions in the task file. `tracker/`
+is fork-owned and is never contributed upstream.
+
+**Commit discipline (this host, this repo).** DCO-signed commits
+(`git commit -s` — no GPG key here); **never run `cargo fmt`** (no
+rustfmt.toml on this host — hand-format only); one small commit per
+logical unit; tracker changes (task file moved, `STATUS.md` line)
+committed with the work they describe; BFL prompt/template strings never
+appear in chat-visible diffs, logs, or repo docs — they live in assets
+and are referenced, not inlined.
+
+**Autonomy protocol (long / GPU jobs — engaged when the owner kicks one
+off; the full version lives in the host's OPS notes).** One 24GB GPU is
+shared with the operator runtime (vllm); evicting it kills it, and the
+reload is the revival. A long GPU job:
+1. is a self-contained job script: frees the GPU, starts the model under
+   test, waits on a **1-token `/v1/completions` probe** for true
+   readiness (200 = ready, 503 = still loading — `/health` lies), runs
+   the tests, writes a digest + `DONE`/`FAIL` marker + the server-log
+   tail, stops the model, and **reloads vllm as its last step**;
+2. is launched with `setsid sh /path/job.sh < /dev/null > /path/job.log
+   2>&1 &` (a surviving host process — never `setsid sh -c '…'`);
+3. gets a second setsid watcher as backstop (~3h cap; fallback digest +
+   vllm reload if the job dies);
+4. ends the agent's turn in a **blocking wait on the marker** (tool
+   timeout covering the expected runtime) — the agent is suspended, not
+   polling; the harness's result injection is the nudge that continues
+   the work without the owner;
+5. tolerates the agent dying mid-job (the job and the watcher are host
+   processes; the reload revives the runtime regardless).
+It exists to kill the proven failure modes: poll loops, "background it
+and hope the owner asks", false-DONE on `/health`, crashed jobs
+stranding the GPU, and premature markers.
+
 The entry point for anyone working on Kokon: people and coding agents (Claude Code, Codex, Cursor and
-others). Read this first, then [docs/STATUS.md](docs/STATUS.md) for what is in progress.
+others). Read this first, then the fork working state above for what is in progress on this fork.
 
 ## What Kokon is
 
