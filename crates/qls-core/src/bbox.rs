@@ -499,7 +499,7 @@ fn tag_tokens(s: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    fn Edit_row_fixture(id: &str, desc: &str, src: Option<[i64; 4]>, tgt: Option<[i64; 4]>) -> BoxRow {
+    fn edit_row_fixture(id: &str, desc: &str, src: Option<[i64; 4]>, tgt: Option<[i64; 4]>) -> BoxRow {
         BoxRow::Edit { id: id.into(), from: "ref_image_0".into(), src_bbox: src, tgt_bbox: tgt, desc: desc.into() }
     }
     use super::*;
@@ -743,7 +743,7 @@ mod tests {
     }
     #[test]
     fn a_reworded_removal_is_reasserted() {
-        let locked = vec![Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
+        let locked = vec![edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
         let cap = "Change the position of the mug <mug_2> to the right side of the desk, and move the notebook <book_2> to the left side of the desk, while keeping the teapot <teapot_1> in its new position on the right.";
         assert_eq!(
             out_check(cap, &locked),
@@ -755,7 +755,7 @@ mod tests {
     fn a_change_phrased_removal_is_rewritten_in_place() {
         // The user's T4: the PUP said "change the background to a dark wall"
         // for a removed object and the model obeyed the prose.
-        let locked = vec![Edit_row_fixture("obj_2", "", Some([537, 4, 970, 176]), None)];
+        let locked = vec![edit_row_fixture("obj_2", "", Some([537, 4, 970, 176]), None)];
         let cap = "Change the background <obj_2> to a plain dark wall, move the notebook <obj_6> to the right side of the desk, and keep the teapot <obj_7> in place.";
         assert_eq!(
             out_check(cap, &locked),
@@ -766,8 +766,8 @@ mod tests {
     #[test]
     fn a_clause_shared_with_other_ids_is_appended_not_rewritten() {
         let locked = vec![
-            Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None),
-            Edit_row_fixture("book_2", "book", Some([450, 620, 800, 900]), Some([500, 350, 750, 600])),
+            edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None),
+            edit_row_fixture("book_2", "book", Some([450, 620, 800, 900]), Some([500, 350, 750, 600])),
         ];
         let cap = "Keep the mug <mug_2> next to the book <book_2> on the shelf.";
         assert_eq!(
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn a_caption_that_already_says_gone_is_untouched() {
-        let locked = vec![Edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
+        let locked = vec![edit_row_fixture("mug_2", "mug", Some([500, 60, 800, 320]), None)];
         let cap = "Remove the mug <mug_2> from the desk.";
         assert_eq!(fix_remove_actions(cap, &locked), cap);
         let cap2 = "The mug <mug_2> is no longer on the desk.";
@@ -791,14 +791,14 @@ mod tests {
 
     #[test]
     fn without_locked_removals_the_caption_passes_through() {
-        let locked = vec![Edit_row_fixture("book_2", "book", Some([450, 620, 800, 900]), Some([500, 350, 750, 600]))];
+        let locked = vec![edit_row_fixture("book_2", "book", Some([450, 620, 800, 900]), Some([500, 350, 750, 600]))];
         let cap = "Move the book <book_2> to the left side of the desk.";
         assert_eq!(fix_remove_actions(cap, &locked), cap);
     }
 
     #[test]
     fn an_empty_description_falls_back_to_the_object_word() {
-        let locked = vec![Edit_row_fixture("cup_1", "", Some([100, 100, 300, 300]), None)];
+        let locked = vec![edit_row_fixture("cup_1", "", Some([100, 100, 300, 300]), None)];
         assert_eq!(fix_remove_actions("A desk.", &locked), "A desk. Remove the object <cup_1> from the scene.");
     }
 
@@ -806,7 +806,7 @@ mod tests {
     fn an_added_row_recovering_a_locked_element_is_dropped() {
         // The T7 case: the upsampler annotates the same element a locked row
         // already owns (a tighter box around the same object).
-        let locked = vec![Edit_row_fixture("obj_1", "", Some([50, 100, 950, 500]), Some([50, 100, 950, 500]))];
+        let locked = vec![edit_row_fixture("obj_1", "", Some([50, 100, 950, 500]), Some([50, 100, 950, 500]))];
         let rows = vec![
             json!({"id": "obj_1", "from": "ref_image_0", "src_bbox": [50, 100, 950, 500], "tgt_bbox": [50, 100, 950, 500], "desc": ""}),
             json!({"id": "lantern_1", "from": "ref_image_1", "src_bbox": [200, 150, 900, 450], "tgt_bbox": [200, 150, 900, 450], "desc": "a brass lantern"}),

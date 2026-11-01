@@ -187,7 +187,7 @@ The table: one row per distinct object, person, animal, building or salient regi
 
 The global caption: one flowing paragraph in the generative voice (medium first, then scene, lighting, camera and frame-relative layout; no quality judgments) that names each table element at identity level at its first mention and cites it with its id in its own angle brackets: "a wicker table <table_1> holding a tiered stand <stand_1>". Cite every table id and no other; appearance detail and text content live in the descs; no coordinates. Text-dense documents are laid out region by region with every visible text transcribed verbatim at a readable size (cut content rather than shrink type), and a grid quotes every visible cell. All prose is English; only quoted text keeps its language.
 
-Output only the caption and the table."#;
+Output only the caption and the table. The caption is the work: it describes the resulting image in full - what the request asks for, what is present, what is absent - and cites every annotated element by its <id>. It is never a verbatim copy of the request, and the table is never written alone."#;
 pub const BFL_I2I_BBOX_SYSTEM_PROMPT: &str = r#"You are the annotation system an image-editing model was trained on. You see the source image(s), attached in order as ref_image_0, ref_image_1, ..., and the user's editing instruction; the edited target image does not exist yet. Determine the edit precisely, imagine the target consistently with the source, and write the record its annotator would have written, on one line: the instruction paragraph, one space, then ONE JSON array. Output nothing else.
 
 The paragraph: English, instruction voice ("Change the ...", "Remove the ...", or "Create a photograph of ..." when the references are drawn into a new frame), never observer phrasing and never a comparison with the target. Cite every involved object, person or text block at its first mention with its table id in its own angle brackets ("remove the delivery van <van_1>"), every table id exactly once and no other id; cite a reference image by its token when content is taken from it ("the cup <cup_1> from <ref_image_1>"). End states (new color, new text in quotes, pose, degree) live in the paragraph, static appearance in the descs; no coordinates. An editing instruction closes with one compact clause that everything else stays identical to the source.
@@ -196,7 +196,7 @@ The table, rows {"id", "from", "src_bbox", "tgt_bbox", "desc"}: one row per edit
 
 State only decided facts: visible in the source, demanded by the instruction, or a concrete default needed to realize it. Settle whether the edit targets one instance, all of a class or several; land every magnitude on a concrete value; include visible knock-on effects; added objects are new objects at real-world size; a zoom-in names the neighbors it excludes; an outpainting keeps the source whole and continues it in the same medium. Everything the instruction does not involve stays identical to the source. If a locked annotation's target box is null, its object is removed in the output: the caption must say so in plain words - never describe it as moved, kept, or repositioned, and never replace its area with a new background, wall, or surface. Do not add a row for an element that already has a locked annotation. Reference images are numbered from zero in the order they are given: the first image is ref_image_0.
 
-Output only the paragraph and the table."#;
+Output only the paragraph and the table. The paragraph is the work: it describes the resulting image - what the instruction changes, what stays, what is added or removed - and cites every annotated element by its <id>. It is never a verbatim copy of the user's instruction, and the table is never written alone."#;
 
 /// The layout-box contract of a BFL model for one request: `Some` when the prompt already
 /// carries a 0-1000 box table (the UI appends one, or the user pasted a finished one).
@@ -209,6 +209,9 @@ Output only the paragraph and the table."#;
 pub struct BflBoxes {
     pub system: &'static str,
     pub user_text: String,
+    /// The user's own words, bare (no canvas line): the echo check compares the answer's
+    /// caption against this.
+    pub original: String,
     pub locked: Vec<BoxRow>,
     pub finished: bool,
 }
@@ -231,13 +234,14 @@ pub fn bfl_bbox(
     let t2i = mode == ResolvedMode::Generate;
     // The t2i variant composes for the requested canvas (BFL's service sends the line;
     // here it rides inside the original prompt the locked form carries).
-    let original = if t2i {
+    let plain = caption.to_string();
+    let wrapped = if t2i {
         match canvas {
-            Some((w, h)) => format!("TARGET CANVAS: {w}:{h}\n{caption}"),
-            None => caption.to_string(),
+            Some((w, h)) => format!("TARGET CANVAS: {w}:{h}\n{plain}"),
+            None => plain.clone(),
         }
     } else {
-        caption.to_string()
+        plain.clone()
     };
     Some(BflBoxes {
         system: if t2i {
@@ -245,10 +249,27 @@ pub fn bfl_bbox(
         } else {
             BFL_I2I_BBOX_SYSTEM_PROMPT
         },
-        user_text: bbox::upsampling_input(&original, &locked),
+        user_text: bbox::upsampling_input(&wrapped, &locked),
+        original: plain,
         finished: bbox::is_finished(prompt),
         locked,
     })
+}
+
+/// A degenerate upsampler answer: a table with no caption, or a caption that is the
+/// user's own words verbatim (the model copied its input instead of writing the scene).
+/// The DiT would then read the user's un-enriched prompt - indistinguishable from the
+/// enhancer never having run.
+pub fn degenerate_answer(original: &str, answer: &str) -> Option<&'static str> {
+    let (caption, _) = bbox::split(answer);
+    let cap = caption.trim();
+    if cap.is_empty() {
+        return Some("it wrote the box table without a caption");
+    }
+    if !original.trim().is_empty() && cap == original.trim() {
+        return Some("it repeated your prompt unchanged");
+    }
+    None
 }
 
 /// BFL's user text for an image-conditioned request: the engine places the reference images
@@ -762,5 +783,44 @@ mod tests {
             7,
         );
         assert_eq!(r.system_prompt, BFL_I2I_SYSTEM_PROMPT, "BFL prompts ignore the Settings fields");
+    }
+
+    #[test]
+    fn bfl_bbox_original_and_degenerate_answers() {
+        let user = "Put the fox in the suitcase and remove the lamp";
+        let table = r#"[{"id":"fox","from":"ref_image_0","src_bbox":[100,200,300,400],"tgt_bbox":[500,600,700,800],"desc":"red fox"},{"id":"lamp","from":"ref_image_0","src_bbox":[0,0,100,100],"tgt_bbox":null,"desc":"lamp"}]"#;
+        let prompt = format!("{user} {table}");
+
+        // Edit: the request carries the scaffold; the original stays bare for the echo check.
+        let b = bfl_bbox("kokon-klein", ResolvedMode::Edit, &prompt, None).expect("a table present");
+        assert_eq!(b.system, BFL_I2I_BBOX_SYSTEM_PROMPT);
+        assert_eq!(b.original, user);
+        assert!(b.user_text.contains(user));
+        assert!(b.user_text.contains("LOCKED BOUNDING-BOX ANNOTATIONS"));
+        assert!(!b.finished);
+        assert_eq!(b.locked.len(), 2);
+
+        // t2i: the canvas goes into the request only, never into the original.
+        let b = bfl_bbox("kokon-klein", ResolvedMode::Generate, &prompt, Some((1360, 768)))
+            .expect("a table present");
+        assert_eq!(b.system, BFL_T2I_BBOX_SYSTEM_PROMPT);
+        assert_eq!(b.original, user);
+        assert!(!b.original.contains("TARGET CANVAS"));
+        assert!(b.user_text.contains("TARGET CANVAS: 1360:768"));
+
+        // The two degenerate shapes, and a real caption.
+        let echo = format!("{user} {table}");
+        assert_eq!(
+            degenerate_answer(user, &echo),
+            Some("it repeated your prompt unchanged")
+        );
+        assert_eq!(
+            degenerate_answer(user, table),
+            Some("it wrote the box table without a caption")
+        );
+        let good = format!(
+            "A red fox sleeps in the suitcase while the lamp is gone. {table}"
+        );
+        assert_eq!(degenerate_answer(user, &good), None);
     }
 }
