@@ -1,6 +1,6 @@
 # STATUS — kokon v2 separation
 
-Updated 2026-11-01. `[ ]` open, `[x]` done. **Current work = the oldest file
+Updated 2026-11-02. `[ ]` open, `[x]` done. **Current work = the oldest file
 in `tasks/todo/`.** Keep this file current at the end of every task.
 
 ## Decisions (resolved 2026-11-01 — details in PLAN.md §6)
@@ -23,11 +23,11 @@ in `tasks/todo/`.** Keep this file current at the end of every task.
 - [ ] G8 upstream PR / merge / philosophy discussion — last (task-017)
 
 ## Work packages (PLAN.md §4)
-- [ ] WP0 housekeeping — task-001/002/003 (wip-branch deletion already done)
+- [ ] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling; findings logged in the task file for task-010) / task-002, task-003 (wip-branch deletion already done)
 - [ ] WP1 sidecar + service wiring — task-004/005/006/007/008
 - [ ] WP2 klein goes stock — task-009/010/011
 - [ ] WP3 qwen goes stock — task-012/013/014
 - [ ] WP4 matrix + close — task-015/016/017
 
 ## Current
-- [ ] task-001 — llama-swap: pin v269, deploy artifacts to `backends/llama-swap-deploy/`, rebuild, restart window
+- [ ] task-002 — next (oldest in todo/): pin + build-verify the specific leejet/stable-diffusion.cpp master commit for the named sdcpp checkout
