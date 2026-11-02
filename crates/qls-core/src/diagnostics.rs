@@ -174,6 +174,12 @@ fn query_nvidia() -> Option<Vec<GpuInfo>> {
     (!gpus.is_empty()).then_some(gpus)
 }
 
+/// nvidia-smi is not guaranteed to be fast: the query can block for minutes while
+/// the driver tears down large CUDA contexts (right after a model reload). Bound it
+/// and kill it on the deadline; a stuck call yields None and the caller keeps the
+/// last known GPU list.
+const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn nvidia_smi(fields: &str) -> Option<String> {
     let mut cmd = std::process::Command::new("nvidia-smi");
     cmd.args([
@@ -185,10 +191,8 @@ fn nvidia_smi(fields: &str) -> Option<String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let out = cmd.output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let (code, stdout, _) = crate::process::run_cmd_bounded(cmd, NVIDIA_SMI_TIMEOUT)?;
+    (code == 0).then_some(stdout)
 }
 
 pub fn parse_gpu_line(line: &str) -> Option<GpuInfo> {

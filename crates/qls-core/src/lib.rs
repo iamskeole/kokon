@@ -1,4 +1,5 @@
 pub mod bbox;
+pub mod bounded_cache;
 pub mod catalog;
 pub mod config;
 pub mod diagnostics;

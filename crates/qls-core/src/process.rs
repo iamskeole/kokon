@@ -1070,12 +1070,51 @@ fn kill_pid(pid: u32) {
 }
 
 /// Runs a short-lived sd-server command (e.g. `--help`, `--list-devices`) and returns output.
-pub fn run_server_probe(exe: &Path, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
+/// Runs a short-lived command and waits at most `timeout` for it to finish; the
+/// child is killed when it outlives the deadline. A probe that hangs — CUDA
+/// initialisation during a driver stall, a wedged nvidia-smi — must not leak a
+/// process or pin the thread that started it. Returns the exit code, the stdout
+/// and the stderr; `None` when the spawn fails or the child did not finish in
+/// time.
+pub fn run_cmd_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<(i32, String, String)> {
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().ok()?;
+    let (tx, rx) = std::sync::mpsc::channel::<(i32, String, String)>();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(_) => return,
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // wait_with_output drains the pipes and returns the already-reaped status.
+        if let Ok(out) = child.wait_with_output() {
+            let _ = tx.send((
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+    });
+    // +1 s margin: a clean exit can land just after the deadline (the waiter thread
+    // polls every 100 ms); a child killed at the deadline sends nothing.
+    rx.recv_timeout(timeout + Duration::from_secs(1)).ok()
+}
+
+/// Runs a short-lived sd-server command (e.g. `--help`, `--list-devices`) and returns output.
+pub fn run_server_probe(exe: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args);
     if let Some(d) = exe.parent() {
         cmd.current_dir(d);
     }
@@ -1084,16 +1123,12 @@ pub fn run_server_probe(exe: &Path, args: &[&str], timeout: Duration) -> Option<
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let child = cmd.spawn().ok()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    let out = rx.recv_timeout(timeout).ok()?.ok()?;
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    s.push('\n');
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    Some(s)
+    run_cmd_bounded(cmd, timeout).map(|(_, stdout, stderr)| {
+        let mut s = stdout;
+        s.push('\n');
+        s.push_str(&stderr);
+        s
+    })
 }
 
 /// Parses `--list-devices` output: `NAME<TAB>description` lines.
@@ -1916,5 +1951,35 @@ CPU	Apple M2 Pro
             !m.record_path().exists(),
             "a failed load leaves no record behind"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cmd_bounded_captures_output_of_a_quick_command() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo out; echo err 1>&2; exit 3"]);
+        let (code, out, err) = run_cmd_bounded(cmd, Duration::from_secs(5)).unwrap();
+        assert_eq!(code, 3);
+        assert_eq!(out, "out\n");
+        assert_eq!(err, "err\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cmd_bounded_kills_a_child_that_outlives_the_deadline() {
+        let t0 = Instant::now();
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        let r = run_cmd_bounded(cmd, Duration::from_millis(300));
+        assert!(r.is_none(), "expected a timeout, got {r:?}");
+        assert!(t0.elapsed() < Duration::from_secs(3), "waited {:?}", t0.elapsed());
+        // Give the kill a moment to land, then check the child is really gone.
+        std::thread::sleep(Duration::from_millis(300));
+        let gone = std::process::Command::new("sh")
+            .args(["-c", "ps -eo args | grep -c '[s]leep 30'"])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0");
+        assert!(gone, "the timed-out child is still running");
     }
 }

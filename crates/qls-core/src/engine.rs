@@ -162,13 +162,13 @@ pub struct Engine {
     active: Mutex<Option<String>>,
     wake: Notify,
     pub events: broadcast::Sender<Event>,
-    gpus: Mutex<(Option<Instant>, Vec<GpuInfo>)>,
+    gpus: crate::bounded_cache::BoundedCache<(Option<Instant>, Vec<GpuInfo>)>,
     /// `--list-devices` of the engine, keyed by its path and modification time.
-    devices: Mutex<Option<DeviceList>>,
+    devices: crate::bounded_cache::BoundedCache<Option<DeviceList>>,
     /// First-run downloads (setup wizard).
     pub installer: Arc<crate::installer::Installer>,
     pub mac_bench: Arc<crate::mac_bench::MacBench>,
-    backend_version: Mutex<Option<String>>,
+    backend_version: crate::bounded_cache::BoundedCache<Option<String>>,
     last_activity: Mutex<Instant>,
 }
 
@@ -313,11 +313,11 @@ impl Engine {
             active: Mutex::new(None),
             wake: Notify::new(),
             events,
-            gpus: Mutex::new((None, Vec::new())),
-            devices: Mutex::new(None),
+            gpus: crate::bounded_cache::BoundedCache::new((None, Vec::new())),
+            devices: crate::bounded_cache::BoundedCache::new(None),
             installer: crate::installer::Installer::new(),
             mac_bench: crate::mac_bench::MacBench::new(),
-            backend_version: Mutex::new(None),
+            backend_version: crate::bounded_cache::BoundedCache::new(None),
             last_activity: Mutex::new(Instant::now()),
         });
         // In external mode the engine only runs on demand, so its capabilities are only
@@ -341,18 +341,17 @@ impl Engine {
         if cfg.gpu_backend != crate::config::GpuBackend::Cuda {
             return false;
         }
-        let cached = {
-            let g = self.gpus.lock().unwrap();
-            g.0.is_some().then(|| g.1.clone())
-        };
+        // Queried once if the list was never taken; a refresh in flight does not
+        // make this wait (BoundedCache keeps the last known list readable).
+        let cached = self.gpus.age().is_some().then(|| self.gpus.get().1);
         let cards = cached.unwrap_or_else(|| self.gpus());
         let i = if cards.len() < 2 {
             0
         } else {
+            // The cached device list, without triggering a probe: `get` only reads.
             let devices = self
                 .devices
-                .lock()
-                .unwrap()
+                .get()
                 .as_ref()
                 .map(|d| d.2.clone())
                 .unwrap_or_default();
@@ -390,7 +389,7 @@ impl Engine {
             || g.gpu_backend != new.gpu_backend;
         // The engine's version is probed again only when another build is in use.
         if g.server_exe() != new.server_exe() {
-            *self.backend_version.lock().unwrap() = None;
+            self.backend_version.reset(None);
         }
         *g = new;
         drop(g);
@@ -760,31 +759,55 @@ impl Engine {
     }
 
     /// Every graphics card found (refreshed every few seconds for the live memory use).
+    /// The refresh runs `nvidia-smi` off the reader's path: readers take the last known
+    /// list even while a refresh is in flight (a driver stall must not freeze callers).
     pub fn gpus(&self) -> Vec<GpuInfo> {
-        let mut g = self.gpus.lock().unwrap();
-        if !g.0.is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
-            *g = (Some(Instant::now()), query_gpus().unwrap_or_default());
-        }
-        g.1.clone()
+                let cur = self.gpus.get();
+        // Fresh for 3 s. A stale or never-taken list triggers one bounded
+        // refresh: nvidia-smi is killed at 5 s (measured 2026-11-02: an
+        // unbounded nvidia-smi during a GPU changeover stalled the driver and
+        // froze every caller sharing the cache lock — the service went silent
+        // for minutes and no request-timeout could fire). A failed query serves
+        // the last known list: an empty answer would wipe planning data while
+        // the driver recovers.
+        self.gpus.refresh_if_stale(
+            |t| t.0.is_some_and(|i| i.elapsed() < Duration::from_secs(3)),
+            move || match query_gpus() {
+                    Some(list) => (Some(Instant::now()), list),
+                    None => cur,
+                })
+            .1
     }
 
     /// The engine's devices (`--list-devices`); empty until the engine is installed.
+    /// The probe starts the engine binary (a CUDA initialisation); like `gpus`, readers
+    /// take the last known list instead of queuing on an in-flight probe.
     pub fn devices(&self) -> Vec<(String, String)> {
         let exe = self.config().server_exe();
         let mtime = std::fs::metadata(&exe).and_then(|m| m.modified()).ok();
         if mtime.is_none() {
             return Vec::new();
         }
-        let mut d = self.devices.lock().unwrap();
-        if let Some((p, t, list)) = d.as_ref()
-            && *p == exe
-            && *t == mtime
-        {
-            return list.clone();
-        }
-        let list = crate::diagnostics::list_devices(&exe);
-        *d = Some((exe, mtime, list.clone()));
-        list
+        // Freshness is decided against the cached entry (path + mtime); the
+        // refresher gets its own owned copy so the two closures never share a
+        // borrow with a move.
+        let (cur_path, cur_mtime) = self
+            .devices
+            .get()
+            .map(|(p, t, _)| (p, t))
+            .unwrap_or_default();
+        let path = exe.to_path_buf();
+        let list = self.devices.refresh_if_stale(
+            move |d: &Option<DeviceList>|
+            // fresh: cached for exactly this binary build (path + modification time).
+                d.as_ref()
+                    .is_some_and(|(p, t, _)| p.as_path() == cur_path.as_path() && *t == cur_mtime),
+            move || {
+                let l = crate::diagnostics::list_devices(&path);
+                Some((path, mtime, l))
+            },
+        );
+        list.map(|(_, _, l)| l).unwrap_or_default()
     }
 
     /// Index in `gpus()` of the card the engine runs on (the configured device); the first
@@ -830,12 +853,12 @@ impl Engine {
     }
 
     pub fn backend_version(&self) -> Option<String> {
-        if let Some(v) = self.backend_version.lock().unwrap().clone() {
-            return Some(v);
-        }
-        let v = crate::diagnostics::backend_version(&self.config().server_exe());
-        *self.backend_version.lock().unwrap() = v.clone();
-        v
+        // Cached per engine build; the probe starts the engine binary, so it runs under
+        // the bounded-refresh lock like the other probes, never on a reader's path.
+        self.backend_version.refresh_if_stale(
+            |v: &Option<String>| v.is_some(),
+            || Some(crate::diagnostics::backend_version(&self.config().server_exe())).flatten(),
+        )
     }
 
     pub fn emit_projects(&self, changes: Vec<crate::projects::Change>) {
@@ -2750,7 +2773,7 @@ impl Engine {
             duration_ms,
             notes: plan.notes.clone(),
             app_version: APP_VERSION.into(),
-            backend_version: self.backend_version.lock().unwrap().clone(),
+            backend_version: self.backend_version.get(),
             client: req.client.clone(),
             request: serde_json::to_value(req).unwrap_or_default(),
             pipeline,
