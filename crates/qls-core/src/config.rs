@@ -412,6 +412,14 @@ pub struct ExternalModel {
     pub prompt_bundle: String,
 }
 
+impl ExternalEngine {
+    /// The folder this pipeline's prompt-bundle reference points at, resolved
+    /// against the deployment's data directory.
+    pub fn prompt_bundle_path(&self) -> Option<PathBuf> {
+        resolve_prompt_bundle(&self.prompt_bundle, &data_dir())
+    }
+}
+
 impl ExternalModel {
     /// The engine gateway this pipeline talks to: its own override, else the
     /// service-wide one.

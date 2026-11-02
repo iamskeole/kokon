@@ -23,6 +23,7 @@ pub mod onnx;
 pub mod paths;
 pub mod pipeline;
 pub mod planner;
+pub mod pup;
 pub mod process;
 pub mod projects;
 pub mod provenance;

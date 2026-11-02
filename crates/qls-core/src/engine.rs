@@ -2104,9 +2104,29 @@ impl Engine {
             self.update(id, |j| j.view.notes.push("This inference engine has no prompt enhancer (update it in Setup); your prompt was used as written.".into()));
             return Ok(None);
         }
+        // BFL pipelines upsample with BFL's committed prompt bundle: the config names it
+        // (promptBundle, resolved against the deployment's data dir) and the service loads
+        // it here, per job, so a replacement dropped into that folder applies to the next
+        // job. A missing or broken bundle is a configuration failure of the job: a model
+        // trained on the upsampler's captions cannot run on the user's raw words.
+        let bundle = if enhancer::bfl_pup(model) {
+            let dir = cfg
+                .external_engine
+                .as_ref()
+                .and_then(|e| e.prompt_bundle_path())
+                .ok_or_else(|| {
+                    AppError::new(
+                        ErrorCode::InvalidConfig,
+                        "this pipeline has no prompt bundle configured: set its promptBundle to the BFL bundle (the deployment ships the bundle in its data dir's assets folder)",
+                    )
+                })?;
+            Some(crate::pup::load(&dir)?)
+        } else {
+            None
+        };
         // BFL layout boxes: a finished caption (every table id cited) is the upsampler's
         // own output. BFL skips re-upsampling it, and the DiT gets the table as written.
-        let boxes = enhancer::bfl_bbox(model, mode, prompt, canvas);
+        let boxes = bundle.as_ref().and_then(|b| enhancer::bfl_bbox(model, mode, prompt, canvas, b));
         if boxes.as_ref().is_some_and(|b| b.finished) {
             return Ok(Some(prompt.to_string()));
         }
@@ -2161,11 +2181,20 @@ impl Engine {
                 started.elapsed().as_secs_f32(),
                 labels
             );
-            enhancer::compose_request(cfg, model, &labels, prompt, seed)
+            enhancer::compose_request(cfg, &labels, prompt, seed)
         } else {
             // BFL-style models (and every non-compose case) go straight to the upsampler
             // with the references it sees.
-            enhancer::request(cfg, model, mode, prompt, images.to_vec(), canvas, seed)
+            enhancer::request(
+                cfg,
+                model,
+                mode,
+                prompt,
+                images.to_vec(),
+                canvas,
+                seed,
+                bundle.as_ref(),
+            )?
         };
         let req = if detail { enhancer::detailed(req, mode) } else { req };
         let mut text = String::new();
@@ -3625,6 +3654,16 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.sdcpp_dir = dir.path().join("sdcpp");
         cfg.normalize();
+        // BFL model: its prompts come from the committed bundle, named by a fake external
+        // pipeline (the gateway in the cfg is unused by this call).
+        cfg.external_engine = Some(crate::config::ExternalEngine {
+            gateway: "http://127.0.0.1:9".into(),
+            model: "kokon-klein".into(),
+            model_name: "flux3-image-klein-Q8_0.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: format!("{}/assets/pup", env!("CARGO_MANIFEST_DIR")),
+        });
         std::fs::create_dir_all(cfg.engine_dir()).unwrap();
         std::fs::write(cfg.server_exe(), b"").unwrap();
         for (_, p, _) in cfg.profile().files() {
@@ -3679,7 +3718,22 @@ mod tests {
         // greedy sampling would repeat the echo otherwise).
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0]["system_prompt"], enhancer::BFL_I2I_BBOX_SYSTEM_PROMPT);
+        // The first call carries the i2i bbox prompt of the loaded bundle; compared by
+        // hash so the prompt text never reaches a failure message.
+        let bundle =
+            crate::pup::load(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/pup"))
+                .unwrap();
+        let sha = |s: &str| -> String {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(s.as_bytes());
+            hex::encode(h.finalize())
+        };
+        assert_eq!(
+            sha(seen[0]["system_prompt"].as_str().unwrap()),
+            sha(&bundle.i2i_bbox),
+            "the first call carries the i2i bbox prompt"
+        );
         assert_eq!(
             seen[1]["sampling"]["seed"].as_i64(),
             seen[0]["sampling"]["seed"].as_i64().map(|s| s + 1)
@@ -4177,7 +4231,9 @@ mod tests {
                 model: "q35".into(),
                 api_key: String::new(),
             }),
-            prompt_bundle: String::new(),
+            // The committed BFL bundle: an absolute path, so the test needs no deployment
+            // data dir. (BFL contract text never appears in this file or its output.)
+            prompt_bundle: format!("{}/assets/pup", env!("CARGO_MANIFEST_DIR")),
         });
         cfg
     }
