@@ -23,11 +23,11 @@ in `tasks/todo/`.** Keep this file current at the end of every task.
 - [ ] G8 upstream PR / merge / philosophy discussion — last (task-017)
 
 ## Work packages (PLAN.md §4)
-- [ ] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling) / task-002 done 11-02 (`290148d` pinned + built + stock klein verified, findings logged) / task-003 (wip-branch deletion already done)
+- [x] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling) / task-002 done 11-02 (`290148d` pinned + built + stock klein verified, findings logged) / task-003 done 11-02 (`models/gguf`+`models/sd-cpp` reorg per the provenance convention, all reference paths updated, config validates 6/6; klein DiT conversion source unresolved — owner question, non-blocking)
 - [ ] WP1 sidecar + service wiring — task-004/005/006/007/008
 - [ ] WP2 klein goes stock — task-009/010/011
 - [ ] WP3 qwen goes stock — task-012/013/014
 - [ ] WP4 matrix + close — task-015/016/017
 
 ## Current
-- [ ] task-003 — next (oldest in todo/): `models/gguf` + `models/sd-cpp` reorg per provenance convention; update backends/ + llama-swap config paths; verify one load
+- [ ] task-004 — next (oldest in todo/): PUP sidecar service — the only fork-owned engine (see PLAN.md WP1)
