@@ -2090,16 +2090,22 @@ impl Engine {
         {
             return Ok(Some(done));
         }
-        // If the pipeline declares a VLM upsampler endpoint, all upsampler traffic goes
-        // there and the engine's own LLM (when it still has one) is never consulted.
+        // A VLM upsampler endpoint serves the BFL pipelines: when it is configured and
+        // this job's pipeline is a BFL one, all upsampler traffic goes there and the
+        // engine's own LLM (when it still has one) is never consulted. Non-BFL
+        // pipelines keep the engine's own LLM — a shared upsampler for them is a
+        // separate A/B decision, not this knob.
         // D-FB: a configured VLM that is down is a hard job failure - a model trained on
         // upsampler captions degrades on the user's raw words, so there is no
         // "used as written" fallback for it.
-        let vlm = cfg
-            .external_engine
-            .as_ref()
-            .and_then(|e| e.vlm.as_ref())
-            .map(crate::vlm::VlmClient::new);
+        let vlm = if enhancer::bfl_pup(model) {
+            cfg.external_engine
+                .as_ref()
+                .and_then(|e| e.vlm.as_ref())
+                .map(crate::vlm::VlmClient::new)
+        } else {
+            None
+        };
         if vlm.is_none() && !caps.text_generation {
             self.update(id, |j| j.view.notes.push("This inference engine has no prompt enhancer (update it in Setup); your prompt was used as written.".into()));
             return Ok(None);
@@ -4337,6 +4343,55 @@ mod tests {
         assert!(
             v.enhanced_prompt.is_none(),
             "no silent raw-prompt fallback (D-FB)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vlm_endpoint_only_serves_bfl_pipelines() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        // A Qwen pipeline (not BFL): the engine's own LLM answers the turn even though
+        // the config declares a VLM endpoint.
+        const QWEN_CAPTION: &str = "a cat, black, studio light";
+        let (port, _seen) = fake_text_server(vec![QWEN_CAPTION]).await;
+        let (vport, mut vseen) =
+            crate::vlm::mock_chat(200, r#"{"choices":[{"message":{"content":"SHOULD-NOT-APPEAR"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#).await;
+        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{vport}/upstream/kokon-pup"));
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(port),
+                &caps,
+                &cfg,
+                "kokon-full",
+                ResolvedMode::Edit,
+                "rendi il gatto nero",
+                &["PNG1".to_string()],
+                None,
+                42,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some(QWEN_CAPTION));
+        // The VLM endpoint never saw the turn.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            vseen.try_recv().is_err(),
+            "the VLM endpoint must not be called for a non-BFL pipeline"
         );
     }
 }
