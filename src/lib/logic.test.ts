@@ -837,7 +837,20 @@ describe("modelRequest", () => {
     expect(r.sample).toEqual({ steps: 8, cfg: 1.0 });
   });
   it("an entry without overrides sends none", () => {
-    expect(modelRequest(external, { label: "X", model: "b", modelName: "b.gguf" }).sample).toBeUndefined();
+    const r = modelRequest(external, { label: "X", model: "b", modelName: "b.gguf" });
+    expect(r.sample).toBeUndefined();
+    expect(r.vlm).toBeUndefined();
+    expect(r.promptBundle).toBeUndefined();
+  });
+  it("a per-pipeline gateway override wins over the service-wide one", () => {
+    const r = modelRequest(external, { label: "K", model: "k", modelName: "k.gguf", gateway: "http://10.0.0.2:8081" });
+    expect(r.gateway).toBe("http://10.0.0.2:8081");
+  });
+  it("the VLM sub-entry and prompt bundle ride along on the switch", () => {
+    const vlm = { entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup", model: "pup", apiKey: "k1" };
+    const r = modelRequest(external, { label: "K", model: "k", modelName: "k.gguf", vlm, promptBundle: "bfl-klein" });
+    expect(r.vlm).toEqual(vlm);
+    expect(r.promptBundle).toBe("bfl-klein");
   });
 });
 

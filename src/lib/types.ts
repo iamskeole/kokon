@@ -351,6 +351,16 @@ export interface AppConfig {
   models?: ExternalModel[];
 }
 
+/** A VLM (prompt upsampler) the service calls: an OpenAI-compatible chat endpoint. */
+export interface VlmEndpoint {
+  /** Base URL of the OpenAI-compatible chat API, e.g. "http://127.0.0.1:8081/upstream/kokon-pup". */
+  entrypoint: string;
+  /** The model id sent in each request body. */
+  model: string;
+  /** Bearer token for a keyed server; empty for a keyless sidecar. */
+  apiKey?: string;
+}
+
 export interface ExternalEngine {
   /** Base URL of the load-on-demand gateway, e.g. "http://127.0.0.1:8080/engine". */
   gateway: string;
@@ -360,6 +370,10 @@ export interface ExternalEngine {
   modelName: string;
   /** Per-request sample overrides (e.g. steps, cfg, sampler, clear_sigmas). */
   sample?: Record<string, unknown>;
+  /** The VLM (prompt upsampler) of the active pipeline; absent = no upsampler. */
+  vlm?: VlmEndpoint;
+  /** Prompt bundle of the active pipeline (a bundled id or a path); "" = none. */
+  promptBundle?: string;
 }
 
 /** One selectable model behind an externally managed engine (config `models`). */
@@ -373,6 +387,12 @@ export interface ExternalModel {
   modelName: string;
   /** Per-request sample overrides (e.g. steps, cfg, sampler, clear_sigmas). */
   sample?: Record<string, unknown>;
+  /** This pipeline's gateway override; absent = the service-wide one. */
+  gateway?: string;
+  /** The VLM (prompt upsampler) of this pipeline; absent = no upsampler. */
+  vlm?: VlmEndpoint;
+  /** Prompt bundle of this pipeline (a bundled id or a path); "" = none. */
+  promptBundle?: string;
 }
 
 export type InstallItemState = "present" | "pending" | "downloading" | "verifying" | "extracting" | "done" | "failed" | "cancelled";

@@ -26,7 +26,7 @@ pub const DEFAULT_REMOTE_PORT: u16 = 39152;
 /// Schema 10 (2026-10-19): the 8 GB preset's VRAM reserve 1 -> 1.5 GiB (unless set by hand).
 /// Schema 11: additive `externalEngine` (an externally managed inference engine); older files
 /// load with the field unset.
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
 /// `upscaler_model` value for a plain Lanczos resize (no model).
 pub const LANCZOS: &str = "lanczos";
 /// Upscalers offered in Settings: (file stem, label). Superscale-SP is a setup download, MoSR is
@@ -330,6 +330,26 @@ impl ModelProfile {
     }
 }
 
+/// The VLM (prompt upsampler) a pipeline asks the service to call: an
+/// OpenAI-compatible chat endpoint. Where it lives and which model id it
+/// wants are deployment facts, so they are config (`vlm` sub-entry of a
+/// model), never constants in the service — the sidecar is loaded on
+/// demand through the gateway like the engine, and the service only ever
+/// talks to whatever endpoint the pipeline points at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VlmEndpoint {
+    /// Base URL of the OpenAI-compatible chat API, e.g.
+    /// `http://127.0.0.1:8081/upstream/kokon-pup`.
+    pub entrypoint: String,
+    /// The model id sent in each request body.
+    pub model: String,
+    /// Bearer token for a keyed server; empty for a keyless sidecar (the
+    /// header is sent only when non-empty).
+    #[serde(default)]
+    pub api_key: String,
+}
+
 /// An externally managed inference engine: Kokon never spawns, restarts, idle-unloads or kills
 /// it. Every engine HTTP call goes to `{gateway}/{model}/...` of a load-on-demand gateway (a
 /// model router that starts the engine when requested), and a running engine is accepted only
@@ -348,6 +368,14 @@ pub struct ExternalEngine {
     /// `{}` = the engine's defaults for the loaded model.
     #[serde(default)]
     pub sample: serde_json::Value,
+    /// The VLM (prompt upsampler) of the active pipeline; None = no upsampler.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vlm: Option<VlmEndpoint>,
+    /// Prompt bundle of the active pipeline: a bundled id (a repo asset
+    /// directory, [`resolve_prompt_bundle`]) or a path to a folder of prompt
+    /// assets. "" = none.
+    #[serde(default)]
+    pub prompt_bundle: String,
 }
 
 /// One selectable model behind an externally managed engine (config `models`): what the UI
@@ -369,6 +397,57 @@ pub struct ExternalModel {
     /// `{}` = the engine's defaults for the loaded model.
     #[serde(default)]
     pub sample: serde_json::Value,
+    /// This pipeline's engine gateway override; None = the service-wide one
+    /// (the active `externalEngine.gateway`). Per-pipeline pointability: a
+    /// fresh deployment may run its pipelines on different gateways.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gateway: Option<String>,
+    /// The VLM (prompt upsampler) of this pipeline; None = no upsampler.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vlm: Option<VlmEndpoint>,
+    /// Prompt bundle of this pipeline: a bundled id (a repo asset directory,
+    /// [`resolve_prompt_bundle`]) or a path to a folder of prompt assets.
+    /// "" = none.
+    #[serde(default)]
+    pub prompt_bundle: String,
+}
+
+impl ExternalModel {
+    /// The engine gateway this pipeline talks to: its own override, else the
+    /// service-wide one.
+    pub fn engine_gateway(&self, service_gateway: &str) -> String {
+        self
+            .gateway
+            .clone()
+            .unwrap_or_else(|| service_gateway.to_string())
+    }
+
+    /// The folder this pipeline's prompt-bundle reference points at, resolved
+    /// against the deployment's data directory.
+    pub fn prompt_bundle_path(&self) -> Option<PathBuf> {
+        resolve_prompt_bundle(&self.prompt_bundle, &data_dir())
+    }
+}
+
+/// The folder a prompt-bundle reference points at, resolved against a base
+/// directory (the deployment's data dir in production). "" = no bundle;
+/// an absolute path is used as is; a relative path with separators is joined
+/// onto the base; a plain id names a repo asset directory under the base's
+/// `assets` folder (the bundled sets commit there; deployments may point at
+/// any other folder by path instead).
+pub fn resolve_prompt_bundle(bundle: &str, base: &Path) -> Option<PathBuf> {
+    let b = bundle.trim();
+    if b.is_empty() {
+        return None;
+    }
+    let p = Path::new(b);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+    if p.components().count() > 1 {
+        return Some(base.join(p));
+    }
+    Some(base.join("assets").join(p))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -718,6 +797,13 @@ impl AppConfig {
                         // models, not just variants of one. Old files still read through the
                         // serde alias; the first save writes the new key.
                         tracing::debug!("config migrated to schema 12 (`flavors` -> `models`)");
+                    }
+                    if c.schema_version < 13 {
+                        // Additive: the per-model entries gained a gateway override, a `vlm`
+                        // sub-entry and a prompt-bundle reference; the active engine gained
+                        // `vlm`/`promptBundle`. Old files read with empty defaults; the
+                        // first save writes the new schema.
+                        tracing::debug!("config migrated to schema 13 (per-pipeline vlm + prompt bundle)");
                     }
                     // The official weights are always available as a profile, built for the
                     // configured folder and preset; the active one stays as it is.
@@ -1726,6 +1812,136 @@ mod tests {
             saved.contains("\"models\"") && !saved.contains("\"flavors\""),
             "the new key is written on save"
         );
+    }
+
+    #[test]
+    fn schema_13_adds_vlm_and_prompt_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        // A schema-12 file with no new keys reads clean and gets the new
+        // schema; the new keys stay out of the saved JSON until set.
+        let old = r#"{"schemaVersion":12,"externalEngine":{"gateway":"http://gw","model":"a","modelName":"a.gguf"},
+            "models":[{"label":"Klein","model":"kokon-klein","modelName":"klein-Q8_0.gguf"}]}"#;
+        std::fs::write(&p, old).unwrap();
+        let c = AppConfig::load_from(&p);
+        assert_eq!(c.schema_version, 13);
+        assert_eq!(c.models[0].vlm, None);
+        assert_eq!(c.models[0].prompt_bundle, "");
+        assert_eq!(c.models[0].gateway, None);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains("\"vlm\""), "unset sub-entries stay out of the JSON");
+
+        // Set: the new surface round-trips (per-model and on the active engine).
+        let mut c = AppConfig::load_from(&p);
+        c.models[0].gateway = Some("http://other-gw".into());
+        c.models[0].vlm = Some(VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+            model: "q35".into(),
+            api_key: "key-1".into(),
+        });
+        c.models[0].prompt_bundle = "bfl-klein".into();
+        c.external_engine.as_mut().unwrap().vlm = c.models[0].vlm.clone();
+        c.external_engine.as_mut().unwrap().prompt_bundle = "bfl-klein".into();
+        std::fs::write(&p, serde_json::to_string(&c).unwrap()).unwrap();
+        let r = AppConfig::load_from(&p);
+        let m = &r.models[0];
+        assert_eq!(m.gateway.as_deref(), Some("http://other-gw"));
+        assert_eq!(m.vlm.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/kokon-pup");
+        assert_eq!(m.vlm.as_ref().unwrap().api_key, "key-1");
+        assert_eq!(m.prompt_bundle, "bfl-klein");
+        assert_eq!(r.external_engine.as_ref().unwrap().vlm, m.vlm);
+        assert_eq!(r.external_engine.as_ref().unwrap().prompt_bundle, "bfl-klein");
+    }
+
+    #[test]
+    fn pipelines_resolve_engine_and_vlm_from_config() {
+        // The three pipelines of a fresh deployment: klein (its own gateway
+        // + a keyed VLM + a bundled prompt set), qwen-full (the service-wide
+        // gateway, a keyless VLM, a path override), qwen-turbo (service-wide
+        // gateway, no upsampler, no bundle). Nothing about where any of
+        // them lives is a constant in the code.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = AppConfig::default();
+        let gw = "http://127.0.0.1:8081";
+        cfg.external_engine = Some(ExternalEngine {
+            gateway: gw.into(),
+            model: "kokon-turbo".into(),
+            model_name: "turbo.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: String::new(),
+        });
+        cfg.models = vec![
+            ExternalModel {
+                label: "klein".into(),
+                sub: None,
+                model: "kokon-klein".into(),
+                model_name: "klein.gguf".into(),
+                sample: serde_json::json!({"steps": 16}),
+                gateway: Some("http://10.0.0.2:8081".into()),
+                vlm: Some(VlmEndpoint {
+                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+                    model: "pup".into(),
+                    api_key: "pup-key".into(),
+                }),
+                prompt_bundle: "bfl-klein".into(),
+            },
+            ExternalModel {
+                label: "qwen-full".into(),
+                sub: None,
+                model: "kokon-full".into(),
+                model_name: "full.gguf".into(),
+                sample: serde_json::json!({"steps": 20}),
+                gateway: None,
+                vlm: Some(VlmEndpoint {
+                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+                    model: "pup".into(),
+                    api_key: String::new(),
+                }),
+                prompt_bundle: "prompts/qwen".into(),
+            },
+            ExternalModel {
+                label: "qwen-turbo".into(),
+                sub: None,
+                model: "kokon-turbo".into(),
+                model_name: "turbo.gguf".into(),
+                sample: serde_json::json!({}),
+                gateway: None,
+                vlm: None,
+                prompt_bundle: String::new(),
+            },
+        ];
+
+        // Engine entrypoints: override vs service-wide default.
+        assert_eq!(cfg.models[0].engine_gateway(gw), "http://10.0.0.2:8081");
+        assert_eq!(cfg.models[1].engine_gateway(gw), gw);
+        assert_eq!(cfg.models[2].engine_gateway(gw), gw);
+
+        // VLM endpoints: present (keyed / keyless) or absent.
+        let (e, m, k) = match &cfg.models[0].vlm {
+            Some(v) => (v.entrypoint.as_str(), v.model.as_str(), v.api_key.as_str()),
+            None => panic!("klein pipeline has no VLM"),
+        };
+        assert_eq!((e, m, k), ("http://127.0.0.1:8081/upstream/kokon-pup", "pup", "pup-key"));
+        assert_eq!(cfg.models[1].vlm.as_ref().unwrap().api_key, "", "keyless sidecar");
+        assert_eq!(cfg.models[2].vlm, None);
+
+        // Prompt bundles: bundled id, path override, none.
+        let base = dir.path();
+        assert_eq!(
+            resolve_prompt_bundle("bfl-klein", base),
+            Some(base.join("assets").join("bfl-klein"))
+        );
+        assert_eq!(
+            resolve_prompt_bundle("prompts/qwen", base),
+            Some(base.join("prompts").join("qwen"))
+        );
+        assert_eq!(
+            resolve_prompt_bundle("/abs/prompts", base),
+            Some(PathBuf::from("/abs/prompts"))
+        );
+        assert_eq!(resolve_prompt_bundle("", base), None);
+        assert_eq!(resolve_prompt_bundle("  ", base), None);
     }
 
     #[test]

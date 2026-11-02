@@ -1203,9 +1203,13 @@ export function downloadIsFor(st: Pick<InstallStatus, "running" | "preset"> | nu
 }
 
 /** The full external-engine definition for one selectable model: the gateway comes from the
- * configured engine, the model and sample overrides from the entry (config `models`). */
+ * entry's override or the configured engine, the model, sample and VLM details from the entry
+ * (config `models`). */
 export function modelRequest(external: ExternalEngine, m: ExternalModel): ExternalEngine {
-  return { gateway: external.gateway, model: m.model, modelName: m.modelName, sample: m.sample };
+  const r: ExternalEngine = { gateway: m.gateway ?? external.gateway, model: m.model, modelName: m.modelName, sample: m.sample };
+  if (m.vlm) r.vlm = m.vlm;
+  if (m.promptBundle) r.promptBundle = m.promptBundle;
+  return r;
 }
 
 /** The configured model entry that made a generation, matched on the model name recorded on it
