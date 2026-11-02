@@ -30,6 +30,7 @@ pub mod remote;
 pub mod scene;
 pub mod sdcpp;
 pub mod speed;
+pub mod vlm;
 pub mod store;
 pub mod watermark;
 pub mod wic;

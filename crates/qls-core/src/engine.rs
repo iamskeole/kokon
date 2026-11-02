@@ -25,8 +25,13 @@ use crate::planner::{
     self, GenerationRequest, Mode, OutputFormat, Plan, PlanInputs, ResolutionMode, ResolvedMode,
 };
 use crate::process::{BackendProgress, BackendStage, ProgressParser, ServerManager, ServerState};
-use crate::sdcpp::{BackendJobStatus, CancelOutcome, Capabilities, SdcppClient, TextGenRequest, UpscaleRequest};
-use crate::store::{GenerationRecord, InputRecord, PipelineRecord, ReferenceRecord, Store, new_id, now_rfc3339};
+use crate::sdcpp::{
+    BackendJobStatus, CancelOutcome, Capabilities, SdcppClient, TextGenDone, TextGenRequest, TextUsage,
+    UpscaleRequest,
+};
+use crate::store::{
+    GenerationRecord, InputRecord, PipelineRecord, ReferenceRecord, Store, new_id, now_rfc3339,
+};
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -2045,6 +2050,21 @@ impl Engine {
     /// new prompt, or None when the job keeps the user's prompt: the engine cannot write text,
     /// or the enhancer failed (both noted on the job). Errors only for a cancel or a crash.
     #[allow(clippy::too_many_arguments)]
+    /// Bridges a sidecar reply to the in-engine `text_gen` done-event shape, so the
+    /// enhance path treats both token sources identically.
+    fn vlm_to_textgen(d: crate::vlm::VlmReply, seed: i64) -> TextGenDone {
+        TextGenDone {
+            text: d.text,
+            finish_reason: d.finish_reason,
+            seed,
+            usage: TextUsage {
+                prompt_tokens: d.prompt_tokens,
+                completion_tokens: d.completion_tokens,
+            },
+            timings: serde_json::Value::Null,
+        }
+    }
+
     async fn enhance_prompt(
         &self,
         id: &str,
@@ -2070,7 +2090,17 @@ impl Engine {
         {
             return Ok(Some(done));
         }
-        if !caps.text_generation {
+        // If the pipeline declares a VLM upsampler endpoint, all upsampler traffic goes
+        // there and the engine's own LLM (when it still has one) is never consulted.
+        // D-FB: a configured VLM that is down is a hard job failure - a model trained on
+        // upsampler captions degrades on the user's raw words, so there is no
+        // "used as written" fallback for it.
+        let vlm = cfg
+            .external_engine
+            .as_ref()
+            .and_then(|e| e.vlm.as_ref())
+            .map(crate::vlm::VlmClient::new);
+        if vlm.is_none() && !caps.text_generation {
             self.update(id, |j| j.view.notes.push("This inference engine has no prompt enhancer (update it in Setup); your prompt was used as written.".into()));
             return Ok(None);
         }
@@ -2094,18 +2124,27 @@ impl Engine {
         } else if mode == ResolvedMode::Compose && !enhancer::bfl_pup(model) {
             let mut labels = Vec::with_capacity(images.len());
             for img in images {
-                let r = client
-                    .text_gen(
-                        &enhancer::label_request(img.clone(), prompt, seed),
-                        Duration::from_secs(120),
-                        |_| {},
-                        || self.is_cancelled(id),
-                    )
-                    .await;
+                let lr = enhancer::label_request(img.clone(), prompt, seed);
+                let r = match &vlm {
+                    Some(v) => v
+                        .chat(&lr, Duration::from_secs(120))
+                        .await
+                        .map(|d| Self::vlm_to_textgen(d, lr.sampling.seed)),
+                    None => client
+                        .text_gen(&lr, Duration::from_secs(120), |_| {}, || self.is_cancelled(id))
+                        .await,
+                };
                 match r {
                     Ok(done) => labels.push(enhancer::clean_label(&done.text)),
                     Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
-                    // A missing label leaves the image model to see that reference by itself.
+                    // D-FB: a down sidecar must not degrade a composition into unlabeled
+                    // references.
+                    Err(e) if vlm.is_some() => {
+                        self.update(id, |j| j.view.enhanced_prompt = None);
+                        return Err(e);
+                    }
+                    // A missing label (in-engine path only) leaves the image model to see
+                    // that reference by itself.
                     Err(e) => {
                         tracing::warn!(
                             "prompt enhancer: labelling a reference failed: {} {:?}",
@@ -2147,11 +2186,27 @@ impl Engine {
                 self.update(id, |j| j.view.enhanced_prompt = Some(partial));
             }
         };
-        let mut r = client
-            .text_gen(&req, Duration::from_secs(300), &mut on_delta, || {
-                self.is_cancelled(id)
-            })
-            .await;
+        let mut r = match &vlm {
+            // The sidecar answers a whole turn at a time (no streaming yet): the UI gets
+            // the finished answer in one update.
+            Some(v) => match v.chat(&req, Duration::from_secs(300)).await {
+                Ok(done) => {
+                    self.update(id, |j| j.view.enhanced_prompt = Some(done.text.clone()));
+                    Ok(Self::vlm_to_textgen(done, req.sampling.seed))
+                }
+                Err(e) => {
+                    // D-FB: the job fails with the actionable message; the view does not
+                    // keep an empty "enhancing" box behind it.
+                    self.update(id, |j| j.view.enhanced_prompt = None);
+                    Err(e)
+                }
+            },
+            None => client
+                .text_gen(&req, Duration::from_secs(300), &mut on_delta, || {
+                    self.is_cancelled(id)
+                })
+                .await,
+        };
         // A degenerate answer (the table without a caption, or the user's own words
         // echoed back) is what the first call on a cold upsampler does. Running it
         // once more, warm, fixes it - do not fail the job over it.
@@ -2170,11 +2225,23 @@ impl Engine {
             // The UI has been following the first answer - restart the stream on the new one.
             reset.store(true, std::sync::atomic::Ordering::SeqCst);
             self.update(id, |j| j.view.enhanced_prompt = Some(String::new()));
-            r = client
-                .text_gen(&retry, Duration::from_secs(300), &mut on_delta, || {
-                    self.is_cancelled(id)
-                })
-                .await;
+            r = match &vlm {
+                Some(v) => match v.chat(&retry, Duration::from_secs(300)).await {
+                    Ok(done) => {
+                        self.update(id, |j| j.view.enhanced_prompt = Some(done.text.clone()));
+                        Ok(Self::vlm_to_textgen(done, retry.sampling.seed))
+                    }
+                    Err(e) => {
+                        self.update(id, |j| j.view.enhanced_prompt = None);
+                        Err(e)
+                    }
+                },
+                None => client
+                    .text_gen(&retry, Duration::from_secs(300), &mut on_delta, || {
+                        self.is_cancelled(id)
+                    })
+                    .await,
+            };
             degenerate = match &r {
                 Ok(done) => {
                     boxes.as_ref().and_then(|b| enhancer::degenerate_answer(&b.original, &done.text))
@@ -2231,6 +2298,9 @@ impl Engine {
                 }
             },
             Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+            // D-FB: a down upsampler fails the job; the generic soft-fail below is only
+            // for the in-engine path.
+            Err(e) if e.code == ErrorCode::Upsampler => return Err(e),
             Err(e) => {
                 if self.server.owned_alive() == Some(false) {
                     let tail = self.server.log.tail(30).join("\n");
@@ -4071,5 +4141,146 @@ mod tests {
         for f in [&jpg, &webp] {
             assert!(f.windows(17).any(|w| w == b"DigitalSourceType"));
         }
+    }
+
+    /// The shared harness of the VLM tests: a real `Engine` on a throwaway config dir.
+    async fn vlm_test_engine() -> (std::sync::Arc<Engine>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-only env override, single-threaded setup.
+        unsafe { std::env::set_var("QLS_CONFIG_DIR", dir.path().join("cfg")) };
+        let cfg = {
+            let mut cfg = AppConfig::default();
+            cfg.sdcpp_dir = dir.path().join("sdcpp");
+            cfg.normalize();
+            std::fs::create_dir_all(cfg.engine_dir()).unwrap();
+            std::fs::write(cfg.server_exe(), b"").unwrap();
+            for (_, p, _) in cfg.profile().files() {
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, b"").unwrap();
+            }
+            cfg
+        };
+        let e = Engine::new(cfg.clone(), dir.path()).unwrap();
+        (e, dir)
+    }
+
+    fn vlm_cfg(cfg: AppConfig, entrypoint: &str) -> AppConfig {
+        use crate::config::{ExternalEngine, VlmEndpoint};
+        let mut cfg = cfg;
+        cfg.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            model: "kokon-klein".into(),
+            model_name: "flux3-image-klein-Q8_0.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: Some(VlmEndpoint {
+                entrypoint: entrypoint.into(),
+                model: "q35".into(),
+                api_key: String::new(),
+            }),
+            prompt_bundle: String::new(),
+        });
+        cfg
+    }
+
+    #[tokio::test]
+    async fn a_configured_vlm_replaces_the_engine_llm() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let body = r#"{"choices":[{"message":{"content":"a black cat, studio light"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8}}"#;
+        let (port, seen) = crate::vlm::mock_chat(200, body).await;
+        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{port}/upstream/kokon-pup"));
+        let images = vec!["PNG1".to_string()];
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-klein",
+                ResolvedMode::Edit,
+                "rendi il gatto nero",
+                &images,
+                None,
+                42,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some("a black cat, studio light"));
+        // The upsampler turn went to the sidecar, not to the engine.
+        let raw = seen.await.unwrap();
+        assert!(raw.contains("POST /upstream/kokon-pup/v1/chat/completions"), "{raw}");
+        let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
+        assert_eq!(sent["model"], "q35");
+        assert_eq!(sent["max_tokens"], 3584, "the BFL output budget");
+        assert_eq!(sent["seed"], 42);
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert_eq!(
+            sent["messages"][1]["content"][0]["type"],
+            "image_url",
+            "the reference goes with the turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_down_vlm_hard_fails_the_job() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a red ceramic mug".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        // Port 9 never listens.
+        let cfg = vlm_cfg(AppConfig::default(), "http://127.0.0.1:9/upstream/kokon-pup");
+        let err = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-klein",
+                ResolvedMode::Generate,
+                "a red ceramic mug",
+                &[],
+                None,
+                7,
+                None,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Upsampler);
+        assert!(err.message.contains("127.0.0.1:9"), "{}", err.message);
+        assert!(err.suggestion.is_some(), "{}", err.message);
+        let v = e.job(&id).unwrap();
+        assert!(
+            v.enhanced_prompt.is_none(),
+            "no silent raw-prompt fallback (D-FB)"
+        );
     }
 }

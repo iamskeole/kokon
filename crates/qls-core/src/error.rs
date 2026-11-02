@@ -13,6 +13,9 @@ pub enum ErrorCode {
     ServerUnavailable,
     ServerStartFailed,
     ServerCrashed,
+    /// The prompt upsampler (the PUP sidecar) is configured for this pipeline but is not
+    /// answering: the job hard-fails instead of falling back to the raw prompt (D-FB).
+    Upsampler,
     MalformedRequest,
     Unsupported,
     ImageDecode,
@@ -92,7 +95,8 @@ impl AppError {
             ErrorCode::Unsupported => 422,
             ErrorCode::ServerUnavailable
             | ErrorCode::ServerStartFailed
-            | ErrorCode::ServerCrashed => 503,
+            | ErrorCode::ServerCrashed
+            | ErrorCode::Upsampler => 503,
             _ => 500,
         }
     }
