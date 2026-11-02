@@ -24,10 +24,10 @@ in `tasks/todo/`.** Keep this file current at the end of every task.
 
 ## Work packages (PLAN.md §4)
 - [x] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling) / task-002 done 11-02 (`290148d` pinned + built + stock klein verified, findings logged) / task-003 done 11-02 (`models/gguf`+`models/sd-cpp` reorg per the provenance convention, all reference paths updated, config validates 6/6; klein DiT conversion source unresolved — owner question, non-blocking)
-- [ ] WP1 sidecar + service wiring — task-004/005/006/007/008
+- [ ] WP1 sidecar + service wiring — task-004 done 11-02 (PUP sidecar: named llama.cpp May build, alias `kokon-pup` on :39175, 1-token readiness, vision + BFL t2i re-verified through the gateway — vllm self-healed after; retry-storm + setsid-pitfall findings logged for 009/010) / task-005 next / 006 / 007 / 008
 - [ ] WP2 klein goes stock — task-009/010/011
 - [ ] WP3 qwen goes stock — task-012/013/014
 - [ ] WP4 matrix + close — task-015/016/017
 
 ## Current
-- [ ] task-004 — next (oldest in todo/): PUP sidecar service — the only fork-owned engine (see PLAN.md WP1)
+- [ ] task-005 — next (oldest in todo/): per-pipeline config surface — entrypoints + key + prompt bundle, all pointable
