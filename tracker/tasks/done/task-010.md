@@ -138,10 +138,29 @@ reference path, not the loop cause.)
   per-request sampling constants in `enhancer.rs` (pre-promotion) and the prompt-bundle *contents* (committed assets —
   the owner's own exception).
 
-## Awaiting owner
+## Decision (owner, 2026-11-03, after visually validating the window C + D renders)
 
-Visual validation of the three window-D C2 renders (`llama-swap-deploy/jobs/pupab-D/render-C2-PUP-Q{4,6,8}.png`) and the
-quant call: **PUP-Q4** (5.6 GB sidecar, most GPU headroom), **PUP-Q6** (7.4 GB, middle), **PUP-Q8** (9.5 GB, tightest
-fit ~20 GB pair, best quality ceiling) — or the 8B baseline if he prefers. All three PUP quants are clean on the
-production path, so this is a headroom-vs-quant choice. On his pick: record the winner in STATUS, move to done/,
-optionally fold in the small `enhancer.rs` sampling-constants promotion to config (offered; not yet GO'd), then task-011.
+**Production PUP = BFL `flux-3-image-klein-pup` Q8_0** (`models/gguf/BFL/flux-3-image-klein-pup/model-Q8_0.gguf` +
+`mmproj-F16.gguf`). 9.5 GB sidecar, ~20 GB pair with the DiT Q8 — the tightest fit on the 24 GB card, proven running
+in window D; best quality ceiling. The 8B (Qwen3-VL-8B-Instruct) baseline stays selectable via config.
+Rationale: the fine-tune lifts t2i (540–584 tok with box tables vs 8B's 219–223) and compose (410–752 tok, tables kept),
+is clean at all three quants on the production path (the window-C C2 loop was the ad-hoc driver's scaffold, not the
+model), and the owner's pre-streamlining frankenstein PUP results stand.
+
+**What flips when this becomes live (task-011 wiring):** the supervisor's `PUP_MODEL` default is still Q4
+(`sd-cpp-serve-klein-stock.sh`) — it becomes Q8; the external-engine deploy's VLM entrypoint stays the sidecar alias
+(`kokon-pup`) via the gateway. No service rebuild: it is the sidecar process that changes.
+
+**Deferred / open (noted, not done here):**
+- Promoting the BFL sampling constants out of `enhancer.rs` into `externalEngine.vlm.{sampling,maxTokens}` config
+  fields (offered to the owner; not GO'd — a candidate to fold into task-011).
+- VLM-path parity with BFL's reference preprocessing: we send raw working-geometry PNG data-URLs; BFL composites
+  alpha onto white and caps per-N pixel budget before JPEG q92. Verified against both decoders on this host
+  (llama.cpp mtmd forces 3 channels — alpha dropped, not composited; sdcpp slices 4→3 for the 3-channel VAE) and
+  against training (Qwen-VL vision tower and flux VAE are RGB-only; the file container is a transport detail). Only
+  transparent-PNG uploads (stickers/cutouts) would visibly differ; photos (the normal case) are unaffected. Optional
+  small change, no urgency.
+- PUP dir provenance note: the on-disk GGUFs are a *local conversion* of BFL's weights (the HF repo ships bf16
+  `model.safetensors` + `generation_config.json`, no GGUFs); the fine-tune identity is verified by the GGUF
+  metadata (name `Flux3_Pup_Hf`, base `Qwen/Qwen3.5-9B`). Mirroring the missing `generation_config.json` is
+  housekeeping, not blocking.
