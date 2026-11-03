@@ -198,4 +198,65 @@ rule).
   test,restore,watch,digest}.sh, W=/tmp/qwabl3; budgets: job 45 min,
   watcher 60-min cap, wait-marker 65 min. Round-1's launch-ends-in-wait
   rule holds (the owner's "ack on process note").
+- **Canary confirmed (owner, ~22:1x): the 105927 turbo brass-lantern render**
+  is the canary (110044 was the quality one).
+- **Flight 2 (22:22-22:26): canary A/B completed, died in leg 3 on my file.**
+  L1 (canary, turbo, 8B): c1 seed 55 "Replace the cables with a brass godzilla"
+  done — 8B enhanced 169 chars. L2 (canary, turbo, 9B): c2 same seed/prompt —
+  9B enhanced 610 chars, door 754419 (cmdline-proven), VRAM 10328+10928 MiB.
+  Leg 3 died on a filename bug: the preflight wrote the switch body as
+  `ee-{name[-5:]}.json` and 'kokon-full'[-5:] is '-full' → `ee--full.json`;
+  `curl -d @ee-full.json` had no file, the switch silently didn't happen,
+  readback showed turbo → die. Fixed: explicit keys + existence asserts.
+- **Flight 2b (22:50-22:52, 30 s): the trigger-alias bug.** The surviving leg A
+  triggered alias `kokon-quality` — which does not exist in the gateway (the
+  alias is kokon-full; `quality` is only the supervisor's variant string).
+  Three attempts, 404, die. Fixed `trigger_engine ALIAS VARIANT` (URL by
+  alias, run-line grep by variant), dropped a duplicate swap, and made
+  check_yield window-aware: after the final swap a vLLM reappearance is the
+  revival itself, not a human reclaim (an unconditional yield would have died
+  the job on its own revival).
+- **Flight 3 (23:08-23:16): 8B full leg complete; 9B full leg OOM — the
+  predicted data point.** Leg A (full, 8B-Q4): engine 785220 (13.6 GB) + door
+  785448 (8.0 GB); f1-f4 4/4 (~31 s each; enhanced 643/875/665/212 chars);
+  pids stable across all four. Leg B (full, 9B-Q8): the door loaded (10.9 GB)
+  but the engine (pid 789065) was gone from nvidia-smi by the time the door
+  finished: 13.6 + 10.9 = 24.5 GB > 24 GB — the CUDA alloc failed during model
+  load, /health still returned 200 (the process lived, the model was broken),
+  so the supervisor never restarted it; g1's enhance (door-side) succeeded and
+  the engine's first step failed at 129 s → die. Exactly the tightest-config
+  data point the script header predicted.
+- **Owner direction for the OOM (night, ~23:4x): lower quant — the PUP first,
+  the image model only if necessary.** The PUP's Q4_K_M (5.6 GB) already
+  exists on disk. `qwen-pup-serve-9.sh` is now quant-parameterized ($2;
+  per-flavor defaults: t→Q8_0, f→Q4_K_M): full+9B-Q4 lands at ~21.6-22 GB —
+  the same footprint class as the proven 8B pair; turbo+9B stays Q8 (the
+  19.6 GB config the owner already judged better in round 1).
+- **The 404 that cost nudges (owner paste, ~23:5x): "no router for requested
+  model".** My session's provider is qwen-fastani → :18021 = the pi-read-more
+  dev debug proxy → gateway → vLLM (NOT direct :18020 as the session notes
+  said). The model name is correct (a 1-token probe through the proxy passes
+  while vLLM is up); the 404 fires exactly when the live gateway config lacks
+  qwen3.8-27b — i.e. while a window config is live. The expensive pattern: a
+  FAIL marker written BEFORE the restore finished → my blocking wait returned
+  → the continuation model call landed seconds before vLLM's revival → 404 →
+  a human nudge was the only way back. Fix (job-side, not the owner's proxy —
+  the proxy reports the truth and masking a 404 would break its debug
+  purpose): the FAIL marker is now written LAST in both the job's die() and
+  the watcher's fallbacks (restore → digest → marker), so a wake can only
+  ever land on a restorable box (stock-013 live, vLLM healthy). Also found +
+  fixed: `~/.pi/agent/models.json` carried a trailing comma (invalid JSON;
+  repaired atomically, backup models.json.bak-pre-fastani-fix-20261103).
+- **Flight 4 (`qwabl-r4-*`, W=/tmp/qwabl5, in flight): the final leg —
+  full + 9B-Q4.** One leg (g1-g4, same prompts/seeds as f1-f4); the 8B full
+  leg (23:08) is archived from /tmp/qwabl4, the canary pair (22:22) from
+  /tmp/qwabl3 under legC/; the final digest carries all three sets for the
+  owner's verdict.
+- **Post-DONE plan (full autonomy — owner asleep):** if the g-leg completes
+  4/4 stable, wire the winner per the owner's round-1 lean: turbo door →
+  `qwen-pup-serve-9.sh t` (Q8), full door → `qwen-pup-serve-9.sh f` (Q4) —
+  cmd-only config deltas, atomic swap, QWEN-ROLLBACK.md updated (one step:
+  both doors back to the 8B script). STATUS records the wiring as pending
+  the owner's morning visual confirmation (renders in /tmp/qwabl5 + digest);
+  the one-step rollback stays available until then.
 - (open until the A/B lands: winner model + quant for qwen)
