@@ -121,3 +121,102 @@ retire the 21-commit fork to `__mess/` (rollback dir kept, like task-011).
   the atomic swap to `config.yaml.stock-013` (vLLM back in the registry) →
   stop-any-holder → canonical revival (veto disabled against the revival
   itself) → 1-token gateway adoption check → digest → DONE marker last.
+- **Attempt-3 run (16:32:11–16:36:54) — DONE, 4 min, vetoes=0, 7/7 jobs.**
+  Page-cached loads dominated: fork engine 30 s, each stock engine 2.4–3.8 s,
+  sidecar 1.4–2.4 s, vLLM warm boot ~60 s. All legs passed; the cutover is
+  LIVE (config.yaml = stock-013, service on the patched config, active
+  klein). Evidence: `/tmp/kleenq/` (DONE, digest, run.log, 7 job jsons, 7
+  renders, caps, vllm logs), `jobs/kleenq.log`, watcher exit "DONE — all
+  good". Owner's no-regression visual verdict on the 7 renders is still the
+  outstanding gate before the fork is archived.
+- **Churn found in the stock leg (the regression that triggered the two-door
+  fix).** In leg B the daemon ran cmdStop on kokon-turbo 5x and on
+  kokon-pup-qwen ~6x within ~2 min (engine pids cycled 10–35 s apart), vs
+  zero churn in leg A (fork engine, in-engine PUP). Root cause, proven in
+  the llama-swap source (`/home/p/ml/backends/llama-swap/`, v269):
+  `internal/config/config.go AddDefaultGroupToConfig` puts every ungrouped
+  model into the default group with **Swap=true, Exclusive=true** — "out of
+  the box llama-swap runs one model at a time" — so the turbo door and the
+  engine (both ungrouped) evicted each other on every request
+  (`internal/router/group.go groupSwapper.EvictionFor`). Not TTL: the TTL
+  goroutine unloads only on `StateReady && inflight==0 && now-lastUse>ttl`
+  (120 s) and there is no periodic health poll — a 10–25 s cycle cannot be
+  either. The pre-fix production journal (4 days) shows turbo loads spaced
+  2–3 min+ apart, i.e. the fork era did not churn the engine — the churn is
+  specific to the new ungrouped door/engine pair. Ring-buffer proof of every
+  cycle: `deploy/qwen/supervisor.log` + `/api/events/logs?stream=upstream`
+  ("stopped engine (pid X)" after each enhance). Impact: ~5–10 s extra per
+  job component per request (measured 20–31 s/job stock leg vs 10.5 s fork
+  leg). The BFL `kokon-pup` shows similar per-request bursts in production
+  journal history (Nov 3 10:14–10:16, 3 loads in 54 s) — established, but
+  the qwen door churned harder and was the visible one.
+- **Two-door fix (owner GO: "go on the two door fix its the common sense
+  aporoach").** The group router allows one group per model, and turbo+full
+  cannot share a group (a group load raises ALL members — both DiTs + a
+  sidecar ≈ 30 GB > 24 GB). So each taste gets its own sidecar door and
+  group: `qwen-t` {kokon-turbo, kokon-pup-qwen} and `qwen-f` {kokon-full,
+  kokon-pup-qwen-f}, both `swap:false`, **`exclusive:true` stated
+  explicitly** (the YAML zero value for bool is false — the klein group
+  omits exclusive by design so the policy gate, not the daemon, arbitrates;
+  the qwen groups must be exclusive so the daemon evicts vLLM/creative/klein
+  before a qwen load, the fork-era production behavior). The doors run the
+  same weights (Qwen3-VL-8B Q4_K_M + mmproj-F16), same alias `qwen3vl-8b`,
+  `qwen-pup-serve.sh [t|f]` parameterized (t→:39176, f→:39177, separate
+  pidfiles); they never load simultaneously (the groups are exclusive of
+  each other); 39176/39177 stay out of `evict-kokon.sh`. Service config:
+  Turbo → door-t, Full → door-f (per-pipeline `models[].vlm`, commit
+  `5d6ce08`). Files: `config.yaml.stock-013` (updated), `deploy/qwen/*` (4
+  scripts), `QWEN-ROLLBACK.md` (two-door version).
+- **The exclusive qwen groups exposed a new OOM hole; both supervisor gates
+  extended to close it.** The klein group is non-exclusive, so a klein
+  request arriving while a qwen pair is resident would NOT daemon-evict the
+  qwen pair — both ~20 GB pairs would start side by side on the 24 GB card.
+  Symmetric: the qwen groups evict klein in the normal flow, but an
+  out-of-band klein start (human script, reload race) has no daemon help.
+  Fix: both supervisor policy gates (`deploy/klein/sd-cpp-serve-klein-
+  stock.sh`, `deploy/qwen/sd-cpp-serve-qwen-stock.sh`) generalized from
+  vLLM-only to **heavy-tenant**: vLLM (:18020/health) OR the other image
+  engine (klein :39170 / qwen :39160, by their `/sdcpp/v1/capabilities`
+  200). `protect-vllm` (default, `kokon-policy.txt`) = refuse cleanly after
+  the 30 s grace (exit 0, GPU untouched — the request fails upstream, same
+  as the established klein-while-vLLM behavior); `take-gpu` = stop the
+  heavy tenant first (vLLM: canonical serve.sh; the other pair: its stop
+  script — for qwen that includes both sidecar doors) with a 120 s wait and
+  abort if it won't die. In the normal daemon flow the gate is inert (the
+  exclusive groups already evict; the non-exclusive klein group is the only
+  path where a co-tenant can be resident). `run:` lines now report both
+  tenants.
+- **Matrix router parked, not smuggled.** The matrix router (one sidecar
+  shared by both flavors, set expressions, evict_costs) could express the
+  desired co-tenancy with a single sidecar, but it rewrites the box-wide
+  routing (klein/creative/vLLM semantics) — bigger blast radius than the
+  fix it would enable. Parked as its own task (task-018) per the owner's
+  "common sense approach"; the two-door layout is the interim, boring,
+  low-blast-radius design.
+- **Two-door verification window (scripts `jobs/qwenp-{test,restore,watch,
+  digest}.sh`, W=/tmp/qwenp).** The cutover is already live on the PRE-FIX
+  layout (single door, no groups), so the fix goes live inside a window:
+  preflight (live config must be the pre-fix version — guards against a
+  re-run; all five image ports free; vLLM up; service image 5d6ce08; switch
+  bodies BUILT FROM the live service config, never hardcoded) → atomic swap
+  to `config.yaml.window-013` (= stock-013 with the fix, MINUS the vLLM
+  registry entry) → canonical vLLM stop → **leg 1 klein canary** (the
+  reloaded config still runs the untouched klein pair: trigger, engine+
+PUP up, one t2i job seed 54, stop) → **leg 2 turbo pair ×2 jobs (CHURN
+  CHECK**: engine pid AND turbo-door pid identical across the jobs, ≤1 new
+  supervisor `run:` line — pids differ = die) → **leg 3 quality pair
+  (FLAVOR CHECK**: turbo pair pre-killed directly for determinism (the new
+  supervisor's adopt-if-healthy must never catch a dying turbo engine),
+  trigger kokon-full, quality engine is a fresh pid, quality door up while
+  the turbo door stays down, one full job, pids stable across it — any
+  violation = die) → teardown → atomic swap to the FINAL
+  `config.yaml.stock-013` (two doors, vLLM back in the registry) →
+  stop-any-holder → canonical vLLM revival (veto disabled) → 1-token
+  gateway adoption check → digest → DONE marker last. die() →
+  `qwenp-restore.sh` (stop all image processes; keep the final stock-013 if
+  the job got that far, else restore the pre-window backup; service healthy
+  + active klein; vLLM stop-before-start) → digest → FAIL marker. Job
+  self-deadline 55 min; watcher pid-aware 70-min hard cap; blocking
+  wait-marker 95-min cap (worst case = watcher hard cap + a 20-min vLLM
+  cold-tail in the restore) as the turn's final call. The owner's
+  qwen-direct turns fail while vLLM is down — expected.

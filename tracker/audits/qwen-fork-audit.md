@@ -104,3 +104,32 @@ owner says so — there is nothing to propose).
   this audit).
 - `POST /sdcpp/v1/text_gen` disappears from the engine's API surface; the
   service's PUP slot points at the sidecar, not the engine.
+
+## Addendum (2026-11-03, after task-013's A/B window)
+
+This audit's framing of the in-engine PUP was wrong in one respect that
+matters for the record:
+
+- **The qwen pipelines DID use the in-engine PUP.** The live fork engine
+  was started without `--pup-llm`, so the in-engine LLM was the
+  Qwen3-VL-8B *conditioner itself* doubling as the prompt upsampler
+  (the service's qwen pipeline had no per-pipeline `vlm` entry; the
+  non-BFL path fell through to the engine's `text_gen`). So the
+  text-generation machinery was in active production use for qwen — not
+  the `--pup-llm` second-LLM slot (that one was genuinely unused) and not
+  the klein/BFL pipelines (those use the separate BFL sidecar).
+- **Task-013's Option A (owner's call) replaced exactly that**: the qwen
+  pipelines now use a **sidecar** PUP (llama.cpp, per-flavor doors
+  `kokon-pup-qwen` :39176 / `kokon-pup-qwen-f` :39177) running the *same*
+  Qwen3-VL-8B Instruct weights (Q4_K_M + mmproj-F16, alias `qwen3vl-8b`,
+  temp 0 greedy, 1024 max tokens, image attached for edit) the engine
+  conditions with — same weights as the in-engine PUP, different runtime.
+  Klein's BFL sidecar path is untouched. This is why the audit's
+  retire-everything conclusion still holds: nothing in the 20 commits is
+  needed, and nothing the qwen pipeline consumed is lost (the weights are
+  the same; only the LLM runtime changed).
+- The A/B window (fork in-engine PUP vs stock+sidecar, 3 shared-seed t2i
+  pairs + 1 i2i) measured no crash-level difference and no shingle-repeat
+  hallucination in either path; the parity question (same weights, two
+  runtimes: is the output equivalent enough?) is the owner's visual
+  verdict on the 7 renders (`/tmp/kleenq/img-*.png`), not this audit's.
