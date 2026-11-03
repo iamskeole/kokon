@@ -188,13 +188,14 @@ pub struct BflBoxes {
 }
 
 /// See [`BflBoxes`]. `None` for non-BFL models or a prompt without a box table.
-/// `bundle` is the loaded BFL prompt bundle (the bbox variant of its system prompt).
+/// `bundle` is the BFL family of the loaded prompt bundle (the bbox variant of its
+/// system prompt).
 pub fn bfl_bbox(
     model: &str,
     mode: ResolvedMode,
     prompt: &str,
     canvas: Option<(u32, u32)>,
-    bundle: &crate::pup::PupBundle,
+    bundle: &crate::pup::BflPrompts,
 ) -> Option<BflBoxes> {
     if !bfl_pup(model) {
         return None;
@@ -249,14 +250,14 @@ pub fn degenerate_answer(original: &str, answer: &str) -> Option<&'static str> {
 /// before this text, one per input image, in order (its reference does the same). The
 /// scaffold line comes from the bundle's request formats (BFL's service sends it; the text
 /// is contract material and never compiled in).
-fn bfl_i2i_scaffold(bundle: &crate::pup::PupBundle, request: &str) -> String {
+fn bfl_i2i_scaffold(bundle: &crate::pup::BflPrompts, request: &str) -> String {
     bundle.i2i_scaffold.replace("{request}", request.trim())
 }
 
 /// BFL's t2i request prefix: the canvas the upsampler composes for (its system prompt
 /// documents this line; the reference code omits it, BFL's service sends it). The line
 /// comes from the bundle's request formats.
-fn bfl_t2i_request(bundle: &crate::pup::PupBundle, request: &str, width: u32, height: u32) -> String {
+fn bfl_t2i_request(bundle: &crate::pup::BflPrompts, request: &str, width: u32, height: u32) -> String {
     bundle
         .t2i_canvas
         .replace("{width}", &width.to_string())
@@ -316,15 +317,27 @@ pub fn expand_request(sides: &str, prompt: &str, image: String, seed: i64) -> Te
 }
 
 /// The system prompt for `mode` on the Qwen path: the one saved in Settings, or the
-/// built-in one. BFL-style models do not use this function: their prompts come from the
+/// pipeline's loaded Qwen prompt bundle (its `t2i`/`edit`/`compose` prompt), or the
+/// built-in default. BFL-style models do not use this function: their prompts come from the
 /// loaded prompt bundle (see [`crate::pup`]), and the Settings fields tune Qwen only.
-pub fn system_prompt(cfg: &AppConfig, mode: ResolvedMode) -> String {
+pub fn system_prompt(
+    cfg: &AppConfig,
+    mode: ResolvedMode,
+    bundle: Option<&crate::pup::PupBundle>,
+) -> String {
     let (custom, default) = match mode {
         ResolvedMode::Generate => (&cfg.enhancer_t2i_prompt, T2I_SYSTEM_PROMPT),
         ResolvedMode::Compose => (&cfg.enhancer_compose_prompt, COMPOSE_SYSTEM_PROMPT),
         _ => (&cfg.enhancer_edit_prompt, EDIT_SYSTEM_PROMPT),
     };
-    if custom.trim().is_empty() { default.to_string() } else { custom.trim().to_string() }
+    if custom.trim().is_empty() {
+        bundle
+            .and_then(|b| b.qwen_system(mode))
+            .unwrap_or(default)
+            .to_string()
+    } else {
+        custom.trim().to_string()
+    }
 }
 
 /// The `text_gen` request for a job: its seed (so the same seed writes the same prompt, and
@@ -351,13 +364,14 @@ pub fn request(
                 "internal: a BFL pipeline built its upsampler request without a loaded prompt bundle",
             )
         })?;
+        let bfl = bundle.bfl()?;
         let sampling = TextSampling {
             // The reference applies the presence penalty to the text-to-image task only.
             presence_penalty: (mode == ResolvedMode::Generate).then(|| 1.5).unwrap_or(0.0),
             seed,
             ..BFL_SAMPLING
         };
-        match bfl_bbox(model, mode, p, canvas, bundle) {
+        match bfl_bbox(model, mode, p, canvas, &bfl) {
             // The prompt already carries the layout table: the bbox system prompt, and the
             // locked-annotation text, so the upsampler keeps every row and cites the ids.
             Some(b) if !b.finished => (b.user_text, sampling, BFL_MAX_TOKENS, b.system),
@@ -365,18 +379,18 @@ pub fn request(
                 let body = match mode {
                     // The canvas lets the upsampler compose for the requested size.
                     ResolvedMode::Generate => match canvas {
-                        Some((w, h)) => bfl_t2i_request(bundle, p, w, h),
+                        Some((w, h)) => bfl_t2i_request(&bfl, p, w, h),
                         None => p.to_string(),
                     },
-                    _ => bfl_i2i_scaffold(bundle, p),
+                    _ => bfl_i2i_scaffold(&bfl, p),
                 };
                 (
                     body,
                     sampling,
                     BFL_MAX_TOKENS,
                     match mode {
-                        ResolvedMode::Generate => bundle.t2i.clone(),
-                        _ => bundle.i2i.clone(),
+                        ResolvedMode::Generate => bfl.t2i.clone(),
+                        _ => bfl.i2i.clone(),
                     },
                 )
             }
@@ -386,7 +400,7 @@ pub fn request(
             p.to_string(),
             TextSampling { seed, ..SAMPLING },
             MAX_TOKENS,
-            system_prompt(cfg, mode),
+            system_prompt(cfg, mode, bundle),
         )
     };
     Ok(TextGenRequest {
@@ -405,10 +419,21 @@ pub fn request(
 
 /// Step 1 of a composition: the label request for one reference (as the image model gets it),
 /// with the user's request.
-pub fn label_request(image: String, request: &str, seed: i64) -> TextGenRequest {
+pub fn label_request(
+    image: String,
+    request: &str,
+    seed: i64,
+    bundle: Option<&crate::pup::PupBundle>,
+) -> TextGenRequest {
     TextGenRequest {
-        prompt: format!("The user's request for the new picture: {}\nLabel what it takes from this image.", request.trim()),
-        system_prompt: COMPOSE_LABEL_PROMPT.into(),
+        prompt: format!(
+            "The user's request for the new picture: {}\nLabel what it takes from this image.",
+            request.trim()
+        ),
+        system_prompt: bundle
+            .and_then(|b| b.qwen_label())
+            .unwrap_or(COMPOSE_LABEL_PROMPT)
+            .into(),
         images: vec![image],
         max_tokens: LABEL_MAX_TOKENS,
         sampling: TextSampling { seed, ..SAMPLING },
@@ -428,6 +453,7 @@ pub fn compose_request(
     labels: &[String],
     prompt: &str,
     seed: i64,
+    bundle: Option<&crate::pup::PupBundle>,
 ) -> TextGenRequest {
     let refs: Vec<String> = labels
         .iter()
@@ -440,7 +466,7 @@ pub fn compose_request(
             refs.join("\n"),
             prompt.trim()
         ),
-        system_prompt: system_prompt(cfg, ResolvedMode::Compose),
+        system_prompt: system_prompt(cfg, ResolvedMode::Compose, bundle),
         images: Vec::new(),
         max_tokens: MAX_TOKENS,
         sampling: TextSampling { seed, ..SAMPLING },
@@ -490,40 +516,40 @@ mod tests {
         assert!(applies_to(ResolvedMode::Inpaint, false) && applies_to(ResolvedMode::Outpaint, false) && !applies_to(ResolvedMode::Upscale, false));
         let mut cfg = AppConfig::default();
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Generate),
+            system_prompt(&cfg, ResolvedMode::Generate, None),
             T2I_SYSTEM_PROMPT
         );
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Edit),
+            system_prompt(&cfg, ResolvedMode::Edit, None),
             EDIT_SYSTEM_PROMPT
         );
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::MultiReference),
+            system_prompt(&cfg, ResolvedMode::MultiReference, None),
             EDIT_SYSTEM_PROMPT
         );
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Compose),
+            system_prompt(&cfg, ResolvedMode::Compose, None),
             COMPOSE_SYSTEM_PROMPT
         );
         cfg.enhancer_edit_prompt = "  Jewelry retouch rules.\n".into();
         cfg.enhancer_t2i_prompt = " \n ".into();
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Edit),
+            system_prompt(&cfg, ResolvedMode::Edit, None),
             "Jewelry retouch rules."
         );
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Generate),
+            system_prompt(&cfg, ResolvedMode::Generate, None),
             T2I_SYSTEM_PROMPT,
             "blank = built-in"
         );
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Compose),
+            system_prompt(&cfg, ResolvedMode::Compose, None),
             COMPOSE_SYSTEM_PROMPT,
             "an edit prompt does not change compose"
         );
         cfg.enhancer_compose_prompt = "Product shots only.".into();
         assert_eq!(
-            system_prompt(&cfg, ResolvedMode::Compose),
+            system_prompt(&cfg, ResolvedMode::Compose, None),
             "Product shots only."
         );
         assert!(
@@ -592,7 +618,7 @@ mod tests {
         .unwrap();
         assert!(r.images.is_empty() && r.system_prompt == T2I_SYSTEM_PROMPT);
         // Compose: each reference labelled alone, then the scene from the labels, without images.
-        let l = label_request("A".into(), " la ciotola su un tavolo ", 5);
+        let l = label_request("A".into(), " la ciotola su un tavolo ", 5, None);
         assert_eq!(
             (
                 l.images.len(),
@@ -615,6 +641,7 @@ mod tests {
             &labels,
             " lei sul divano con il gatto ",
             5,
+            None,
         );
         assert!(
             r.images.is_empty() && r.system_prompt == COMPOSE_SYSTEM_PROMPT && r.sampling.seed == 5
@@ -629,9 +656,9 @@ mod tests {
     #[test]
     fn detailed_asks_for_more_context_of_its_kind() {
         let cfg = AppConfig::default();
-        let t = detailed(request(&cfg, "", ResolvedMode::Generate, "un gatto", vec![], None, 1), ResolvedMode::Generate);
+        let t = detailed(request(&cfg, "", ResolvedMode::Generate, "un gatto", vec![], None, 1, None).unwrap(), ResolvedMode::Generate);
         assert!(t.system_prompt.starts_with(T2I_SYSTEM_PROMPT) && t.system_prompt.ends_with(DETAIL_SCENE));
-        let e = detailed(request(&cfg, "", ResolvedMode::Edit, "x", vec!["P".into()], None, 1), ResolvedMode::Edit);
+        let e = detailed(request(&cfg, "", ResolvedMode::Edit, "x", vec!["P".into()], None, 1, None).unwrap(), ResolvedMode::Edit);
         assert!(e.system_prompt.ends_with(DETAIL_EDIT));
         let a = detailed(area_request(InpaintAction::Remove, "cyan", "", "P".into(), 1), ResolvedMode::Inpaint);
         assert!(a.system_prompt.ends_with(DETAIL_AREA) && a.max_tokens == DETAIL_MAX_TOKENS);
@@ -697,6 +724,7 @@ mod tests {
 
         // t2i: BFL prompt (from the loaded bundle), canvas-prefixed request, BFL sampling, no images.
         let bundle = asset_bundle();
+        let bfl = bundle.bfl().expect("the committed BFL bundle is complete");
         let r = request(
             &cfg,
             "kokon-klein",
@@ -708,11 +736,10 @@ mod tests {
             Some(&bundle),
         )
         .unwrap();
-        assert_eq!(sha(&r.system_prompt), sha(&bundle.t2i));
+        assert_eq!(sha(&r.system_prompt), sha(&bfl.t2i));
         assert_eq!(
             r.prompt,
-            bundle
-                .t2i_canvas
+            bfl.t2i_canvas
                 .replace("{width}", "1360")
                 .replace("{height}", "768")
                 .replace("{request}", "a red fox asleep in a suitcase")
@@ -750,8 +777,8 @@ mod tests {
             Some(&bundle),
         )
         .unwrap();
-        assert_eq!(sha(&r.system_prompt), sha(&bundle.i2i));
-        assert_eq!(r.prompt, bundle.i2i_scaffold.replace("{request}", "make the fox white"));
+        assert_eq!(sha(&r.system_prompt), sha(&bfl.i2i));
+        assert_eq!(r.prompt, bfl.i2i_scaffold.replace("{request}", "make the fox white"));
         assert_eq!(r.images, vec![img.clone()]);
         // i2i runs without the presence penalty the t2i task gets.
         assert_eq!(r.sampling.presence_penalty, 0.0);
@@ -793,7 +820,7 @@ mod tests {
         assert_eq!(r.system_prompt, "My rules.");
         let r = request(&cfg, "kokon-klein", ResolvedMode::Edit, "x", Vec::new(), None, 7, Some(&bundle))
             .unwrap();
-        assert_eq!(sha(&r.system_prompt), sha(&bundle.i2i), "BFL prompts ignore the Settings fields");
+        assert_eq!(sha(&r.system_prompt), sha(&bfl.i2i), "BFL prompts ignore the Settings fields");
 
         // A BFL pipeline without its loaded bundle is a clean configuration failure.
         let e = request(
@@ -817,7 +844,7 @@ mod tests {
         let prompt = format!("{user} {table}");
 
         // Edit: the request carries the scaffold; the original stays bare for the echo check.
-        let bundle = asset_bundle();
+        let bundle = asset_bundle().bfl().expect("the committed BFL bundle is complete");
         let b = bfl_bbox("kokon-klein", ResolvedMode::Edit, &prompt, None, &bundle).expect("a table present");
         assert_eq!(sha(&b.system), sha(&bundle.i2i_bbox));
         assert_eq!(b.original, user);

@@ -326,7 +326,9 @@ edits) before the image is made, so there is no second model in memory.
 - **Cost per image** (Fast 1024², same seed on/off): Windows +2.0 s t2i / +1.1 s edit, +2.4 GB peak
   VRAM; Linux (WSL) +1.6 / +0.1 s; 8 GB emulated +3.6 / +1.8 s; M2 Pro 16 GB ~+13 s on ~290 s.
 - **System prompts live only in Kokon** (`crates/qls-core/src/enhancer.rs`; Settings can replace
-  them). They are our own texts, chosen in blind A/Bs over 20 and then 39 cases × 2 seeds against
+  them; committed as the `assets/pup-qwen/` bundle — the qwen pipelines' `promptBundle` — since
+  2026-11-03, so the set is swappable data in the BFL-bundle pattern, with the constants as the
+  fallback when a deployment has no bundle). They are our own texts, chosen in blind A/Bs over 20 and then 39 cases × 2 seeds against
   Qwen's official PE prompts (those are under the Qwen Research License, ~2,400 / ~4,900 tokens, and
   on the 8B the edit one wrote edits in Chinese). Rules kept: copy the user's fixed content exactly
   (quoted text, counts, colours), name the medium early, always state the light, no quality tags; for

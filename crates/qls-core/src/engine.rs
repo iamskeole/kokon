@@ -2159,11 +2159,43 @@ impl Engine {
                 })?;
             Some(crate::pup::load(&dir)?)
         } else {
+            // The Qwen path carries its own bundle too (the pipeline's promptBundle,
+            // schema 13; the deployment's data dir). Unlike the BFL bundle it is not a
+            // training contract: a missing or broken one falls back to the built-in
+            // Qwen prompts with a job-level note — the Qwen path must never hard-fail.
+            let dir = cfg
+                .models
+                .iter()
+                .find(|m| m.model == model)
+                .and_then(|m| m.prompt_bundle_path());
+            match dir {
+                Some(d) => match crate::pup::load(&d) {
+                    Ok(b) => Some(b),
+                    Err(e) => {
+                        self.update(id, |j| {
+                            j.view.notes.push(format!(
+                                "The pipeline's prompt bundle at {} could not be loaded ({}); the built-in prompts were used.",
+                                d.display(),
+                                e.message
+                            ))
+                        });
+                        None
+                    }
+                },
+                None => None,
+            }
+        };
+        // The BFL family must be complete before any BFL path uses it (the bbox and
+        // request builders take the unwrapped form): a BFL pipeline pointed at a
+        // non-BFL or partial bundle fails the job cleanly here.
+        let bfl = if enhancer::bfl_pup(model) {
+            Some(bundle.as_ref().expect("the BFL bundle was loaded above").bfl()?)
+        } else {
             None
         };
         // BFL layout boxes: a finished caption (every table id cited) is the upsampler's
         // own output. BFL skips re-upsampling it, and the DiT gets the table as written.
-        let boxes = bundle.as_ref().and_then(|b| enhancer::bfl_bbox(model, mode, prompt, canvas, b));
+        let boxes = bfl.as_ref().and_then(|b| enhancer::bfl_bbox(model, mode, prompt, canvas, b));
         if boxes.as_ref().is_some_and(|b| b.finished) {
             return Ok(Some(prompt.to_string()));
         }
@@ -2181,7 +2213,7 @@ impl Engine {
         } else if mode == ResolvedMode::Compose && !enhancer::bfl_pup(model) {
             let mut labels = Vec::with_capacity(images.len());
             for img in images {
-                let lr = enhancer::label_request(img.clone(), prompt, seed);
+                let lr = enhancer::label_request(img.clone(), prompt, seed, bundle.as_ref());
                 let r = match &vlm {
                     Some(v) => v
                         .chat(&lr, Duration::from_secs(120))
@@ -2218,7 +2250,7 @@ impl Engine {
                 started.elapsed().as_secs_f32(),
                 labels
             );
-            enhancer::compose_request(cfg, &labels, prompt, seed)
+            enhancer::compose_request(cfg, &labels, prompt, seed, bundle.as_ref())
         } else {
             // BFL-style models (and every non-compose case) go straight to the upsampler
             // with the references it sees.
@@ -3760,6 +3792,7 @@ mod tests {
         let bundle =
             crate::pup::load(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/pup"))
                 .unwrap();
+        let bfl = bundle.bfl().unwrap();
         let sha = |s: &str| -> String {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
@@ -3768,7 +3801,7 @@ mod tests {
         };
         assert_eq!(
             sha(seen[0]["system_prompt"].as_str().unwrap()),
-            sha(&bundle.i2i_bbox),
+            sha(&bfl.i2i_bbox),
             "the first call carries the i2i bbox prompt"
         );
         assert_eq!(
@@ -4414,6 +4447,8 @@ mod tests {
                 &["PNG1".to_string()],
                 None,
                 42,
+                None,
+                false,
             )
             .await
             .unwrap();
@@ -4483,6 +4518,8 @@ mod tests {
                 &["PNG1".to_string()],
                 None,
                 42,
+                None,
+                false,
             )
             .await
             .unwrap();

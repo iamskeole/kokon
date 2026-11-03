@@ -8,7 +8,9 @@ per-reference label request (step 1 of a composition).
 ## Provenance
 
 These are the Kokon fork's own built-in Qwen prompts, extracted verbatim from
-`crates/qls-core/src/enhancer.rs` on 2026-11-03 (task-014, D-QW) so the set is
+`crates/qls-core/src/enhancer.rs` on 2026-11-03 (task-014, D-QW); re-extracted
+on 2026-11-06 with the 0.12 refresh (the edit prompt gained the coloured-marks
+bullet) so the set is
 repo data in the `pup` (BFL) pattern: one folder, loaded at runtime from the
 deployment's data dir, swappable by dropping a replacement folder in place.
 Their design and the A/B history behind the texts live in
