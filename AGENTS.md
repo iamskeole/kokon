@@ -48,13 +48,18 @@ it, and the revival is the reload. A long GPU job:
    2>&1 &` (a surviving host process — never `setsid sh -c '…'`);
 3. gets a second setsid watcher as backstop (hard cap ≤3h; fallback
    digest + revival if the job dies);
-4. ends the agent's turn in a **blocking wait that is the last tool call
-   of the turn**: `sh /home/p/ml/wait-marker.sh /tmp/<jobdir> <cap>`,
-   bash tool timeout = cap + 120 s, where **cap exceeds the job's worst
-   case (the watcher cap + revival margin), not its expected runtime** —
-   a timeout firing while vllm is down kills the session for good, and a
-   turn ended with no pending wait never resumes (both observed
-   2026-11-03). While it blocks the agent is suspended, not polling; the
+4. ends the agent's turn in a **blocking wait that is the last step of the
+   LAUNCH tool call itself** — the same bash invocation that setsid-launches
+   the job and the watcher then runs
+   `sh /home/p/ml/wait-marker.sh /tmp/<jobdir> <cap>`; bash tool timeout =
+   cap + 120 s, where **cap exceeds the job's worst case (the watcher cap
+   + revival margin), not its expected runtime** — a timeout firing while
+   vllm is down kills the session for good, and a turn ended with no pending
+   wait never resumes (both observed 2026-11-03; four consecutive windows
+   that ended their launch turn before the wait, the last leaving the owner
+   mid-crisis — a launch not immediately followed by the wait in the same
+   call is a process failure, not a judgment call). While it blocks the
+   agent is suspended, not polling; the
    harness's result injection — marker + digest + log tails + live state
    in one payload — is the nudge that continues the work without the owner;
 5. tolerates the agent dying mid-job (the job and the watcher are host
@@ -64,15 +69,26 @@ it, and the revival is the reload. A long GPU job:
    models back by re-running their cmd (three vLLM resurrections inside the
    2026-11-03 pair window; the same day's no-registry window was clean),
    and a gateway unload cannot stop a model started outside the daemon.
-   The owner's sessions stay on qwen-direct for the window's duration
-   (verified 2026-11-03: qwen-direct is truly direct, 18020/v1 — it cannot
-   trigger loads, but its turns fail while the model is down).
+   **When removal is in effect the job's defense is a YIELD, never a
+   kill-veto**: with vllm out of the registry the daemon cannot bring it
+   back, so any vllm that appears mid-window is a human reclaiming the GPU
+   — the job dies cleanly and the restore leaves a healthy vllm alone.
+   Killing a human's deliberate boots is the protocol's worst failure mode
+   (2026-11-03 qwabl: three manual boots killed in a row, 20:52-20:55, ~21
+   min of owner chat lost). The owner's sessions stay on qwen-direct for the
+   window's duration (verified 2026-11-03: qwen-direct is truly direct,
+   18020/v1 — it cannot trigger loads, but its turns fail while the model
+   is down).
 It exists to kill the proven failure modes: poll loops, "background it
 and hope the owner asks", false-DONE on `/health`, crashed jobs
 stranding the GPU, a job that dies on a parse error before any marker
 (interpreter/dialect mismatch — the watcher's silence fallback recovers
-the box; kleenq-fail1, 2026-11-03), premature markers, and a turn that
-ends idle after a launch (the 2026-11-03 kleinrb2 miss).
+the box; kleenq-fail1, 2026-11-03), a script created without its exec bit
+(the daemon's fork/exec fails `permission denied` at info level while the
+job's waits just 500 — preflights exec-audit every cmd/cmdStop script;
+2026-11-03 qwabl, 13 min), premature markers, the job killing the
+owner's manual boots (yield rule, item 6), and a turn that ends idle after
+a launch (the wait is part of the launch call, item 4).
 
 The entry point for anyone working on Kokon: people and coding agents (Claude Code, Codex, Cursor and
 others). Read this first, then the fork working state above for what is in progress on this fork.
