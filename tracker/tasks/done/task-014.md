@@ -247,16 +247,44 @@ rule).
   ever land on a restorable box (stock-013 live, vLLM healthy). Also found +
   fixed: `~/.pi/agent/models.json` carried a trailing comma (invalid JSON;
   repaired atomically, backup models.json.bak-pre-fastani-fix-20261103).
-- **Flight 4 (`qwabl-r4-*`, W=/tmp/qwabl5, in flight): the final leg —
-  full + 9B-Q4.** One leg (g1-g4, same prompts/seeds as f1-f4); the 8B full
-  leg (23:08) is archived from /tmp/qwabl4, the canary pair (22:22) from
-  /tmp/qwabl3 under legC/; the final digest carries all three sets for the
-  owner's verdict.
-- **Post-DONE plan (full autonomy — owner asleep):** if the g-leg completes
-  4/4 stable, wire the winner per the owner's round-1 lean: turbo door →
-  `qwen-pup-serve-9.sh t` (Q8), full door → `qwen-pup-serve-9.sh f` (Q4) —
-  cmd-only config deltas, atomic swap, QWEN-ROLLBACK.md updated (one step:
-  both doors back to the 8B script). STATUS records the wiring as pending
-  the owner's morning visual confirmation (renders in /tmp/qwabl5 + digest);
-  the one-step rollback stays available until then.
-- (open until the A/B lands: winner model + quant for qwen)
+- **Flight 4, attempts 1-2 (23:30, 23:36) — two more of my own derivation
+  bugs, both caught by the gates (marker-last worked both times: the wake
+  landed on a restored box, no nudge cost).** (a) 23:30: the block-removal
+  edit silently no-op'd (a mismatched multi-line match with no assert) and
+  the preflight paths stayed on the old workdir, so the switch body was
+  written where nothing read it — `curl -d` failed, switch no-op, die on
+  the readback. (b) 23:36: the active-model switch had lived inside the
+  deleted leg A, so leg B only *verified* a switch that never happened —
+  die on the pre-switch check. Fixed both (diff-verified against the
+  known-good r2 base).
+- **Flight 4, attempt 3 (23:40:48-23:45:30) — DONE in 4m42s: the A/B is
+  complete.** full + 9B-Q4: FITS (engine 810819 13.6 GB + door 811051
+  7.7 GB = ~21.3 GB; post 11982+7772 MiB), door up in 4 s (cmdline-proven
+  model-Q4_K_M.gguf), g1-g4 4/4 (~36 s each), pids stable across all four.
+  9B-Q4 enhanced 1369/1354/1146/1181 chars vs 8B's 643/875/665/212 on the
+  identical prompts/seeds — 1.6-5.6x longer, same direction as every other
+  leg tonight. vLLM revived in 61 s, adoption 200. Digest: /tmp/qwabl5
+  (carries all three evidence sets: canary turbo c1/c2, full 8B f1-f4,
+  full 9B-Q4 g1-g4).
+- **CUTOVER (23:52, per the owner's lean + the full evidence): qwen's doors
+  now run the 9B PUP.** `config.yaml.stock-014` is live (atomic swap;
+  daemon reloaded cleanly): the only delta vs stock-013 is the two door
+  cmds → `deploy/qwen/qwen-pup-serve-9.sh` (turbo door flavor t → Q8_0,
+  ~19.6 GB pair; quality door flavor f → Q4_K_M, ~21.3 GB pair — Q8
+  doesn't fit beside the full engine, measured above). Groups, ports,
+  stops and the `qwen3vl-8b` alias unchanged; the service side untouched.
+  `QWEN-ROLLBACK.md` gained the one-step rollback (stock-013 copy; the
+  stop script is model-agnostic). Pending the owner's morning visual
+  confirmation of the g/f pairs + canary pair (renders in /tmp/qwabl5);
+  until then the rollback is one command.
+- **New durable lesson (23:52): a stock→stock config reload is NOT
+  zero-cost.** Even with the vLLM entry byte-identical, the daemon cycled
+  the vLLM model on the reload (old pid killed, new one up ~60 s later on
+  the warm cache — the 000 window cost ~90 s of chat). Batch live config
+  changes, or do them inside a window where vLLM is already down; don't
+  assume an identical entry means an untouched model.
+- **DONE (2026-11-03).** Winner: 9B BFL klein-pup (Q8 on the turbo door,
+  Q4_K_M on the full door); 8B stays one step back (stock-013). D-QW
+  closes in STATUS.md with the visual-confirmation caveat. G2 (qwen set)
+  and the qwen half of G5 are satisfied by this task's repo side +
+  cutover; G5's remaining half (if any) and G6+ go to WP4.
