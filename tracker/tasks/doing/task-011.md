@@ -58,18 +58,52 @@ dir kept and the one-step rollback documented. Then run the acid test: a
   directly); `vlm.entrypoint` is gateway-routed (TTL parity), `promptBundle`
   = `pup`.
 
-## Remaining (needs GPU windows — owner awake, GO requested)
+## Windows E+F (done 2026-11-03 11:43 — the 4th run; three false-positive FAILs before it)
 
-- **Window E — t2i stability**: 3-4 t2i jobs through the PRODUCTION service
-  (`kokon` container, its own token) against the pair now running PUP **Q8**;
-  vLLM down for the window, self-healed at the end.
-- **Window F — 3-box i2i acid test** (same window, after E): one edit job,
-  three locked boxes (a delete, a move, an add) on a stand-in reference —
-  boxes → table contract → PUP Q8 (sidecar) → stock engine → owner sees the
-  three edits applied in the right places.
-- **Window G — rollback drill**: per KLEIN-ROLLBACK.md — fork scripts in,
-  gateway restart, service `vlm` dropped (backup of config.json taken first),
-  one klein job on the fork, forward again, one job on stock. Result recorded
-  in the doc's drill record.
+All five jobs ran through the PRODUCTION service (container `kokon`, :39151,
+its own token) against the pair raised via the gateway — Q8 sidecar confirmed
+in the supervisor's run line (`deploy/klein/supervisor.log`:
+`pup=/home/p/ml/models/gguf/BFL/flux-3-image-klein-pup/model-Q8_0.gguf`), and
+every job record shows the maker recipe (`model=model-Q8_0.gguf,
+steps=16, cfg=1.0, sampler=euler`):
 
-Then: done-notes, move to done/, STATUS, commit.
+- e1 diver helmet: done 9.9 s, caption 1451 chars
+- e2 lantern stall: done 10 s, caption 1812
+- e3 clockmaker: done 9 s, caption 1379
+- ref workshop workbench (fresh scene for the acid test): done 10 s, 1728
+- acid 3-box edit on the ref (delete books / move radio / add plant): done 22 s, 2746
+
+No caption had any repeated shingle (120-char, k=3). The acid caption cites
+all three locked rows VERBATIM (obj_1 books src[360,330,600,630]→null; obj_2
+radio src[80,30,400,330]→tgt[620,30,940,300]; obj_3 plant tgt[660,340,950,600])
+and adds five scene rows (its own book_1 duplicate-delete at the books' real
+coordinates, plus stool/workbench/compass/soldering-iron keeps) — none of
+them contradicts the locked rows, the same benign pattern as window D's C2.
+Renders: `/tmp/kleinprod/img-{e1,e2,e3,ref,acid}.png` and the production
+gallery (`/gallery/2026-11-03/`, six files including one duplicate e1 from an
+aborted run). **Owner's visual inspection of the five images is the open
+verdict** (the agent's model is text-only; the images are the owner's to see).
+Pair warm-raise 24 s; whole window 2 min 44 s including the full self-heal.
+
+The three earlier FAILs were all my own harness bugs, not the stack — and
+each one correctly exercised the full fallback (pair stopped, proxy up,
+vLLM revived, marker written):
+
+1. the Q8 proof read the wrong log file (`llama-swap-deploy/supervisor.log`,
+   never written by this supervisor) and the wrong pattern (`run=` instead
+   of `run: ... pup=...` in `deploy/klein/supervisor.log`);
+2. `submit_job`'s python unpacked six names for five args;
+3. `judge()` read the required-id list from `sys.argv[2]` (the job name)
+   instead of `argv[3]`.
+
+## Remaining
+
+- **Owner visual inspection** of the five renders (paths above).
+- **Window G — rollback drill** (per `llama-swap-deploy/KLEIN-ROLLBACK.md`):
+  fork scripts in, gateway restart, service `vlm` dropped (config backup
+  taken), one klein job on the fork, forward again, one job on stock.
+  The owner questioned the point of it (2026-11-03, post E+F) — the answer
+  is in the session: the drill proves the *exit* works while it is cheap,
+  including the forward direction, before it is needed at 3 a.m.; the
+  alternative is to retire the rollback to "rebuild from the fork's git
+  branch" and delete the one-step promise. His call decides which.
