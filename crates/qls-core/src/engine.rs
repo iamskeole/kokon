@@ -2113,21 +2113,29 @@ impl Engine {
         {
             return Ok(Some(done));
         }
-        // A VLM upsampler endpoint serves the BFL pipelines: when it is configured and
-        // this job's pipeline is a BFL one, all upsampler traffic goes there and the
-        // engine's own LLM (when it still has one) is never consulted. Non-BFL
-        // pipelines keep the engine's own LLM — a shared upsampler for them is a
-        // separate A/B decision, not this knob.
+        // Upsampler routing, first match wins: (1) the pipeline's own endpoint
+        // (models[].vlm) — stock engines carry no LLM, so a pipeline whose engine is
+        // one points here at a sidecar serving the same weights the engine conditions
+        // with; (2) the shared externalEngine.vlm — the BFL pipelines' captions come
+        // from the committed bundle; (3) the engine's own LLM (bundled engines, and
+        // the qwen fork's conditioner, which doubled as its PUP until the stock
+        // cutover moved that pipeline to (1)).
         // D-FB: a configured VLM that is down is a hard job failure - a model trained on
         // upsampler captions degrades on the user's raw words, so there is no
         // "used as written" fallback for it.
-        let vlm = if enhancer::bfl_pup(model) {
-            cfg.external_engine
+        let pipeline_vlm = cfg
+            .models
+            .iter()
+            .find(|m| m.model == model)
+            .and_then(|m| m.vlm.as_ref());
+        let vlm = match pipeline_vlm {
+            Some(v) => Some(crate::vlm::VlmClient::new(v)),
+            None if enhancer::bfl_pup(model) => cfg
+                .external_engine
                 .as_ref()
                 .and_then(|e| e.vlm.as_ref())
-                .map(crate::vlm::VlmClient::new)
-        } else {
-            None
+                .map(crate::vlm::VlmClient::new),
+            None => None,
         };
         if vlm.is_none() && !caps.text_generation {
             self.update(id, |j| j.view.notes.push("This inference engine has no prompt enhancer (update it in Setup); your prompt was used as written.".into()));
@@ -4415,6 +4423,104 @@ mod tests {
         assert!(
             vseen.try_recv().is_err(),
             "the VLM endpoint must not be called for a non-BFL pipeline"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_vlm_serves_a_non_bfl_pipeline() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        // The shared BFL endpoint (must stay idle) and the pipeline's own sidecar.
+        let (vport, mut vseen) =
+            crate::vlm::mock_chat(200, r#"{"choices":[{"message":{"content":"SHOULD-NOT-APPEAR"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#).await;
+        const PER_PIPELINE: &str = "a black cat, studio light";
+        let (pport, pseen) = crate::vlm::mock_chat(
+            200,
+            &format!(
+                r#"{{"choices":[{{"message":{{"content":"{PER_PIPELINE}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":10,"completion_tokens":8}}}}"#
+            ),
+        )
+        .await;
+        let mut cfg =
+            vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{vport}/upstream/kokon-pup"));
+        cfg.models.push(crate::config::ExternalModel {
+            label: "Full".into(),
+            sub: None,
+            model: "kokon-full".into(),
+            model_name: "model-Q8_0.gguf".into(),
+            sample: serde_json::json!({}),
+            gateway: None,
+            vlm: Some(crate::config::VlmEndpoint {
+                entrypoint: format!("http://127.0.0.1:{pport}/upstream/kokon-pup-qwen"),
+                model: "qwen3vl".into(),
+                api_key: String::new(),
+            }),
+            prompt_bundle: String::new(),
+        });
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-full",
+                ResolvedMode::Edit,
+                "rendi il gatto nero",
+                &["PNG1".to_string()],
+                None,
+                42,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some(PER_PIPELINE));
+        // The turn went to the pipeline's own sidecar: the qwen3vl model, the Qwen
+        // output budget, the built-in Qwen editing prompt (no BFL bundle), the
+        // reference image.
+        let raw = pseen.await.unwrap();
+        assert!(
+            raw.contains("POST /upstream/kokon-pup-qwen/v1/chat/completions"),
+            "{raw}"
+        );
+        let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
+        assert_eq!(sent["model"], "qwen3vl");
+        assert_eq!(
+            sent["max_tokens"],
+            crate::enhancer::MAX_TOKENS,
+            "the Qwen output budget"
+        );
+        assert_eq!(sent["seed"], 42);
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert!(
+            sent["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("editing model"),
+            "the built-in Qwen system prompt, not a bundle"
+        );
+        assert_eq!(
+            sent["messages"][1]["content"][0]["type"],
+            "image_url",
+            "the reference goes with the turn"
+        );
+        // The shared BFL endpoint never saw the turn.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            vseen.try_recv().is_err(),
+            "the shared endpoint must not be called when the pipeline has its own"
         );
     }
 }
