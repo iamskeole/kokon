@@ -46,18 +46,18 @@ retire the 21-commit fork to `__mess/` (rollback dir kept, like task-011).
   models — including vLLM, which serves this session.
 - **Window design** (protocol: OPS.md autonomy protocol; scripts in
   `llama-swap-deploy/jobs/kleenq-{test,restore,watch}.sh`, workdir
-  `/tmp/kleenq`): canonical vLLM stop → swap to `config.yaml.stock-013`
-  (vLLM stays in the registry; the veto loop keeps any daemon-resurrected
-  boot down, as proven in the kleinrb2 attempt-2 window) → **leg A**: fork
-  engine on :39160 (the gateway's new stock supervisor *adopts* it —
-  protocol-level port check) with the service on the pre-013 config
+  `/tmp/kleenq`; final order per the attempt-3 design below): swap to the
+  window config (vLLM out of the registry) → canonical vLLM stop → **leg
+  A**: fork engine on :39160 (the gateway's new stock supervisor *adopts*
+  it — protocol-level port check) with the service on the pre-013 config
   (no vlm entries → in-engine PUP = today's production) → 3 t2i jobs,
   fixed seeds → **leg B**: stock engine (fresh start) + sidecar, service
   on the patched config (per-pipeline vlm → sidecar) → same 3 t2i (same
   prompts+seeds) + 1 edit/i2i job (reference image from the gallery —
   proves the stock vision path and the sidecar's image parts) →
-  teardown → vLLM revived canonically **last** → DONE marker.
-  Internal deadline 110 min; watcher 150 min cap / 15 min silence;
+  teardown → swap to `config.yaml.stock-013` → vLLM revived canonically
+  **last** → DONE marker.
+  Internal deadline 110 min; watcher 150-min cap (pid-aware);
   `wait-marker.sh` blocking wait as the turn's last call, cap 180 min.
   The owner's pi (qwen-direct) turns fail while vLLM is down — expected,
   the marker revives it.
@@ -82,3 +82,42 @@ retire the 21-commit fork to `__mess/` (rollback dir kept, like task-011).
   Service `/config/config.json` returned to the pre-013 config meanwhile
   (the patched vlm entries are only correct once the stock gateway config
   is live — the window job does the swap itself on each leg).
+- **Window attempt 2 (15:40–15:59) — infra failure, five compounding faults,**
+  all diagnosed from the logs. The job died at 15:59:13 (its own no-pid-on-
+  39160 check, two seconds after the daemon's health check passed on that
+  port) and the watcher's silence fallback fired at 15:55 (a 900 s blocking
+  trigger curl heartbeats nothing). (a) The config swap was a non-atomic
+  `cp`: the daemon's 2 s poll read the file mid-write (15:40:37) and kept
+  the FORK config for the whole window — so the daemon's turbo cmd was the
+  fork's `sd-cpp-serve.sh`, never the stock supervisor (no `run:` line ever
+  appeared). (b) vLLM was left in the registry, so the daemon resurrected it
+  4x inside the window (15:55:37/15:56:04/15:59:11/16:04:59 per
+  /tmp/vllm_boot.log); the 15:56:30 boot OOM-collided with the 13 GB fork
+  engine on the 24 GB card ("memory mapping failed with OOM, free: 4 MB"),
+  leaving a zombie holding :18020 (health never 200 — invisible to the
+  health-based veto) that refused the canonical revival ("refusing to start
+  a second instance"). (c) the watcher silence false-positive (above).
+  (d) the health-based veto was blind to the zombie. (e) `ss -ltnp`
+  reported no pid for the daemon-owned :39160 socket (unexplained; the same
+  tool works on the daemon's own :8081 socket). The restore recovered the
+  box: fork config, service pre-013, active klein, vLLM alive (the 16:04:59
+  boot eventually won the race). Evidence: `/tmp/kleenq-fail2/`,
+  `jobs/kleenq.log` 15:40:34–15:59:13, `/tmp/vllm_boot.log`.
+- **Attempt-3 design (bakes all five faults in):** window config =
+  stock-013 MINUS the vLLM registry entry (the daemon cannot resurrect what
+  is not in the registry — proven clean by the kleinrb2 attempt-1 window),
+  swapped ATOMICALLY (cp+mv) and BEFORE the canonical vLLM stop (no
+  dead-but-registered gap; the daemon's removal kills the vllm-serve.sh
+  watcher, not the vLLM scope, which the job then stops canonically);
+  the job writes its own pid (`$W/job.pid`) and the watcher is pid-aware
+  (dead/missing pid → immediate fallback; live pid → 150-min hard cap, the
+  silence check demoted to a 45-min secondary); every wait heartbeats and
+  vetoes, and the veto is PROCESS-based (health-200 OR a :18020 listener OR
+  a vllm process among nvidia-smi compute apps → canonical `serve.sh stop`,
+  3 strikes = die); the trigger is a non-blocking 420 s curl polled every
+  30 s (a fresh supervisor `run: variant=` line confirms the daemon ran the
+  stock cmd; a non-200 answer re-triggers; ≤3 attempts); adopt is verified
+  by the supervisor's pidfiles (no `ss -p` dependency); teardown ends with
+  the atomic swap to `config.yaml.stock-013` (vLLM back in the registry) →
+  stop-any-holder → canonical revival (veto disabled against the revival
+  itself) → 1-token gateway adoption check → digest → DONE marker last.
