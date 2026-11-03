@@ -158,4 +158,44 @@ rule).
   i.e. while a qwen pair is resident, klein/creative/vLLM requests evict
   it, and vLLM/default-group requests evict qwen-t on demand (the
   fork-era behavior, by design).
+- **Attempt 3 (21:38:59-21:42:16) — DONE in 180 s: the 9B leg is evidence-complete.**
+  After fail 3, the 21:38 launch ran the fixed flow: preflight clean
+  (daemon active, exec-bit audit, live==stock-013), window-014b straight,
+  canonical vLLM stop, switch-to-turbo + verified readback, turbo engine
+  724456 healthy ~10 s after the trigger, 9B door 724794 loaded in ~6 s
+  (cmdline-proven: flux-3-image-klein-pup in /proc/<pid>/cmdline),
+  1-token probe, then b1-b4 all done in 15-16 s each (seeds 11/22/33 t2i
+  768^2 + seed 44 edit of the leg-A reference) with engine and door pids
+  identical across all four; teardown, active back to klein, atomic swap
+  to stock-013, canonical vLLM start (healthy +60 s), gateway adoption
+  200. Zero vetoes/yields; the watcher exited on DONE. 9B measurements:
+  door load 6-7.3 s (the 20:41 storm had warmed the page cache), enhance
+  decode 66-69 t/s (8B door: ~92 t/s), enhance lengths 1164/1408/1105/
+  1152 chars vs 8B's 638/868/656/211 on the same prompts, VRAM 10328
+  (engine) + 10928 (door) MiB. Round-1 evidence: /tmp/qwabl2 (9B leg)
+  and /tmp/qwabl (8B leg from the 20:41 run, under legA/).
+- **Owner verdict on round 1 (2026-11-03): "i actually think 9b is better, but"**
+  — (1) first show a harder edit on the canary: the brass desk-lantern
+  render with the "pi was here" engraving, "replace the cables with a
+  brass godzilla"; (2) then also run the standing set on the FULL
+  flavor (round 1 was turbo only). After that, the owner can close.
+- **Round 2 (the 21:5x window, in flight): 4 legs in one window, vLLM out of the registry.**
+  L1 canary-edit turbo+8B / L2 canary-edit turbo+9B / L3 standing set
+  (seeds 11/22/33 t2i + 44 edit) full+8B / L4 same full+9B; canary edit =
+  seed 55 on the owner-confirmed canary (the TURBO brass-lantern render:
+  /gallery/2026-10-31/105927-a-small-brass-desk-lantern-stands-1082852319.png,
+  the other candidate 110044 was the quality one), prompts/seeds/refs
+  identical per pair, pids must be stable within each leg, the 8B/9B
+  split proven by the door's /proc cmdline each leg. The 9B door script
+  gained a flavor parameter (t=39176 / f=39177, same pidfile scheme as
+  the 8B door) so one script serves both doors; config.yaml.window-014c
+  = window-014a with the only delta being both door cmds pointing at the
+  9B script (pyyaml-asserted); the job swaps a/c atomically between legs.
+  Risk recorded in the script header: full+9B is the tightest config on
+  the card (~23.9 GB of 24 GB) — if it OOMs, that die reason is a
+  legitimate A/B data point (the decision then degrades to "9B as turbo
+  door only"), not a protocol failure. New job family jobs/qwabl-r2-{
+  test,restore,watch,digest}.sh, W=/tmp/qwabl3; budgets: job 45 min,
+  watcher 60-min cap, wait-marker 65 min. Round-1's launch-ends-in-wait
+  rule holds (the owner's "ack on process note").
 - (open until the A/B lands: winner model + quant for qwen)
