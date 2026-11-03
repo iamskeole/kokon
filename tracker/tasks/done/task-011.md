@@ -139,30 +139,62 @@ cannot stop what it never started. The supervisor's `protect-vllm` gate
 did exactly what it was built for; the drill's premise was wrong, not
 the stack.
 
-## Remaining
+## Window G — attempt 2 (2026-11-03 12:48–13:03, `jobs/kleinrb2-*.sh`) — DONE
 
-- **Owner visual inspection** — DONE (2026-11-03 12:48 UTC): the five E+F
-  renders are fine; the verdict closes the acid-test item (the three box
-  edits applied in the right places).
-- **Window G attempt 2 — the forward leg alone** (`jobs/kleinrb2-*.sh`;
-  launched 2026-11-03 12:48 UTC, setsid job + watcher per the autonomy
-  protocol, markers at `/tmp/kleinrb2/DONE|FAIL`, digest
-  `jobs/kleinrb2-digest.txt`): the fork leg is proven above, so v2 changes no
-  config and executes only what attempt 1 never reached — canonical vLLM
-  stop (`serve.sh stop`: kill by pid whatever started it, wait until
-  nvidia-smi reports the GPU free), stock pair up through the gateway,
-  one t2i job on the Q8 sidecar (maker recipe), pair down, gateway
-  restart (clean group state; attempt 1's first trigger was lost in the
-  post-restart config-load race — /health is ready before the first
-  -watch-config poll loads the model registry), vLLM revived canonically,
-  proxy up, gateway re-adopting it (the adoption probe retries, so the
-  same race cannot swallow it). Watcher backstop (1 h cap, 15 min silence); every
-  failure path ends in `kleinrb2-restore.sh` (stock state + vLLM
-  guaranteed). Owner impact: the qwen backend — and with it the pi
-  sessions on it and OWUI chat — is down for the ~15–30 min window;
-  the launching agent ends its turn in a blocking wait on the marker
-  (autonomy protocol), the job revives vLLM as its last step.
-- After v2 passes + the visual verdict: close this task (move to
-  `done/`), update STATUS.md, and note in `KLEIN-ROLLBACK.md` that a
-  fork rollback should expect ~10 min to engine readiness (measured
-  8.5, incl. the 8B in-engine PUP load).
+The forward leg, exactly as planned (the fork leg was proven in attempt 1,
+so v2 changed no config): canonical vLLM stop → pair through the gateway →
+one t2i job on the Q8 sidecar → teardown → vLLM revived → gateway adopted.
+Digest: `jobs/kleinrb2-digest.txt`.
+
+- 12:48:59 vLLM evicted canonically (3 s to a 1 MiB GPU); pair triggered.
+- **Trigger-loss mode 2 discovered:** the 12:48:59 trigger was lost again —
+  but this time not the post-restart config race (the gateway had been up
+  14 min): the daemon was still in the qwen UNLOAD caused by the job's own
+  canonical vLLM stop (journal 12:48:56 "upstream process exited
+  unexpectedly"). A group trigger fired while another model's unload is in
+  flight is dropped, not queued. The 12:58:00 retrigger (the 540 s no-pair
+  timer) is what finally raised the pair — supervisor launches 12:59:16
+  (294 s to healthy, cold: DiT + 4B conditioner + 9.5 GB Q8 PUP) and
+  13:02:00 (10 s, page-cached), ready 13:02:10. Lesson for any future
+  swap/trigger: poll for a fresh supervisor `run:` line after the trigger;
+  never trust one fire-and-forget GET (both loss modes: right after a
+  restart, and during an in-flight unload of another model).
+- Mid-window, the owner's own pi session was routed through the gateway;
+  each of their messages triggered an on-demand vLLM load, and the job's
+  veto canonically stopped it within 20–60 s (veto 1/3 12:58:45, 2/3
+  13:00:21, 3/3 13:01:56) — the "vLLM keeps bouncing between alive and dead" episode from the owner's side. The veto was doing exactly its job
+(the pair cannot share the card with a 23 GB vLLM; a vLLM boot alongside
+the ~20 GB pair OOMs — the failed manual boot the owner saw at ~13:00 was
+that). Procedural fix for the next window: the owner stays on qwen-direct
+for its duration (it sits out the window; the first message after the
+revival reconnects) — a gateway-routed session turns the window into a
+fight the veto has to keep winning.
+- 13:02:25 pair ready (260 s from the retrigger); Q8 sidecar confirmed in
+  the run line; **stock job `job_cd7fe63c378d` OK** — done in 9 s, maker
+  recipe (seed=62, steps=16, cfg=1.0, euler, model-Q8_0.gguf), caption
+  1220 chars, no repeated shingle; render in the production gallery
+  (`/gallery/2026-11-03/130234-a-single-white-chess-knight-on-62.png`) and
+  `/tmp/kleinrb2/img-stock.png`.
+- 13:02:37–47 pair down, gateway restarted; 13:03:42 vLLM revived
+  canonically (pid 387046; warm boot ~55 s — the compile cache makes the
+  2026-11-02 16-min cold tail the exception, not the rule); 13:03:43 the
+  gateway adopted it (health passed) and the proxy came up. DONE marker;
+  the watcher never had to intervene; journal quiet since.
+- Process note (mine, not the stack's): the launching agent ended its
+  turn without the blocking wait on the marker — the protocol's form is a
+  suspended wait, not an idle turn. It survived because no inference was
+  needed mid-window, but the next long job gets the blocking wait as
+  specified.
+
+## Closed (2026-11-03)
+
+All acceptance criteria met: the production serve path references only the
+stock deploy (grep-clean); klein t2i is stable on the new stack (windows
+E+F — incl. the owner's visual verdict: fine — plus the forward leg);
+the 3-box i2i acid test passed end-to-end (the three locked rows applied
+in the right places, verdict confirmed by the owner); and the rollback
+drill ran for real in both directions — fork in + one fork job (attempt
+1, `job_3b0d05ce1914`), forward + one stock job (attempt 2,
+`job_cd7fe63c378d`). `KLEIN-ROLLBACK.md` updated with the measured
+readiness times (~10 min fork cold, ~5 min stock pair cold) and the
+trigger-loss caveats. Next: task-012 (the qwen fork audit).
