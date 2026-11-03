@@ -31,27 +31,43 @@ appear in chat-visible diffs, logs, or repo docs — they live in assets
 and are referenced, not inlined.
 
 **Autonomy protocol (long / GPU jobs — engaged when the owner kicks one
-off; the full version lives in the host's OPS notes).** One 24GB GPU is
-shared with the operator runtime (vllm); evicting it kills it, and the
-reload is the revival. A long GPU job:
+off; the full version lives in the host's OPS notes, `/home/p/ml/OPS.md`).**
+One 24GB GPU is shared with the operator runtime (vllm); evicting it kills
+it, and the revival is the reload. A long GPU job:
 1. is a self-contained job script: frees the GPU, starts the model under
    test, waits on a **1-token `/v1/completions` probe** for true
    readiness (200 = ready, 503 = still loading — `/health` lies), runs
-   the tests, writes a digest + `DONE`/`FAIL` marker + the server-log
-   tail, stops the model, and **reloads vllm as its last step**;
+   the tests, writes a digest, stops the model, **revives vllm
+   canonically** (its `serve.sh start --no-wait` — never a gateway
+   on-demand curl, that trigger drops), **and writes the `DONE`/`FAIL`
+   marker last** (the marker means "the runtime is back");
 2. is launched with `setsid sh /path/job.sh < /dev/null > /path/job.log
    2>&1 &` (a surviving host process — never `setsid sh -c '…'`);
-3. gets a second setsid watcher as backstop (~3h cap; fallback digest +
-   vllm reload if the job dies);
-4. ends the agent's turn in a **blocking wait on the marker** (tool
-   timeout covering the expected runtime) — the agent is suspended, not
-   polling; the harness's result injection is the nudge that continues
-   the work without the owner;
+3. gets a second setsid watcher as backstop (hard cap ≤3h; fallback
+   digest + revival if the job dies);
+4. ends the agent's turn in a **blocking wait that is the last tool call
+   of the turn**: `sh /home/p/ml/wait-marker.sh /tmp/<jobdir> <cap>`,
+   bash tool timeout = cap + 120 s, where **cap exceeds the job's worst
+   case (the watcher cap + revival margin), not its expected runtime** —
+   a timeout firing while vllm is down kills the session for good, and a
+   turn ended with no pending wait never resumes (both observed
+   2026-11-03). While it blocks the agent is suspended, not polling; the
+   harness's result injection — marker + digest + log tails + live state
+   in one payload — is the nudge that continues the work without the owner;
 5. tolerates the agent dying mid-job (the job and the watcher are host
-   processes; the reload revives the runtime regardless).
+   processes; the revival revives the runtime regardless);
+6. neutralizes in the gateway registry any model the window must keep down
+   (config swap), or vets it in a loop: the daemon brings dead registry
+   models back by re-running their cmd (three vLLM resurrections inside the
+   2026-11-03 pair window; the same day's no-registry window was clean),
+   and a gateway unload cannot stop a model started outside the daemon.
+   The owner's sessions stay on qwen-direct for the window's duration
+   (verified 2026-11-03: qwen-direct is truly direct, 18020/v1 — it cannot
+   trigger loads, but its turns fail while the model is down).
 It exists to kill the proven failure modes: poll loops, "background it
 and hope the owner asks", false-DONE on `/health`, crashed jobs
-stranding the GPU, and premature markers.
+stranding the GPU, premature markers, and a turn that ends idle after a
+launch (the 2026-11-03 kleinrb2 miss).
 
 The entry point for anyone working on Kokon: people and coding agents (Claude Code, Codex, Cursor and
 others). Read this first, then the fork working state above for what is in progress on this fork.

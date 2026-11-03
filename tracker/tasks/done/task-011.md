@@ -25,6 +25,26 @@ dir kept and the one-step rollback documented. Then run the acid test: a
 ## decisions
 - None expected; if the acid test fails, this task becomes the debugging
   task (record the failure mode here before changing anything).
+- 2026-11-03 (owner): run window G now, on this stack — not retire the
+  rollback to rebuild-from-source (his visual verdict was already in hand).
+  Attempt 1 ran it and died on the forward leg (see above); attempt 2 ran
+  the forward leg only — forward-only by design (the fork leg is already
+  proven, and the configs are back on stock).
+- 2026-11-03: the handoff protocol was made durable (owner: "we're going in
+  circles around this every task"). The blocking wait is now the canonical
+  script `/home/p/ml/wait-marker.sh` (tested: DONE/FAIL/cap-hit paths) and
+  MUST be the last tool call of the turn — bash tool timeout = cap + 120 s,
+  where the cap exceeds the job's worst case (watcher cap + revival
+  margin), never its expected runtime (a timeout firing while vllm is down
+  kills the session for good; a turn with no pending wait never resumes —
+  both observed 2026-11-03). vLLM revival is canonical `serve.sh start
+  --no-wait` (the on-demand gateway curl drops — the trigger-loss modes
+  above), and the marker is the last write, after the revival. A window
+  that must keep a registry model down swaps it out of the registry or
+  keeps a veto loop (the daemon brings dead registry models back — see the
+  corrected mid-window attribution). Full version: `/home/p/ml/OPS.md`
+  (autonomy protocol items 1, 3–7 + Gateway caveats); summary: this repo's
+  AGENTS.md. OPS.md is not git — this entry is the in-repo pointer.
 
 ## File-side cutover (done 2026-11-03, pre-window)
 
@@ -159,16 +179,27 @@ Digest: `jobs/kleinrb2-digest.txt`.
   swap/trigger: poll for a fresh supervisor `run:` line after the trigger;
   never trust one fire-and-forget GET (both loss modes: right after a
   restart, and during an in-flight unload of another model).
-- Mid-window, the owner's own pi session was routed through the gateway;
-  each of their messages triggered an on-demand vLLM load, and the job's
-  veto canonically stopped it within 20–60 s (veto 1/3 12:58:45, 2/3
-  13:00:21, 3/3 13:01:56) — the "vLLM keeps bouncing between alive and dead" episode from the owner's side. The veto was doing exactly its job
-(the pair cannot share the card with a 23 GB vLLM; a vLLM boot alongside
-the ~20 GB pair OOMs — the failed manual boot the owner saw at ~13:00 was
-that). Procedural fix for the next window: the owner stays on qwen-direct
-for its duration (it sits out the window; the first message after the
-revival reconnects) — a gateway-routed session turns the window into a
-fight the veto has to keep winning.
+- Mid-window, vLLM came up three times (health 200 at 12:58:36 / 13:00:15 /
+  13:01:56; first scope boot 12:57:44) and the job's veto canonically
+  stopped each within 20–25 s (veto 1/3 12:58:45, 2/3 13:00:21, 3/3
+  13:01:56) — the "vLLM keeps bouncing between alive and dead" episode from
+  the owner's side. Corrected attribution (verified later): the boots were
+  the **gateway daemon's own vllm-serve.sh** re-running the dead registry
+  model's cmd (the 12:57:44 `run-p381271` systemd scope is its signature;
+  the daemon's journal was otherwise silent at info — load-trigger lines
+  are Debugf, so the exact internal trigger is unproven, but the daemon is
+  the initiator). It was NOT the owner's or this session's traffic:
+  qwen-direct was verified truly direct (models.json baseUrl 18020/v1) and
+  the pi-debug-proxy was down for the window's duration; an earlier session
+  had misattributed it to gateway-routed owner messages. The procedural
+  advice stands for that reason anyway: a gateway-routed session is a load
+  trigger per message. The veto was doing exactly its job (the pair cannot
+  share the card with a 23 GB vLLM; a vLLM boot alongside the ~20 GB pair
+  OOMs — the failed manual boot the owner saw at ~13:00 was that). The
+  contrast is the proof: attempt 1's window had qwen removed from the
+  registry by the config swap and bounced nothing. A window that must keep
+  a registry model down: swap it out of the registry (clean) or run this
+  veto loop (works, but each cycle burns a 50–90 s boot).
 - 13:02:25 pair ready (260 s from the retrigger); Q8 sidecar confirmed in
   the run line; **stock job `job_cd7fe63c378d` OK** — done in 9 s, maker
   recipe (seed=62, steps=16, cfg=1.0, euler, model-Q8_0.gguf), caption
@@ -183,8 +214,9 @@ fight the veto has to keep winning.
 - Process note (mine, not the stack's): the launching agent ended its
   turn without the blocking wait on the marker — the protocol's form is a
   suspended wait, not an idle turn. It survived because no inference was
-  needed mid-window, but the next long job gets the blocking wait as
-  specified.
+  needed mid-window (its model calls ride on the very vLLM the job was
+  cycling — its turns only completed during the up-windows), but it was
+  blind for the whole window. Fixed durably — see decisions above.
 
 ## Closed (2026-11-03)
 
