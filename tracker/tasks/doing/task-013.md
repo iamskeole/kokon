@@ -66,3 +66,19 @@ retire the 21-commit fork to `__mess/` (rollback dir kept, like task-011).
   or park. (Addendum: the audit's "in-engine PUP is unused by the
   service" claim was wrong for qwen — qwen used it; the sidecar above is
   its replacement, recorded in the audit addendum.)
+- **Window attempt 1 (14:40–14:55) — infra failure, no GPU damage.** The
+  job was launched with `setsid sh` but written as a bash script (arrays);
+  dash parses incrementally, so it ran the POSIX-clean prefix (preflight
+  ok, vLLM stopped canonically, config swapped to stock-013) and then died
+  with a bare parse error at the first array (`PROMPTS=(`, line 147) — no
+  marker, no die(). The watcher's 15-min silence fallback fired at 14:55
+  and did exactly what it is for: restore (fork config back, service
+  healthy, active model klein, vLLM revived canonically) + digest + FAIL
+  marker; box safe in ~15 min. Evidence: `/tmp/kleenq-fail1/`,
+  `jobs/kleenq.log` ("147: Syntax error: "(" unexpected"). Fix: job
+  converted to pure POSIX dash (case-getter instead of arrays; all four
+  scripts now `sh -n` clean); the dash-dialect rule + this failure mode
+  recorded in the autonomy protocol (OPS.md item 1/7, AGENTS.md).
+  Service `/config/config.json` returned to the pre-013 config meanwhile
+  (the patched vlm entries are only correct once the stock gateway config
+  is live — the window job does the swap itself on each leg).

@@ -34,7 +34,10 @@ and are referenced, not inlined.
 off; the full version lives in the host's OPS notes, `/home/p/ml/OPS.md`).**
 One 24GB GPU is shared with the operator runtime (vllm); evicting it kills
 it, and the revival is the reload. A long GPU job:
-1. is a self-contained job script: frees the GPU, starts the model under
+1. is a self-contained **POSIX-dash** job script (no arrays or `[[` — dash
+   parses incrementally, so a bash array makes it run the clean prefix and
+   then die mid-script with no marker; check with `sh -n`, not just
+   `bash -n`): frees the GPU, starts the model under
    test, waits on a **1-token `/v1/completions` probe** for true
    readiness (200 = ready, 503 = still loading — `/health` lies), runs
    the tests, writes a digest, stops the model, **revives vllm
@@ -66,8 +69,10 @@ it, and the revival is the reload. A long GPU job:
    trigger loads, but its turns fail while the model is down).
 It exists to kill the proven failure modes: poll loops, "background it
 and hope the owner asks", false-DONE on `/health`, crashed jobs
-stranding the GPU, premature markers, and a turn that ends idle after a
-launch (the 2026-11-03 kleinrb2 miss).
+stranding the GPU, a job that dies on a parse error before any marker
+(interpreter/dialect mismatch — the watcher's silence fallback recovers
+the box; kleenq-fail1, 2026-11-03), premature markers, and a turn that
+ends idle after a launch (the 2026-11-03 kleinrb2 miss).
 
 The entry point for anyone working on Kokon: people and coding agents (Claude Code, Codex, Cursor and
 others). Read this first, then the fork working state above for what is in progress on this fork.
