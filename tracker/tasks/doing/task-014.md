@@ -134,5 +134,9 @@ rule).
   evidence-complete): fresh workdir /tmp/qwabl2 with leg A archived
   under legA/, window-014b straight, check_yield instead of check_veto,
   daemon-up preflight, exec-bit audit, 9B proven by /proc/<door>
-  cmdline, same reference image as leg A's edit job.
+  cmdline, same reference image as leg A's edit job. Attempt 3's first
+  launch (21:25) died in preflight on its own audit: the audit's python
+  needs pyyaml, which only existed under the ephemeral /tmp/pyyaml-pkg —
+  the job now points at the durable /home/p/ml/pylibs (pip --target);
+  the die was pre-swap, the restore verified a no-op, box untouched.
 - (open until the A/B lands: winner model + quant for qwen)
