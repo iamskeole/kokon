@@ -96,14 +96,69 @@ vLLM revived, marker written):
 3. `judge()` read the required-id list from `sys.argv[2]` (the job name)
    instead of `argv[3]`.
 
+## Window G — attempt 1 (2026-11-03 12:00–12:20, `jobs/kleinrb-test.sh`)
+
+The owner ran it (his call, per the question above). The backward half
+PASSED, the forward half FAILED, and the drill's own restore returned the
+stock state in seconds (`/tmp/kleinrb/`, digest `jobs/kleinrb-digest.txt`):
+
+- 12:00 fork leg: gateway `cmd`/`cmdStop` swapped to the `__mess/` fork
+  scripts, service `vlm` block dropped, container restarted. The first
+  trigger did not become ready inside the 480 s budget — the engine was
+  ready ~12:09:00, one second after the retrigger fired: an ~8.5 min
+  cold start (klein DiT + 4B conditioner + 8B in-engine PUP). After the
+  retrigger it was ready in 20 s; identity confirmed
+  (`__mess/sd.cpp/klein-engine/sd-server` on :39170); `job_3b0d05ce1914`
+  (t2i on the in-engine 8B PUP) came back OK — caption 1486 chars,
+  `model-Q8_0.gguf`.
+- 12:09 forward leg: stock config back, gateway restarted, pair
+  triggered. At 12:17 the owner started vLLM by hand (`serve.sh`
+  systemd scope — the box's documented manual revival; the gateway's
+  on-demand load could not fire while the daemon was stuck in the pair's
+  failing load loop, and the in-band reviver pi-debug-proxy had been
+  down by drill design since 12:00:20). The job's veto evicted via a
+  GATEWAY UNLOAD — a no-op against a process the gateway had never
+  tracked — so the supervisor's `protect-vllm` gate refused every pair
+  start (`deploy/klein/supervisor.log` 12:18:37–12:20:02: "refused
+  cleanly after 30 s grace"), the 3-veto budget ran out, and
+  `kleinrb-restore.sh` ran: stock config, service `vlm` back, proxy up,
+  gateway restarted at 12:20:33 and adopted the hand-started vLLM
+  (journal: "<qwen3.8-27b> Health check passed on http://127.0.0.1:18020/health").
+- The gateway was never broken. The "unresponsive" window for pi users
+  was (a) pi-debug-proxy down 12:00:20→12:20:38 by drill design, and
+  (b) the daemon mid-kokon-load-loop, which blocks a qwen on-demand
+  load (one GPU, one load pipeline; qwen is pure on-demand, no
+  supervision). Post-restore both the :8081 and :18021 paths serve real
+  1-token completions (verified 12:31 UTC, key-authenticated, both
+  returned a chat completion from `vllm-0.27.1`).
+
+**Failure mode (what attempt 2 fixes):** the job assumed the only vLLM
+reviver was pi-debug-proxy (which it stopped) and evicted via the
+gateway — but a human on a terminal is a reviver too, and the gateway
+cannot stop what it never started. The supervisor's `protect-vllm` gate
+did exactly what it was built for; the drill's premise was wrong, not
+the stack.
+
 ## Remaining
 
-- **Owner visual inspection** of the five renders (paths above).
-- **Window G — rollback drill** (per `llama-swap-deploy/KLEIN-ROLLBACK.md`):
-  fork scripts in, gateway restart, service `vlm` dropped (config backup
-  taken), one klein job on the fork, forward again, one job on stock.
-  The owner questioned the point of it (2026-11-03, post E+F) — the answer
-  is in the session: the drill proves the *exit* works while it is cheap,
-  including the forward direction, before it is needed at 3 a.m.; the
-  alternative is to retire the rollback to "rebuild from the fork's git
-  branch" and delete the one-step promise. His call decides which.
+- **Owner visual inspection** of the five E+F renders (paths above).
+- **Window G attempt 2 — the forward leg alone** (`jobs/kleinrb2-*.sh`,
+  written 2026-11-03): the fork leg is proven above, so v2 changes no
+  config and executes only what attempt 1 never reached — canonical vLLM
+  stop (`serve.sh stop`: kill by pid whatever started it, wait until
+  nvidia-smi reports the GPU free), stock pair up through the gateway,
+  one t2i job on the Q8 sidecar (maker recipe), pair down, gateway
+  restart (clean group state; attempt 1's first trigger was lost in the
+  post-restart config-load race — /health is ready before the first
+  -watch-config poll loads the model registry), vLLM revived canonically,
+  proxy up, gateway re-adopting it (the adoption probe retries, so the
+  same race cannot swallow it). Watcher backstop (1 h cap, 15 min silence); every
+  failure path ends in `kleinrb2-restore.sh` (stock state + vLLM
+  guaranteed). Owner impact: the qwen backend — and with it the pi
+  sessions on it and OWUI chat — is down for the ~15–30 min window;
+  the launching agent ends its turn in a blocking wait on the marker
+  (autonomy protocol), the job revives vLLM as its last step.
+- After v2 passes + the visual verdict: close this task (move to
+  `done/`), update STATUS.md, and note in `KLEIN-ROLLBACK.md` that a
+  fork rollback should expect ~10 min to engine readiness (measured
+  8.5, incl. the 8B in-engine PUP load).
