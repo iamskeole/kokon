@@ -220,3 +220,36 @@ PUP up, one t2i job seed 54, stop) → **leg 2 turbo pair ×2 jobs (CHURN
   wait-marker 95-min cap (worst case = watcher hard cap + a 20-min vLLM
   cold-tail in the restore) as the turn's final call. The owner's
   qwen-direct turns fail while vLLM is down — expected.
+- **Verification window run (18:08:00–18:12:34) — DONE, 4 min 34 s,
+  vetoes=0, all three checks PASS.** Leg 1 klein canary ok (794 KB render,
+  enhance 1103 chars; klein pair 19.4 GB). Leg 2 CHURN CHECK PASS: engine
+  pid 583869 and turbo-door pid 584275 identical across 2 consecutive jobs,
+  exactly 1 new supervisor `run:` line — the per-request ping-pong is gone
+  (turbo jobs back to the ~10–11 s class). Leg 3 FLAVOR CHECK PASS: quality
+  engine a fresh pid (584987, replacing the turbo's), quality door 585390
+  stable across its job, turbo door stayed down; quality pair 21.0 GB of
+  24 GB (the tightest config, fits with ~3 GB headroom). vLLM revived in
+  60 s, gateway adoption 200. The new `run:` line formats prove the extended
+  heavy-tenant gates are live (klein lines report `qwen=`, qwen lines report
+  `klein=`). Evidence: `/tmp/qwenp/` (DONE, digest, run.log, 4 job jsons,
+  4 renders), `jobs/qwenp.log`, watcher exit on DONE. (Digest cosmetic bug
+  fixed same day: its config-identity section used relative refs — the job's
+  own absolute cmp checks are authoritative and passed.)
+- **Owner verdict (2026-11-03): "not worse, not different indeed. park the
+  fork, success achieved we go stock."** The 7 A/B renders (fork engine +
+  in-engine PUP vs stock engine + sidecar PUP, identical prompts and seeds
+  11/22/33 plus the i2i edit) are the AC-1 gate — passed.
+- **Fork archived (AC-2, 2026-11-03).** Verified the live gateway config
+  references only stock deploy scripts (turbo/full → `deploy/qwen/sd-cpp-
+  serve-qwen-stock.sh`, the two doors → `qwen-pup-serve.sh [t|f]`, the three
+  groups as designed, vLLM in the registry; zero references to the fork
+  tree). The fork cmd scripts `/home/p/ml/backends/sd-cpp-serve.sh` and
+  `sd-cpp-stop.sh` are marked RETIRED in their headers — kept functional
+  (`bash -n` clean) as the one-step rollback path per
+  `deploy/qwen/QWEN-ROLLBACK.md` (fork config `config.yaml.fork-pre-013.bak`
+  + pre-013 service config + restart; first suspect for any drift is the
+  ggml pin, stock `d49c49e1` vs fork `ceacb2d3`). The fork build tree
+  `/home/p/ml/__mess/sd.cpp` and source `/home/p/ml/__mess/sdcpp-fork` stay
+  untouched as the rollback dir, exactly like the klein rollback dir from
+  task-011. AC-3 was already empty (task-012 audit: 0 keep-ported).
+  Task closed; WP3 continues with task-014 (the PUP A/B).
