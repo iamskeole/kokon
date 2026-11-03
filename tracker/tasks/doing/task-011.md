@@ -141,9 +141,13 @@ the stack.
 
 ## Remaining
 
-- **Owner visual inspection** of the five E+F renders (paths above).
-- **Window G attempt 2 — the forward leg alone** (`jobs/kleinrb2-*.sh`,
-  written 2026-11-03): the fork leg is proven above, so v2 changes no
+- **Owner visual inspection** — DONE (2026-11-03 12:48 UTC): the five E+F
+  renders are fine; the verdict closes the acid-test item (the three box
+  edits applied in the right places).
+- **Window G attempt 2 — the forward leg alone** (`jobs/kleinrb2-*.sh`;
+  launched 2026-11-03 12:48 UTC, setsid job + watcher per the autonomy
+  protocol, markers at `/tmp/kleinrb2/DONE|FAIL`, digest
+  `jobs/kleinrb2-digest.txt`): the fork leg is proven above, so v2 changes no
   config and executes only what attempt 1 never reached — canonical vLLM
   stop (`serve.sh stop`: kill by pid whatever started it, wait until
   nvidia-smi reports the GPU free), stock pair up through the gateway,
