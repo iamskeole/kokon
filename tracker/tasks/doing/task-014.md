@@ -139,4 +139,23 @@ rule).
   needs pyyaml, which only existed under the ephemeral /tmp/pyyaml-pkg —
   the job now points at the durable /home/p/ml/pylibs (pip --target);
   the die was pre-swap, the restore verified a no-op, box untouched.
+- **Fail 3 (21:26-21:29, 90 s): my own switch was missing, and the daemon behaved exactly as designed.**
+  Attempt 3's first launch got the 9B door up in 36 s (7.3 s load — the
+  20:41 storm had warmed the page cache; the 10-min cold budget was
+  pessimistic) and the 1-token probe passed, but the job had never
+  switched the service's active model to turbo (that switch lived in the
+  deleted leg A), so b1 was routed to the KLEIN pipeline. The daemon then
+  did the right thing with a request it should never have gotten: an
+  exclusive-group request (kokon) evicted the exclusive qwen-t group
+  (cmdStop on the turbo engine + 9B door), the klein supervisor's
+  (correctly ordered) gate saw qwen=down and started the klein pair, and
+  the BFL sidecar's own evict-gpu killed that fresh pair — b1's enhance
+  EOF'd (502) and the job died. The restore recovered in 68 s (vLLM
+  21:29:09; owner's 4th boot's cache made it warm). Fix: leg B switches
+  active to turbo before triggering and verifies the switch. The daemon
+  group semantics this confirmed: an exclusive group (qwen-t/qwen-f)
+  yields to ANY out-of-group request, not just other exclusive ones —
+  i.e. while a qwen pair is resident, klein/creative/vLLM requests evict
+  it, and vLLM/default-group requests evict qwen-t on demand (the
+  fork-era behavior, by design).
 - (open until the A/B lands: winner model + quant for qwen)
