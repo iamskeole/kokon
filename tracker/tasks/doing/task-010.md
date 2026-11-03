@@ -93,3 +93,55 @@ prompt comes from the repo assets (task-007).
 - **Stock 9B (the fine-tune's base) — the contrast the owner wanted:** C2 keeps a table (in a json fence) but bare instructions, no rich descriptions; confirms the fine-tune's lift is in description richness, and its box-keeping training is what the PUP (partially) restores.
 - **Memory (all fit on the 24 GB card, pair + nothing else):** PUP sidecar Q4 5.6 / Q6 7.4 / Q8 9.5 GB + engine 8.7 GB → PUP-Q8 the tightest (~20 GB, ran fine, pair healthy at t+10 s on warm cache).
 - **State for the owner's call.** If a production PUP is needed today: 8B Q8 (consistent, fast, light, table in every case). The PUP is the better t2i/compose captioner, but its edit path needs the loop fixed first (BFL locked-record scaffold and/or a small temperature — one more short window). The owner visually validates the 18 renders and makes the final call; winner goes to STATUS when he decides.
+
+## Window D — the decisive test: PUP through the *production* request path (lane 2, owner's pick, 10:13–10:17, DONE)
+
+The C2 loop's cause was pinned to **my test driver's scaffold, not the model**. The window ran the exact C2 case
+that looped in C, but through the production path: one kokon-service instance (external-engine config, gateway-routed
+VLM for TTL parity) submitting the job as `enhancer.rs` does in production — BFL bundle, locked-record scaffold
+(`ORIGINAL PROMPT: …` + `LOCKED BOUNDING-BOX ANNOTATIONS …: [rows]`), BFL sampling (temp 0 / top_p 0.95 / top_k 20 /
+presence 1.5-t2i-0-edits / max_tokens 3584), maker-spec sidecar decoder. Sidecar swapped per stage via the supervisor's
+`pupab-override.env` (Q4 → Q6 → Q8), one service throughout, vLLM down for the window, self-healed at the end.
+
+**Result: all three PUP quants CLEAN** —
+
+| quant | caption | locked rows cited (of 3 supplied) | sidecar tokens | state |
+|---|---|---|---|---|
+| PUP-Q4 | 1747 chars | 3/3, verbatim, tgt semantics honored | 480 out @ 79.6 t/s | done, no repetition, no cap |
+| PUP-Q6 | 2759 chars (verbose variant) | 3/3 verbatim (+ 6 ref-derived scene rows) | ~741 out @ 58 t/s | done, **zero** repeated shingles — my char-length detector false-positived (2400-char threshold ≈ 600 tok, real cap ≈ 12k+ chars) |
+| PUP-Q8 | 2322 chars | 3/3, verbatim | see log | done, no repetition, no cap |
+
+The PUP also *added* locked rows for scene objects it recognized in the reference (`window_1`, `lantern_1`, `mug_1`,
+`notebook_1`, from ref_image_0, src==tgt) — the fine-tune's table behavior working as the HF card promises.
+**Conclusion: BFL did not ship a broken model; window C's C2 failure was my ad-hoc driver's simple
+"rearrange this scene [table]" scaffold.** The pre-streamlining frankenstein PUP results and the owner's read both stand.
+(Also noted: `vlm.rs` sends raw PNG data-URLs — no BFL JPEG-q92/pixel-budget preprocessing; a deviation from BFL's
+reference path, not the loop cause.)
+
+**Lessons (new):**
+- My degenerate detector's char-length proxy was miscalibrated (~4 chars/token ⇒ 3584 tok ≈ 12k+ chars, not 2400) and
+  produced a false positive on Q6. Lesson: run a real repetition analysis (shingle repeats) before declaring a loop;
+  length alone is a weak proxy.
+- `LD_LIBRARY_PATH` typo in the rewritten script (`/home/p/linuxbrew/...` vs the real `/home/linuxbrew/...` on this
+  host) killed the service binary on load (libssl.so.4 not found). Lesson: verify env paths against AGENTS.md, not
+  memory, when rewriting a script from an old one.
+- **llama.cpp server flags vs request body** (source: `tools/server/server-task.cpp:279-286`): request-body values
+  *override* server launch defaults (temp/top_k/min_p/…). The sidecar's launch flags are only a fallback for fields
+  the body omits (ctx, image-grid, batch, flash-attn). The service's body always sends temp/top_p/top_k/presence/
+  max_tokens ⇒ **tuning sidecar sampling at the server level is a dead letter while our body sends values; the
+  production lever is the service's per-request body (the enhancer.rs constants), not the launch flags.**
+- **DiT sampling**: sdcpp has no engine-side sampling — the request body is the sole authority; production lever =
+  the service's `externalEngine.sample` config (steps/cfg/sampler).
+- **Kokon config surface = startup snapshot**: `main.rs` loads `config.json` once; the only hot-poll is the
+  remote-access password. ⇒ every Kokon config change (engine URL, model, sample, VLM endpoint, bundle) = edit +
+  service restart (`docker restart kokon` in production) — no rebuild. The only build-gated items are the
+  per-request sampling constants in `enhancer.rs` (pre-promotion) and the prompt-bundle *contents* (committed assets —
+  the owner's own exception).
+
+## Awaiting owner
+
+Visual validation of the three window-D C2 renders (`llama-swap-deploy/jobs/pupab-D/render-C2-PUP-Q{4,6,8}.png`) and the
+quant call: **PUP-Q4** (5.6 GB sidecar, most GPU headroom), **PUP-Q6** (7.4 GB, middle), **PUP-Q8** (9.5 GB, tightest
+fit ~20 GB pair, best quality ceiling) — or the 8B baseline if he prefers. All three PUP quants are clean on the
+production path, so this is a headroom-vs-quant choice. On his pick: record the winner in STATUS, move to done/,
+optionally fold in the small `enhancer.rs` sampling-constants promotion to config (offered; not yet GO'd), then task-011.
