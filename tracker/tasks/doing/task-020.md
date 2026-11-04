@@ -604,3 +604,41 @@ code.
 - **P6 (orphan reclaim) and P7 (cutover) never ran** (the marker
   stopped at P5d). **Attempt 5** re-runs the full window with the fixed
   proof code; everything else is unchanged since a4.
+
+
+**Window attempt 5 (14:07:14-14:13:23, FAIL @ P4d, 645 s)** — a new
+finding, fixed in the window design (a6).
+
+- **P1-P4 clean**: klein done 25 s over a resident vLLM (the 14:10:12
+  headline line, `evict=[qwen3.8-27b]`); turbo done; 9B-Q8 door.
+- **P4d died on the job gate: the quality job never reached
+  `running`** — it failed with `The inference server is not reachable`
+  at exactly +120 s after the enhance step. Root cause: **a
+  cold-cache load of the full pair exceeded the service's 120 s
+  per-request timeout**. The pair load (20 GB Q8 DiT + 9B-Q4 door)
+  started 14:11:12 (0 s after the turbo pair's exit); the door was
+  ready in 7 s (14:11:19) and the enhance finished (10.3 s,
+  14:11:23), but the 20 GB DiT load needed more than 120 s — the
+  engine's HTTP server binds early and held the img_gen POST in the
+  load window until the service timed out (14:13:23, exactly 120 s
+  later). The engine log ends mid-sequence (killed by the restore's
+  cmdStop) — the load would have finished ~10 s later. In a4 the same
+  load took ~7 s (warm page cache). Why cold in a5: vLLM had booted
+  three times between a4 and a5 (a4-restore, a5-P2, a5-P4d's vLLM
+  request); each boot reads ~22 GB of weights into the page cache and
+  evicts the engine weights. A window-design hazard (the job's request
+  clock racing a load), not a router failure.
+- **Fix (a6): canary preloads.** P4d now fires
+  `GET /upstream/kokon-full/sdcpp/v1/capabilities` (the router's own
+  health endpoint) before the job: it triggers the same on-demand load
+  and blocks until the router's health check passes, so the job's
+  clock never races the load. P5d gets the symmetric 1-token vLLM
+  canary before the stream (the vLLM weights are likewise evicted by
+  the P4d pair loads; a cold boot could exceed the loop's 300 s
+  wait). The job's self-deadline grows to 40 min (the watcher's
+  42-min cap stays the true backstop). Canary results land in the
+  digest.
+- **The restore 401 recurred (14:18:27)** — same transient boot-race
+  class (canonical vs daemon-launched vLLM during the restore); the
+  surviving vLLM (1390317) enforces the correct key. Cosmetic; the
+  one-door topology (task-022) eliminates the whole class.
