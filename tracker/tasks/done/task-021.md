@@ -102,7 +102,7 @@ error until a main request evicts it — the two simply cannot co-reside.
   scope here; the window proves the model works, not that the agent uses
   it.
 - **The old task text said :18022** — superseded by the same-port
-  decision above; every artifact in this task is built same-port.- **KV headroom (a1 measured, 2026-11-04): keep `7372M` as-is.** The
+  decision above; every artifact in this task is built same-port.- **KV headroom (a1 + a6 measured, 2026-11-04): keep `7372M` as-is.** The
   vision variant totals **24128 MiB** (448 MiB headroom to the 24576
   ceiling) vs the main variant's **23236 MiB** (1340) — the vision tower
   costs ~900 MiB. `--kv-cache-memory-bytes` is a **cap, not a target**
@@ -285,6 +285,81 @@ pair; `refs/thin-021/` = pre-021 (rollback), `refs/post-021/` = the
 tested generation (5 files; re-applied at P0b); stable dir = pre-021
 (by design); `config.yaml == stock-016` (LIVE); the main variant is
 serving this session; window-021 validates "10 model(s), 0 peer(s)".
+
+## Attempts 3-6 and DONE (2026-11-04, 19:43-20:23)
+
+- **a3 (died 30 s):** a stray `$old` token left in the job after the P0b
+  restructure — a `set -u` trip, caught immediately, removed.
+- **a4 (died 1 s):** the sequencing hole the a2 fix created: the restore
+  of a failed attempt `rm -f`s `vllm-serve-vision.sh` (correct — the
+  pre-021 generation has no such file), but the next attempt's exec-bit
+  audit of the window config ran **before** P0b re-applied the file.
+  Fix: the audit now runs **after** P0b (it audits the generation that
+  will actually run).
+- **a5 (died at P2b, 1336 s):** P2 passed for real — the vision variant
+  booted through the router (102 s, `/v1/models` exactly
+  `['qwen3.8-27b-vision']`, 200) and **P2b's image request returned
+  200 with the vision tower genuinely processing the 64×64 PNG**
+  (`multimodal_tokens: {image: 64}`; the JIT log shows the vision
+  kernels compiling on first use). The die was the assertion: with
+  `--reasoning-parser qwen`, vLLM 0.27 puts the model's thinking in a
+  `reasoning` field and `content` stayed **null** — the 120
+  `max_tokens` were entirely consumed by thinking (`finish_reason:
+  length`). The response the model produced while thinking was already
+  a correct description of the image. Fix: `max_tokens` 512, and the
+  acceptance is a non-empty `content` **or** `reasoning` (seeing the
+  image is proven by either; the digest prints whichever exists).
+  Operational note from a5's restore: the canonical main revival after a
+  vision boot took **20+ minutes** (cold inductor + cold weights after
+  the 22 GB page-cache churn) — the route probe caught it healthy at
+  ~21 min; a restore that follows a variant switch must budget for the
+  cold-boot worst case, and the session's quiet window in a FAIL is
+  correspondingly long (a5's was ~23 min; a6's DONE path is ~3 min).
+- **a6 — DONE, 391 s (20:15:30 → 20:22:45).** Every phase passed with
+  the journal as evidence:
+  - **P2** (95 s warm boot): box-empty orphan shapes
+    (`matrix: model=qwen3.8-27b-vision starting (no models running)` +
+    `evicting []`); `/v1/models` exactly `['qwen3.8-27b-vision']`
+    (max_model_len 131072); 1-token 200; VRAM 24118/24128.
+  - **P2b**: 200 + the model's own description — "a single flat square
+    divided into two solid color regions … a solid blue square … in the
+    top-left corner … [on a red field]" — exactly the generated image;
+    `multimodal_tokens: {image: 64}`; VRAM unchanged after (24130).
+  - **P3** (56 s): `starting swap for model qwen3.8-27b, evicting
+    [qwen3.8-27b-vision]` + the orphan set line
+    (`set= dsl="" evict=[qwen3.8-27b-vision] cost=0`) + vision
+    `exited cleanly` — **orphan-vs-orphan, direction 1**; session route
+    back at 20:18:17 (~3 min quiet total).
+  - **P4**: `matrix: model=kokon-klein set=klein dsl="k & p"
+    evict=[qwen3.8-27b] target=[kokon-klein kokon-pup] cost=1`; job done
+    in 30 s (seed 3, enhanced) — the sets are untouched by the new
+    model.
+  - **P5** (60 s): `starting swap for model qwen3.8-27b, evicting
+    [kokon-klein kokon-pup]` + both exited cleanly — direction 2, box
+    recovery; image ports free.
+  - **P6**: cutover to **stock-017** (the production config now carries
+    the 10th model), active = kokon-klein, canonical main revived —
+    including the recurring daemon/canonical launch race, which the
+    wrapper absorbed by ADOPT ("child pid … exited rc=1 at t+1s …
+    our vllm alive after child exit — ADOPT: watch until gone"); final
+    main healthy (23236 MiB), gateway 200, ports free.
+  - The vision wrapper's self-log finally **caught the a1 blind window
+    on film**: at t+95-104 of its only LAUNCH, the forensics line shows
+    `health=000 port_pid='<empty>' raw_ss='<header only>'
+    core_pid='<empty>'` while the child was alive — the 2-4 s
+    post-bind detection gap is a real (and brief) state of vLLM 0.27,
+    and the hardened wrapper rode it out (no kill; `STUCK_KILL_SECS`
+    1200 gives it 20 min).
+- **Closed.** `config.yaml.stock-017` is live and serving this session
+  (main variant). Rollback ladder: `stock-016` (pre-task) is one atomic
+  cp away; the on-disk vLLM generation stays the post-021 set in
+  production (the stock-016 config simply doesn't reference
+  `vllm-serve-vision.sh`); `refs/thin-021/` + `refs/post-021/` keep
+  both generations restorable. Two minor job-file blemishes noted, not
+  product defects: two P4 pre-warm paths were wrong guesses (fixed in
+  the job file; the job passed because the pair was already
+  page-cached), and the old same-box rehearsal kit (`/tmp/vllm-wrap-rh`)
+  is superseded by the isolated kit (`/tmp/vllm-wrap-rh2`).
 
 ## Acceptance criteria
 
