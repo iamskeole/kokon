@@ -463,7 +463,13 @@ svg { display: block; flex: none; }
 .send:disabled { opacity: 0.25; box-shadow: none; }
 
 /* popovers */
-.popover { position: absolute; z-index: 40; min-width: 200px; background: var(--bg); border-radius: 16px; box-shadow: var(--shadow); padding: 6px; animation: pop-in 0.22s var(--ease) both; }
+/* A 200px floor wrapped several of the built-in menus' own descriptions (the longest word
+   pair in each row exceeded what 200px minus the row's check, gaps and paddings leaves) onto
+   two lines next to their one-line neighbours. 268px is the smallest floor that keeps every
+   built-in description on one line except the one written to be long ("the model's native
+   size"); menus with their own width (aspect, upscalers, the advanced panel) and the phone
+   sheet (min-width: 0) are unaffected. */
+.popover { position: absolute; z-index: 40; min-width: 268px; background: var(--bg); border-radius: 16px; box-shadow: var(--shadow); padding: 6px; animation: pop-in 0.22s var(--ease) both; }
 @keyframes pop-in { from { opacity: 0; filter: blur(4px); transform: translateY(4px) scale(0.985); } to { opacity: 1; filter: none; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .popover { animation: none; } }
 .popover .opt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 10px; text-align: left; font-size: 13px; }
@@ -732,6 +738,7 @@ pre.diag { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font
 .update-pill { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; border: 0; background: var(--bg); box-shadow: var(--lift); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; font-variant-numeric: tabular-nums; }
 .update-pill:hover:not(:disabled) { background: var(--surface); }
 .update-pill:disabled { cursor: default; color: var(--text-2); }
+/* The externally managed engine's flavors: a two-choice switch on the top bar. */
 .setup { flex: 1; display: flex; justify-content: center; overflow-y: auto; padding: 40px 24px 0; }
 /* Bottom room inside the scroller (padding on the scroller itself is dropped by Chromium). */
 .setup-inner { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 72px; height: fit-content; }
@@ -1337,3 +1344,78 @@ kbd { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; display
 .welcome-item .link-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; vertical-align: baseline; }
 .welcome-item .link-btn svg { margin: 0; }
 .row-btns { display: flex; gap: 6px; flex: none; }
+/* layout boxes (the klein box editor + the i-panel's collapsed table) */
+.box-stage { position: relative; color: var(--text); }
+.box-stage.blank { background: var(--surface-2); }
+.box-blank-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-2); font-size: 13px; pointer-events: none; opacity: 0.7;
+}
+.box-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.box-overlay { position: absolute; inset: 0; pointer-events: none; }
+.box-mark { position: absolute; width: 13px; height: 13px; border: 0 solid var(--text); opacity: 0.35; pointer-events: none; }
+.box-mark.tl { top: -3px; left: -3px; border-top-width: 2px; border-left-width: 2px; }
+.box-mark.tr { top: -3px; right: -3px; border-top-width: 2px; border-right-width: 2px; }
+.box-mark.bl { bottom: -3px; left: -3px; border-bottom-width: 2px; border-left-width: 2px; }
+.box-mark.br { bottom: -3px; right: -3px; border-bottom-width: 2px; border-right-width: 2px; }
+.box-tabs { display: flex; gap: 6px; padding: 10px 14px 2px; overflow-x: auto; scrollbar-width: none; }
+.box-tabs::-webkit-scrollbar { display: none; }
+.box-tab {
+  flex: none; display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 13px 0 8px;
+  border-radius: 999px; border: 0; background: var(--bg); box-shadow: var(--lift);
+  color: var(--text-2); font-size: 12.5px; cursor: pointer;
+}
+.box-tab img { width: 20px; height: 20px; border-radius: 6px; object-fit: cover; }
+.box-tab__icon { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; background: var(--surface-2); }
+.box-tab.on { color: var(--text); box-shadow: var(--lift), 0 0 0 1.5px var(--text) inset; }
+.box-chip {
+  position: absolute; display: flex; align-items: stretch;
+  transform: translate(5px, calc(-100% + 3px));
+  font-family: var(--mono); line-height: 1; height: 17px;
+}
+.box-chip.in { transform: translate(5px, 5px); }
+.box-chip__id {
+  display: flex; align-items: center; padding: 0 8px; border-radius: 9px 0 0 9px;
+  background: var(--c); color: #101010; font-weight: 650; font-size: 10px; letter-spacing: 0.02em;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.box-chip__coords {
+  display: flex; align-items: center; padding: 0 7px; border-radius: 0 9px 9px 0;
+  background: color-mix(in srgb, var(--c) 72%, #000); color: #101010; font-size: 8.5px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.box-handle {
+  position: absolute; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; pointer-events: auto;
+  background: var(--bg); border: 1.5px solid var(--c); border-radius: 2.5px; box-shadow: var(--lift);
+}
+.box-handle.tl, .box-handle.br { cursor: nwse-resize; }
+.box-handle.tr, .box-handle.bl { cursor: nesw-resize; }
+.box-sel { display: flex; align-items: center; gap: 7px; flex: none; }
+.box-sel__id {
+  padding: 4px 9px; border-radius: 8px; color: #101010; font-family: var(--mono); font-size: 11px; font-weight: 650;
+}
+.box-sel__coords { color: var(--text-2); font-family: var(--mono); font-size: 11px; }
+.box-desc {
+  flex: 1; min-width: 120px; height: 34px; padding: 0 12px; border-radius: 11px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text); font-size: 13px;
+}
+.box-desc:disabled { color: var(--text-2); }
+.box-desc:focus { outline: none; border-color: var(--border-2); }
+.btn.box-kind { padding: 0 10px; height: 32px; border-radius: 10px; color: var(--text-2); font-size: 12.5px; }
+.btn.box-kind.on { background: var(--invert-bg); color: var(--invert-text); }
+
+.box-hint { flex-basis: 100%; font-size: 11.5px; color: var(--text-3); }
+.box-table { font-size: 12px; }
+.box-table summary { color: var(--text-2); cursor: pointer; }
+.box-table ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+/* The layout boxes a prompt carried, drawn over the image they act on. */
+.box-overlay { position: absolute; inset: 0; pointer-events: none; }
+/* The info panel's "show the boxes" toggle. */
+.box-toggle { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; padding: 5px 10px; font-size: 12px; color: var(--text-2); background: var(--lift); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; }
+.box-toggle.on { color: var(--text); border-color: var(--text-3); }
+/* The references a generation used, with the boxes they carried. */
+.ref-strip { display: flex; gap: 10px; flex-wrap: wrap; }
+.ref-item { margin: 0; }
+.ref-thumb-wrap { position: relative; }
+.ref-thumb { display: block; max-width: 110px; max-height: 76px; border-radius: 6px; border: 1px solid var(--border); }
+.ref-item figcaption { font-size: 11px; margin-top: 4px; }

@@ -4,14 +4,15 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import {
-  compareBase, composerFromRecord, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, upscaleRequest, arcLayout,
+  compareBase, composerFromRecord, entryForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, splitBoxTable, upscaleRequest, arcLayout,
   upscalerLabel, upscaleTargets, variationRequest, imageName, type LinkKind, type TimelineLink,
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
 import {
-  addAsReference, addResult, cancelJob, focusPrompt, getState, itemSource, removeSessionItem, removeSessionItems, reusePrompt, selectedItem, selectItem, sessionLabels, sessionLinks, setState, stageImage, submitRequest, toastError, toastInfo, useStore, type SessionItem,
+  addAsReference, addResult, cancelJob, focusPrompt, getState, itemSource, removeSessionItem, removeSessionItems, reusePrompt, selectedItem, selectItem, sessionLabels, sessionLinks, setState, stageImage, submitRequest, toastError, toastInfo, toggleBoxes, useStore, type SessionItem,
 } from "../lib/store";
 import type { GenerationRecord, GenerationRequest, JobView, LutEntry, Mode, Size } from "../lib/types";
+import { BoxOverlay } from "./BoxOverlay";
 import { Cocoon, Hatch } from "./Cocoon";
 import { CompareFrame, CompareFullscreen } from "./Compare";
 import { PROMPT_FADE_MS, cardMemory, usePromptLeave, useTypewriter, useJobPercent, wordStyle, type CardMemory } from "./jobMotion";
@@ -254,9 +255,17 @@ function CopyText({ text, title }: { text: string; title: string }) {
   );
 }
 
+/** The layout boxes a record's prompt carried, drawn over an image (the result, or the Nth reference). */
+function recordBoxes(g: GenerationRecord, on: "result" | number) {
+  const t = splitBoxTable(g.prompt);
+  return t ? <BoxOverlay rows={t.rows} on={on} /> : null;
+}
+
 export function InfoPanel({ g }: { g: GenerationRecord }) {
   const pipeline = pipelineSummary(g);
   const lut = lutInfo(g);
+  const table = splitBoxTable(g.prompt);
+  const showBoxes = useStore((s) => s.showBoxes);
   const rows: [string, string][] = lut ? [
     ["Mode", MODE_LABEL[g.mode]],
     ["Size", `${g.width}×${g.height}`],
@@ -272,7 +281,6 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
     ["CFG", String(g.cfg)],
     ["Sampler", `${g.sampler}${g.scheduler ? ` / ${g.scheduler}` : ""}`],
     ...(g.strength != null ? ([["Strength", String(g.strength)]] as [string, string][]) : []),
-    ["References", String(g.references.length)],
     ...(g.loras?.length ? ([["LoRA", g.loras.map((l) => `${l.name} (${Math.round(l.weight * 100)} %)`).join(", ")]] as [string, string][]) : []),
     ["Model", g.model],
     ["Time", formatDuration(g.duration_ms / 1000)],
@@ -281,9 +289,40 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
   return (
     <div className="info-panel" style={{ padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       <div className="info-prompt">
-        <div style={{ fontSize: 13, maxHeight: 160, overflow: "auto" }}>{g.prompt}</div>
+        <div style={{ fontSize: 13, maxHeight: 160, overflow: "auto" }}>{table ? table.caption || " " : g.prompt}</div>
+        {table && (
+          <details className="box-table">
+            <summary>{table.rows.length} layout annotation{table.rows.length > 1 ? "s" : ""}</summary>
+            <ul>
+              {table.rows.map((r) => (
+                <li key={r.id}>
+                  <b>{r.id}</b>
+                  {r.desc ? ` — ${r.desc}` : ""}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         <CopyText text={g.prompt} title={g.original_prompt ? "Copy the prompt Prompt+ wrote" : "Copy the prompt"} />
       </div>
+      {table && (
+        <button className={`box-toggle${showBoxes ? " on" : ""}`} onClick={toggleBoxes} title="Show the layout boxes this prompt used, on the image and its references">
+          <Square size={12} /> Show the boxes
+        </button>
+      )}
+      {g.references.length > 0 && (
+        <div className="ref-strip">
+          {g.references.map((r) => (
+            <figure className="ref-item" key={r.index}>
+              <div className="ref-thumb-wrap">
+                <img className="ref-thumb" src={urls.inputThumb(r.input_id)} alt="" />
+                {table && recordBoxes(g, r.index)}
+              </div>
+              <figcaption className="muted">Image {r.index + 1}{r.width > 0 ? ` · ${r.width}×${r.height}` : ""}</figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
       {g.original_prompt && (
         <div className="info-prompt">
           <div className="muted" style={{ maxHeight: 80, overflow: "auto" }}>
@@ -558,7 +597,7 @@ function PlainFrame({ src, source, alt, w, h, maskSrc, overlay, fill, onFullscre
 
 /** Under the image: which image this is and what made it, then what you can do with it. */
 /** `phone`: the prompt stays in Details, the actions are the phone's row. */
-function StageBar(props: { item: SessionItem; label: string; showOriginal: boolean; setShowOriginal: (on: boolean) => void; lutBar: React.ReactNode; onLut: (lut: LutEntry) => void; phone?: boolean }) {
+function StageBar(props: { item: SessionItem; label: string; showOriginal: boolean; setShowOriginal: (on: boolean) => void; lutBar: React.ReactNode; onLut: (lut: LutEntry) => void; phone?: boolean; model?: string | null }) {
   const { item, label, showOriginal, setShowOriginal } = props;
   const g = item.gen;
   const lut = g && lutInfo(g);
@@ -571,6 +610,7 @@ function StageBar(props: { item: SessionItem; label: string; showOriginal: boole
       <div className="stage-meta">
         <span className="ver">{imageName(label)}</span>
         {g && <span className="mode">{MODE_LABEL[g.mode]}</span>}
+        {props.model && <span className="mode" title="Model">{props.model}</span>}
         {g?.original_prompt && (
           <span className="enhanced-mark" title="The prompt enhancer wrote this image's prompt">
             <WandSparkles size={13} />
@@ -946,6 +986,12 @@ const viewable = (i: SessionItem) => !!(i.gen || i.input);
 /** Full screen for the selected version: follows the selection, and ←/→ (or the arrows on
  * the sides) step through the versions of the timeline without leaving it. */
 function StageFullscreen({ item, session, showOriginal, onClose }: { item: SessionItem; session: SessionItem[]; showOriginal: boolean; onClose: () => void }) {
+  // The model that made the picture: it goes in the viewer's standard hint row.
+  const modelLabel = useStore((s) => {
+    const g = item.gen;
+    return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
+  });
+  const showBoxes = useStore((s) => s.showBoxes);
   const nav = useMemo<ViewerNav>(() => {
     const at = session.findIndex((i) => i.key === item.key);
     const step = (d: number) => {
@@ -964,15 +1010,16 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
   const from = g?.pipeline?.original_path ? g.pipeline.enlarged_from : null;
   let content: React.ReactNode;
   let hint = "Scroll or click to zoom · Drag to pan";
-  if (g && from && showOriginal) content = <ZoomImage key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} />;
+  if (g && from && showOriginal) content = <ZoomImage key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} overlay={showBoxes ? recordBoxes(g, "result") : undefined} />;
   else if (g && base) {
     content = <CompareFullscreen key={g.id} g={g} base={base} />;
     hint = "Hold B for the original";
   } else {
     const src = g ? urls.gen(g.id) : urls.input(item.input!.id);
     const size = g ? { width: g.width, height: g.height } : { width: item.input!.width, height: item.input!.height };
-    content = <ZoomImage key={src} src={src} source={g ? `gen:${g.id}` : `input:${item.input!.id}`} size={size} alt={g?.prompt ?? item.input?.original_name ?? ""} />;
+    content = <ZoomImage key={src} src={src} source={g ? `gen:${g.id}` : `input:${item.input!.id}`} size={size} alt={g?.prompt ?? item.input?.original_name ?? ""} overlay={g && showBoxes ? recordBoxes(g, "result") : undefined} />;
   }
+  if (modelLabel) hint = `${modelLabel} · ${hint}`;
   return (
     <Fullscreen hint={hint} onClose={onClose} nav={nav}>
       {content}
@@ -989,6 +1036,13 @@ export function Stage() {
   // A phone: swipe between versions, a row of actions and a filmstrip (PhoneStage.tsx).
   const phone = useNarrow();
   const job = useStore((s) => (item?.jobId ? s.jobs[item.jobId] : undefined));
+  // External engine mode: the configured model name of the model that made the shown image
+  // (each record carries the engine's own reported model name).
+  const modelLabel = useStore((s) => {
+    const g = item?.gen;
+    return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
+  });
+  const showBoxes = useStore((s) => s.showBoxes);
   const labels = useMemo(() => sessionLabels(session), [session]);
   const lab = useLab();
   // A version of a layer document is selected: the Stage shows that layered image instead.
@@ -1130,15 +1184,15 @@ export function Stage() {
             onFullscreen={openFull}
           />
         ) : g && from && showOriginal ? (
-          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} onFullscreen={openFull} />
+          <PlainFrame key={`original-${g.id}`} src={urls.genOriginal(g.id)} alt={`${g.prompt} (before upscaling)`} w={from.width} h={from.height} onFullscreen={openFull} overlay={showBoxes ? recordBoxes(g, "result") : undefined} />
         ) : item.gen && base ? (
           <CompareFrame key={`compare-${item.gen.id}`} g={item.gen} base={base} maskSrc={maskSrc} onFullscreen={openFull} />
         ) : (
-          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} onFullscreen={openFull} />
+          <PlainFrame key={src} source={source} alt={item.gen?.prompt ?? item.input?.original_name ?? ""} w={w} h={h} maskSrc={maskSrc} fill={!!item.gen} onFullscreen={openFull} overlay={g && showBoxes ? recordBoxes(g, "result") : undefined} />
         )}
         </Hatch>
     );
-    bar = <StageBar item={item} label={labels[item.key]} showOriginal={showOriginal} setShowOriginal={(on) => setOriginalOf(on && g ? g.id : null)} lutBar={lutBar} onLut={startLut} phone={phone} />;
+    bar = <StageBar item={item} label={labels[item.key]} showOriginal={showOriginal} setShowOriginal={(on) => setOriginalOf(on && g ? g.id : null)} lutBar={lutBar} onLut={startLut} phone={phone} model={modelLabel} />;
   }
 
   return (

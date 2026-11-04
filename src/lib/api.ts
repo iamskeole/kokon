@@ -7,7 +7,7 @@ import { inBrowser } from "./platform";
 import type { ProjectData } from "./store";
 import type {
   GpuBackend,
-  AppConfig, AppErrorBody, GenerationRecord, GenerationRequest, HardwareReport, InputRecord, InstallStatus, JobView, LoraItem, LutEntry, MacBenchState, ModelFileInfo, ModelScan, ModelSlot, ModelsStatus, Plan,
+  AppConfig, AppErrorBody, ExternalEngine, GenerationRecord, GenerationRequest, HardwareReport, InputRecord, InstallStatus, JobView, LoraItem, LutEntry, MacBenchState, ModelFileInfo, ModelScan, ModelSlot, ModelsStatus, Plan,
   ServiceEvent, SetupReport, StatusResponse, UpscalerItem,
 } from "./types";
 
@@ -183,6 +183,8 @@ export const api = {
   startBackend: () => call<{ ready: boolean }>("/backend/start", { method: "POST" }),
   stopBackend: () => call<{ stopped: boolean }>("/backend/stop", { method: "POST" }),
   restartBackend: () => call<{ ready: boolean }>("/backend/restart", { method: "POST" }),
+  /** Switch the externally managed engine to another model (the gateway loads it in the background). */
+  switchModel: (e: ExternalEngine) => call<{ requested: boolean }>("/models/switch", { method: "POST", body: json(e) }),
   diagnostics: () => call<{ text: string }>("/diagnostics"),
   plan: (r: GenerationRequest) => call<Plan>("/plan", { method: "POST", body: json(r) }),
   submit: (r: GenerationRequest) => call<JobView>("/jobs", { method: "POST", body: json(r) }),

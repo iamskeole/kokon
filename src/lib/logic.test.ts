@@ -9,10 +9,12 @@ import {
   whatsNewDue,
   macBenchProgress,
   dayGroup, isGenericName, placeInCanvas, projectTitle, typedWords, withActionVerb,
+  enhancerApplies,
   activeLoras, activeOverrides, buildRequest, composing, editing, reviewRequest, wantsPromptReview, toggleLora, MAX_LORAS, jobPercent, compareBase, composerFromRecord, diffPixels, emptyComposer, expansionPixels, expansionPreset, jobLabel, jobSecondsLeft, lutInfo, moveRef, needsPrompt, normalizeQuality, persistentAdvanced, pipelineSummary,
   planPipeline, remainingSeconds, sizeForWidth, timeAgo, upscaleRequest, upscaleTargets, versionLabels, type JobClock, type Ref,
   neighbourAfterRemoval, pageOutdated, previewIndex, starPromptDue, STAR_PROMPT_AFTER, formatBytes, formatDuration, installItemShort, installItemText, installProgress, installStep, installTimeLeft, timelineLinks, undoTarget, aspectLabel, parseRatio, sizeForRatio, sizeForLongSide, expandToRatio, expandToSize, arcLayout,
   goneVersions, PREVIEW_SIDE, stageFitsPreview, viewerWantsFull,
+  modelRequest, entryForModel, boxRows, appendBoxTable, splitBoxTable, modelSupportsBoxes, modelSupportsInpaint, type BoxRow,
 } from "./logic";
 import type { GenerationRecord, InstallItem, JobView, LoraItem, Plan } from "./types";
 
@@ -107,6 +109,28 @@ describe("buildRequest", () => {
     const moved = { ...c, refs: [ref(2), ref(1)] };
     expect("inpaint_action" in buildRequest(moved)).toBe(false);
     expect(needsPrompt(moved)).toBe(true);
+  });
+  it("drops the mask for box models (no inpaint pass there) and degrades to an edit", () => {
+    const c = { ...emptyComposer(), prompt: "take the handle off", refs: [ref(1)], mask: { inputId: "m", refKey: "k1" }, inpaintAction: "remove" as const };
+    // The non-box path sends the mask as before.
+    expect(buildRequest(c, undefined, "kokon-full").mask).toBe("input:m");
+    // Klein has no inpaint pass: no mask, no action - the job stays an edit.
+    const r = buildRequest(c, undefined, "kokon-klein");
+    expect(r.mask).toBeNull();
+    expect("inpaint_action" in r).toBe(false);
+    expect(r.images).toEqual(["input:1"]);
+    // The enhancer applies to that degraded edit, and needs a prompt like any edit.
+    expect(enhancerApplies(c, "kokon-klein")).toBe(true);
+    // 0.12: the Qwen painted area gets a prompt of its own too (in external mode the sidecar
+    // VLM writes it); only a maskless upscale has no prompt.
+    expect(enhancerApplies(c, "kokon-full")).toBe(true);
+    expect(needsPrompt(c, "kokon-klein")).toBe(true);
+  });
+  it("boxes and inpaint are complementary per model", () => {
+    expect(modelSupportsInpaint("kokon-klein")).toBe(false);
+    expect(modelSupportsInpaint("kokon-full")).toBe(true);
+    expect(modelSupportsInpaint(undefined)).toBe(true);
+    expect(modelSupportsBoxes("kokon-klein") && modelSupportsInpaint("kokon-klein")).toBe(false);
   });
   it("custom resolution sends dimensions", () => {
     const c = { ...emptyComposer(), prompt: "x", resolution: "custom" as const, customWidth: 1280, customHeight: 720 };
@@ -800,5 +824,142 @@ describe("Layers lab status lines", () => {
     expect(downloadIsFor({ running: true, preset: "segment" }, "matting")).toBe(false);
     expect(downloadIsFor({ running: false, preset: "matting" }, "matting")).toBe(false);
     expect(downloadIsFor(null, "segment")).toBe(false);
+  });
+});
+
+describe("modelRequest", () => {
+  const external = { gateway: "http://127.0.0.1:8080/engine", model: "a", modelName: "a.gguf", sample: { steps: 8 } };
+  const model = { label: "Fast", model: "a", modelName: "a.gguf", sample: { steps: 8, cfg: 1.0 } };
+  it("keeps the configured gateway, takes the model details from the entry", () => {
+    const r = modelRequest(external, model);
+    expect(r.gateway).toBe("http://127.0.0.1:8080/engine");
+    expect(r.model).toBe("a");
+    expect(r.modelName).toBe("a.gguf");
+    expect(r.sample).toEqual({ steps: 8, cfg: 1.0 });
+  });
+  it("an entry without overrides sends none", () => {
+    const r = modelRequest(external, { label: "X", model: "b", modelName: "b.gguf" });
+    expect(r.sample).toBeUndefined();
+    expect(r.vlm).toBeUndefined();
+    expect(r.promptBundle).toBeUndefined();
+  });
+  it("a per-pipeline gateway override wins over the service-wide one", () => {
+    const r = modelRequest(external, { label: "K", model: "k", modelName: "k.gguf", gateway: "http://10.0.0.2:8081" });
+    expect(r.gateway).toBe("http://10.0.0.2:8081");
+  });
+  it("the VLM sub-entry and prompt bundle ride along on the switch", () => {
+    const vlm = { entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup", model: "pup", apiKey: "k1" };
+    const r = modelRequest(external, { label: "K", model: "k", modelName: "k.gguf", vlm, promptBundle: "bfl-klein" });
+    expect(r.vlm).toEqual(vlm);
+    expect(r.promptBundle).toBe("bfl-klein");
+  });
+});
+
+describe("entryForModel", () => {
+  const models = [
+    { label: "Turbo", model: "a", modelName: "m-turbo.gguf" },
+    { label: "Full", model: "b", modelName: "m-full.gguf" },
+  ];
+  it("matches on the full recorded name", () => expect(entryForModel(models, "m-turbo.gguf")?.label).toBe("Turbo"));
+  it("matches on the stem when one side drops the extension", () => expect(entryForModel(models, "m-full")?.label).toBe("Full"));
+  it("is null for no match, or an empty name", () => {
+    expect(entryForModel(models, "other.gguf")).toBeNull();
+    expect(entryForModel(models, "")).toBeNull();
+    expect(entryForModel(models, null)).toBeNull();
+  });
+  it("is null when there are no models", () => expect(entryForModel([], "m-turbo.gguf")).toBeNull());
+});
+
+describe("layout boxes", () => {
+  const rect = { x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 };
+  const box = (o: Partial<BoxRow> = {}): BoxRow => ({
+    id: "obj_1", ref: 0, kind: "new", src: null, tgt: { ...rect }, desc: "a bird", ...o,
+  });
+
+  it("only klein models read the table", () => {
+    expect(modelSupportsBoxes("kokon-klein")).toBe(true);
+    expect(modelSupportsBoxes("FLUX.3 Image Klein Q8")).toBe(true);
+    expect(modelSupportsBoxes("kokon-turbo")).toBe(false);
+    expect(modelSupportsBoxes("")).toBe(false);
+    expect(modelSupportsBoxes(undefined)).toBe(false);
+  });
+
+  it("text-to-image rows are plain placements on the 0-1000 canvas", () => {
+    const c = { ...emptyComposer(), refs: [], boxes: [
+      box({ id: "obj_1", ref: null }),
+      box({ id: "obj_2", ref: null, tgt: { x1: 0.5, y1: 0.5, x2: 0.9999, y2: 0.9999 }, desc: "text" }),
+    ]};
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" },
+      { id: "obj_2", bbox: [500, 500, 1000, 1000], desc: "text" },
+    ]);
+  });
+
+  it("edit rows carry the keep / move / new / remove provenance against their reference", () => {
+    const c = { ...emptyComposer(), refs: [ref(1), ref(2)], boxes: [
+      box({ kind: "keep", src: { ...rect }, tgt: { ...rect } }),
+      box({ id: "obj_2", kind: "move", ref: 1, src: { ...rect }, tgt: { x1: 0.5, y1: 0.5, x2: 0.9999, y2: 0.9999 } }),
+      box({ id: "obj_3", kind: "new", desc: "a mug" }),
+      box({ id: "obj_4", kind: "remove", src: { ...rect }, tgt: null }),
+    ]};
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
+      { id: "obj_2", from: "ref_image_1", src_bbox: [200, 100, 400, 300], tgt_bbox: [500, 500, 1000, 1000], desc: "a bird" },
+      { id: "obj_3", from: "target", src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a mug" },
+      { id: "obj_4", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: null, desc: "a bird" },
+    ]);
+  });
+
+  it("drops boxes drawn on references that are no longer there", () => {
+    const c = { ...emptyComposer(), refs: [ref(1)], boxes: [box(), box({ id: "obj_2", ref: 5 })] };
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", from: "target", src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
+    ]);
+  });
+
+  it("a blank-canvas placement becomes a target row when references are also edited", () => {
+    const c = { ...emptyComposer(), refs: [ref(1)], boxes: [
+      box({ id: "obj_1", kind: "keep", src: { ...rect }, tgt: { ...rect } }),
+      box({ id: "obj_2", ref: null, kind: "new", desc: "a small brass teapot" }),
+    ]};
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", from: "ref_image_0", src_bbox: [200, 100, 400, 300], tgt_bbox: [200, 100, 400, 300], desc: "a bird" },
+      { id: "obj_2", from: "target", src_bbox: null, tgt_bbox: [200, 100, 400, 300], desc: "a small brass teapot" },
+    ]);
+  });
+
+  it("a blank-canvas placement stays a plain row in a pure text-to-image", () => {
+    const c = { ...emptyComposer(), refs: [], boxes: [box({ id: "obj_1", ref: null })] };
+    expect(boxRows(c)).toEqual([
+      { id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" },
+    ]);
+  });
+
+  it("no boxes, no table: the prompt is untouched", () => {
+    expect(boxRows(emptyComposer())).toEqual([]);
+    expect(appendBoxTable("a lamp", [])).toBe("a lamp");
+  });
+
+  it("the table is the caption, one space, the JSON array", () => {
+    const rows = [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }];
+    expect(appendBoxTable("a lamp", rows)).toBe(`a lamp ${JSON.stringify(rows)}`);
+  });
+
+  it("buildRequest appends the table only for klein models", () => {
+    const c = { ...emptyComposer(), prompt: "  a lamp  ", refs: [ref(1)], boxes: [box()] };
+    const klein = buildRequest(c, undefined, "kokon-klein");
+    expect(klein.prompt).toBe(`a lamp ${JSON.stringify(boxRows(c))}`);
+    const turbo = buildRequest(c, undefined, "kokon-turbo");
+    expect(turbo.prompt).toBe("a lamp");
+  });
+
+  it("splitBoxTable finds the trailing table and nothing else", () => {
+    const rows = [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }, { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [500, 500, 600, 600], desc: "" }];
+    const t = splitBoxTable(`a lamp on a bench ${JSON.stringify(rows)}`);
+    expect(t).toEqual({ caption: "a lamp on a bench", rows: [{ id: "obj_1", bbox: [200, 100, 400, 300], desc: "a bird" }, { id: "obj_2", from: null, src_bbox: null, tgt_bbox: [500, 500, 600, 600] }] });
+    expect(splitBoxTable("a lamp with [SALE] written on it")).toBeNull();
+    expect(splitBoxTable(`a lamp ${JSON.stringify([{ id: "obj_1" }])}`)).toBeNull();
+    expect(splitBoxTable(`a lamp ${JSON.stringify([1, 2, 3])}`)).toBeNull();
+    expect(splitBoxTable("a lamp")).toBeNull();
   });
 });

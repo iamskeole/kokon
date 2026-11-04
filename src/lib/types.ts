@@ -342,6 +342,57 @@ export interface AppConfig {
   enhancerEditPrompt?: string;
   enhancerComposePrompt?: string;
   ui: Record<string, unknown>;
+  /**
+   * Externally managed inference engine: loaded on demand through a gateway instead of being
+   * spawned by Kokon itself. The browser UI never preloads one.
+   */
+  externalEngine?: ExternalEngine;
+  /** Selectable models of the external engine (config); empty or absent = no model picker. */
+  models?: ExternalModel[];
+}
+
+/** A VLM (prompt upsampler) the service calls: an OpenAI-compatible chat endpoint. */
+export interface VlmEndpoint {
+  /** Base URL of the OpenAI-compatible chat API, e.g. "http://127.0.0.1:8081/upstream/kokon-pup". */
+  entrypoint: string;
+  /** The model id sent in each request body. */
+  model: string;
+  /** Bearer token for a keyed server; empty for a keyless sidecar. */
+  apiKey?: string;
+}
+
+export interface ExternalEngine {
+  /** Base URL of the load-on-demand gateway, e.g. "http://127.0.0.1:8080/engine". */
+  gateway: string;
+  /** The model the gateway loads on demand for this UI. */
+  model: string;
+  /** File name of the diffusion model the running engine must report. */
+  modelName: string;
+  /** Per-request sample overrides (e.g. steps, cfg, sampler, clear_sigmas). */
+  sample?: Record<string, unknown>;
+  /** The VLM (prompt upsampler) of the active pipeline; absent = no upsampler. */
+  vlm?: VlmEndpoint;
+  /** Prompt bundle of the active pipeline (a bundled id or a path); "" = none. */
+  promptBundle?: string;
+}
+
+/** One selectable model behind an externally managed engine (config `models`). */
+export interface ExternalModel {
+  label: string;
+  /** Short description of what this model trades off. */
+  sub?: string;
+  /** The model the gateway loads on demand. */
+  model: string;
+  /** File name of the diffusion model the running engine must report. */
+  modelName: string;
+  /** Per-request sample overrides (e.g. steps, cfg, sampler, clear_sigmas). */
+  sample?: Record<string, unknown>;
+  /** This pipeline's gateway override; absent = the service-wide one. */
+  gateway?: string;
+  /** The VLM (prompt upsampler) of this pipeline; absent = no upsampler. */
+  vlm?: VlmEndpoint;
+  /** Prompt bundle of this pipeline (a bundled id or a path); "" = none. */
+  promptBundle?: string;
 }
 
 export type InstallItemState = "present" | "pending" | "downloading" | "verifying" | "extracting" | "done" | "failed" | "cancelled";
@@ -477,7 +528,7 @@ export type MacBenchState =
 
 export type ServiceEvent =
   | { type: "job"; job: JobView }
-  | { type: "server"; state: ServerState; owned: boolean; error: AppErrorBody | null }
+  | { type: "server"; state: ServerState; owned: boolean; error: AppErrorBody | null; model?: string | null }
   | { type: "gallery"; id: string; change: "added" | "updated" | "deleted" }
   | { type: "projects"; id: string; rev: number; deleted: boolean }
   | { type: "mac_bench"; bench: MacBenchState };

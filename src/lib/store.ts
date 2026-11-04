@@ -11,9 +11,9 @@ import { markFresh } from "../components/Cocoon";
 import { api, ApiError, setPrivateInputs, subscribe, urls } from "./api";
 import { activeLoras, buildRequest, composing, emptyComposer, goneVersions, isGenericName, macEngineDefaultDue, needsPrompt, newKey, pageOutdated, persistentAdvanced, refFromGen, refFromInput, reviewRequest, stageFitsPreview, starPromptDue, timelineLinks, typedWords, undoTarget, versionLabels, wantsPromptReview, type CompareMode, type Composer, type Ref } from "./logic";
 import { keepLabsIn, labsChanged, labSources, loadLab, type LabStore } from "./layerDoc";
-import type { AppErrorBody, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
+import type { AppErrorBody, ExternalEngine, ExternalModel, GenerationRecord, GenerationRequest, InputRecord, JobView, LoraItem, MacBenchState, ServerState, StatusResponse } from "./types";
 
-export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "layers" | "welcome" | "whats-new" | "prompt-tips" | "shortcuts" | "ai-check";
+export type Overlay = null | "gallery" | "settings" | "inpaint" | "expand" | "layers" | "boxes" | "welcome" | "whats-new" | "prompt-tips" | "shortcuts" | "ai-check" | "mac-engine";
 
 export interface SessionItem {
   key: string;
@@ -57,7 +57,11 @@ export interface State {
   update: UpdateInfo | null;
   connected: boolean;
   connectError: string | null;
-  server: { state: ServerState; owned: boolean; error: AppErrorBody | null };
+  server: { state: ServerState; owned: boolean; error: AppErrorBody | null; model: string | null };
+  /** An externally managed engine is configured (the UI never preloads one on visit). */
+  external: ExternalEngine | null;
+  /** Selectable models of the external engine (config); empty = no model picker. */
+  models: ExternalModel[];
   status: StatusResponse | null;
   /** Versions of the open project, in order. */
   session: SessionItem[];
@@ -88,6 +92,8 @@ export interface State {
   flickerMs: number;
   /** Private mode: nothing is saved to the gallery, the output folder or the project list. */
   privateMode: boolean;
+  /** Show the layout boxes a generation's prompt carried, on the image and its references. */
+  showBoxes: boolean;
   /** Versions left with Undo, most recent last (Redo walks back through them). */
   redo: string[];
   /** Step of the first-run tour on screen (components/Tour.tsx), or null. */
@@ -457,7 +463,9 @@ let state: State = {
   update: null,
   connected: false,
   connectError: null,
-  server: { state: "stopped", owned: false, error: null },
+  server: { state: "stopped", owned: false, error: null, model: null },
+  external: null,
+  models: [],
   status: null,
   session: [],
   selected: null,
@@ -478,6 +486,7 @@ let state: State = {
   compare: "off",
   flickerMs: 500,
   privateMode: false,
+  showBoxes: false,
   redo: [],
   tour: null,
   starPrompt: false,
@@ -576,12 +585,17 @@ export async function turnOnMacEngine(): Promise<void> {
 /** After Setup or What's new: Kokon's Mac engine switched on when it is due (before the model loads, so it loads on
  * it), then the model loads in the background so the first image starts at once. */
 export async function afterStartScreens() {
+  let external = false;
   try {
     const [cfg, st] = await Promise.all([api.config(), api.status()]);
+    external = !!cfg.externalEngine;
     if (!inBrowser && macEngineDefaultDue(st, (cfg.ui ?? {}) as Record<string, unknown>, cfg.setupComplete)) await turnOnMacEngine();
   } catch {
     // It can wait for the next start; the model still loads.
   }
+  // An externally managed engine is never preloaded on visit: it loads on the first request
+  // (or when the user asks for it), through the gateway.
+  if (external) return;
   api.startBackend().then(refreshStatus, () => refreshStatus());
 }
 
@@ -597,7 +611,7 @@ export async function refreshStatus() {
         /* storage unavailable */
       }
     }
-    setState({ status: st, server: { state: st.server.state, owned: st.server.owned, error: st.server.error } });
+    setState({ status: st, server: { state: st.server.state, owned: st.server.owned, error: st.server.error, model: st.server.model ?? null } });
     if (inBrowser) reloadIfOutdated(st.service.version);
     return st;
   } catch {
@@ -649,7 +663,7 @@ export function startEvents() {
       if (ev.type === "job") onJob(ev.job);
       else if (ev.type === "server") {
         const loaded = ev.state === "ready" && getState().server.state !== "ready";
-        setState({ server: { state: ev.state, owned: ev.owned, error: ev.error } });
+        setState({ server: { state: ev.state, owned: ev.owned, error: ev.error, model: ev.model ?? null } });
         // What the newly loaded engine can do (the prompt enhancer).
         if (loaded) refreshStatus();
       }
@@ -808,6 +822,10 @@ export function newProject() {
 
 /** Private mode on: a fresh project whose images stay out of the gallery, the output folder
  * and the project list. Off: those images are deleted (after confirming). */
+export function toggleBoxes() {
+  setState((s) => ({ showBoxes: !s.showBoxes }));
+}
+
 export async function setPrivateMode(on: boolean, confirmDiscard: () => Promise<boolean>) {
   const s = getState();
   if (on === s.privateMode) return;
@@ -1056,7 +1074,7 @@ export function selectItem(key: string, keepRedo = false) {
     const it = s.session.find((i) => i.key === key);
     if (!it) return {};
     const ref = s.composer.refs.length && !s.composer.create ? refOf(it) : null;
-    return { selected: key, composer: ref ? retarget(s.composer, ref) : s.composer, ...(keepRedo ? {} : { redo: [] }) };
+    return { selected: key, composer: ref ? retarget(s.composer, ref) : s.composer, showBoxes: false, ...(keepRedo ? {} : { redo: [] }) };
   });
 }
 
@@ -1259,10 +1277,10 @@ export async function submitComposer() {
   if (wantsPromptReview(s.composer)) return startPromptReview();
   const target = composing(s.composer) ? undefined : s.composer.refs[0]?.source;
   const parent = target?.startsWith("gen:") ? target.slice(4) : null;
-  const req: GenerationRequest = { ...buildRequest(s.composer, parent), loras: activeLoras(s.composer, s.loras) };
+  const req: GenerationRequest = { ...buildRequest(s.composer, parent, s.external?.model), loras: activeLoras(s.composer, s.loras) };
   // Made from the layers lab: a step, out of the gallery (only the image saved from the lab shows).
   if (s.overlay === "layers" || isLabStep(target)) req.hidden = true;
-  if (!typedWords(s.composer) && needsPrompt(s.composer)) {
+  if (!typedWords(s.composer) && needsPrompt(s.composer, s.external?.model)) {
     toastInfo("Describe what to create or change.");
     return;
   }
@@ -1280,7 +1298,7 @@ export async function submitComposer() {
 /** Prompt+ review: the prompt is written into the box first (a job that makes no image). */
 async function startPromptReview() {
   const s = getState();
-  let req = reviewRequest(s.composer);
+  let req = reviewRequest(s.composer, s.external?.model);
   if (s.privateMode) req = { ...req, private: true };
   try {
     const job = await api.submit(req);

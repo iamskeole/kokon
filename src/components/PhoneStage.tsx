@@ -3,12 +3,12 @@
 // Stage.tsx uses these in place of its desktop bar.
 
 import { useBlackStatusBar } from "../lib/theme";
-import { Brush, Copy, Download, Ellipsis, Expand, Heart, ImagePlus, Info, RefreshCw, SlidersHorizontal, TextCursorInput, Trash2, X } from "lucide-react";
+import { Brush, Copy, Download, Ellipsis, Expand, Heart, ImagePlus, Info, RefreshCw, SlidersHorizontal, Square, TextCursorInput, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, urls } from "../lib/api";
 import { haptic } from "../lib/haptics";
-import { composerFromRecord, variationRequest } from "../lib/logic";
+import { composerFromRecord, modelSupportsBoxes, variationRequest } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
 import {
   editShownImage, getState, itemSource, removeSessionItem, reusePrompt, selectItem, setState, submitRequest, toastError, toastInfo, updateComposer, useStore, type SessionItem,
@@ -212,10 +212,14 @@ export function PhoneActions({ item, showOriginal, onLut }: { item: SessionItem;
   const source = itemSource(item)!;
   const [fav, setFav] = useState(!!g?.favorite);
   const [hold, setHold] = useState<{ src: string; thumb: string } | null>(null);
-  const paint = (overlay: "inpaint" | "expand") => {
+  const paint = (overlay: "inpaint" | "expand" | "boxes") => {
     editShownImage();
     setState({ overlay });
   };
+  // Paint and Boxes are complementary: a box model removes with boxes (it has no inpaint
+  // pass - a mask would be ignored and the whole image re-denoised to gray), so Paint is
+  // hidden for those; every other model paints, not boxes.
+  const boxesOn = modelSupportsBoxes(useStore((s) => s.external?.model));
   const save = () => {
     const thumb = urls.sourceThumb(source);
     if (g) {
@@ -240,7 +244,10 @@ export function PhoneActions({ item, showOriginal, onLut }: { item: SessionItem;
           }}
         />
       )}
-      <ActionButton title="Paint the area to change" icon={<Brush size={17} />} label="Paint" onClick={() => paint("inpaint")} />
+      {!boxesOn && <ActionButton title="Paint the area to change" icon={<Brush size={17} />} label="Paint" onClick={() => paint("inpaint")} />}
+      {boxesOn && (
+        <ActionButton title="Draw layout boxes: place, keep or remove things" icon={<Square size={17} />} label="Boxes" onClick={() => paint("boxes")} />
+      )}
       <ActionButton title="Extend the image beyond its borders" icon={<Expand size={17} />} label="Expand" onClick={() => paint("expand")} />
       <UpscaleButton source={source} size={g ? { width: g.width, height: g.height } : { width: item.input!.width, height: item.input!.height }} original={g ? sourceSize(g) : null} parentId={g?.id} />
       <LutButton onPick={onLut} />

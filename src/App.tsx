@@ -12,6 +12,7 @@ import { Composer, importPaths, uploadFiles } from "./components/Composer";
 import { Login } from "./components/Login";
 import { ExpandEditor } from "./components/ExpandEditor";
 import { Gallery } from "./components/Gallery";
+import { BoxEditor } from "./components/BoxEditor";
 import { InpaintEditor } from "./components/InpaintEditor";
 import { LayersEditor } from "./components/LayersEditor";
 import { Settings as SettingsDialog } from "./components/Settings";
@@ -184,7 +185,9 @@ export default function App() {
           }, () => {});
         // Preload the model so the first generation starts immediately (on the Mac engine when it was just switched
         // on). After What's new instead (afterStartScreens): not a file or engine about to be replaced.
-        if (cfg.setupComplete && !whatsNew && st && st.server.state === "stopped") api.startBackend().then(refreshStatus, () => refreshStatus());
+        // Never for an externally managed engine: visiting the UI must not put a model on the GPU.
+        if (cfg.externalEngine) setState({ external: cfg.externalEngine, models: cfg.models ?? [] });
+        if (cfg.setupComplete && !whatsNew && !cfg.externalEngine && st && st.server.state === "stopped") api.startBackend().then(refreshStatus, () => refreshStatus());
       } catch (e) {
         setBoot(String(e));
       }
@@ -379,6 +382,7 @@ export default function App() {
           {needsSetup ? <Setup /> : <Stage />}
           {overlay === "gallery" && <Gallery />}
           {overlay === "inpaint" && <InpaintEditor />}
+          {overlay === "boxes" && <BoxEditor />}
           {overlay === "expand" && <ExpandEditor />}
           {overlay === "layers" && <LayersEditor />}
           {dragging && <div className="drop-hint">{editing ? "Drop to add as a reference image" : "Drop an image to start editing it"}</div>}

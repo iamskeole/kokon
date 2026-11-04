@@ -1,6 +1,6 @@
 // Pure UI logic (unit-tested in logic.test.ts).
 
-import type { Advanced, GenerationRecord, GenerationRequest, InpaintAction, InputRecord, InstallItem, InstallStatus, JobView, LoraItem, LutInfo, MacBenchState, Mode, ModelsStatus, StatusResponse, OutpaintSpec, Plan, Quality, ResolutionMode, Size } from "./types";
+import type { Advanced, ExternalEngine, ExternalModel, GenerationRecord, GenerationRequest, InpaintAction, InputRecord, InstallItem, InstallStatus, JobView, LoraItem, LutInfo, MacBenchState, Mode, ModelsStatus, StatusResponse, OutpaintSpec, Plan, Quality, ResolutionMode, Size } from "./types";
 
 export interface Ref {
   key: string;
@@ -11,6 +11,33 @@ export interface Ref {
   name: string;
   /** HEIC source with an HDR gain map. */
   hdr?: boolean;
+}
+
+/** One layout box drawn in the box editor. Coordinates are 0-1 on the canvas
+ * (x1/y1 = top-left); the model reads them on a 0-1000 grid, converted in
+ * `boxRows`. klein places them into the prompt string as a JSON table (BFL's
+ * contract) - no separate payload. */
+/** A rectangle on the 0-1 canvas of its tab (fractions, top-left origin). */
+export interface BoxRect {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface BoxRow {
+  id: string;
+  /** Which tab the box was drawn on: null = the blank "New" canvas (a text-to-image
+   * placement); N = the Nth reference image. */
+  ref: number | null;
+  /** keep: the thing stays where it is; move: it goes from src to tgt; new: the described
+   * thing appears at tgt (in the output, so src is null); remove: the thing at src goes away. */
+  kind: "keep" | "move" | "new" | "remove";
+  /** Where the thing currently is. Null for `new` (and for placements on the blank canvas). */
+  src: BoxRect | null;
+  /** Where the thing ends up. Null for `remove`. */
+  tgt: BoxRect | null;
+  desc: string;
 }
 
 export interface Composer {
@@ -45,6 +72,9 @@ export interface Composer {
   create: boolean;
   /** LoRAs switched on in this project; null = the ones on by default (`activeLoras`). */
   loras: string[] | null;
+  /** Layout boxes drawn in the box editor (session-only; sent as a JSON table the
+   * model reads in the prompt - klein only). */
+  boxes: BoxRow[];
 }
 
 /** A preset name from any version: older ones also had "turbo" (now Fast) and "ultra" (now Quality). */
@@ -76,6 +106,7 @@ export const emptyComposer = (prefs?: Partial<Composer>): Composer => ({
   enhancedFrom: null,
   create: false,
   loras: null,
+  boxes: [],
 });
 
 /** The prompt makes a new image from the reference images (rather than editing image 1). */
@@ -140,16 +171,109 @@ export function hasOutpaint(o: OutpaintSpec | null): boolean {
 const maskInUse = (c: Composer) => !composing(c) && !!c.mask && !!c.refs[0] && c.mask.refKey === c.refs[0].key;
 const outpaintInUse = (c: Composer) => !composing(c) && hasOutpaint(c.outpaint);
 
+/** The model reads layout boxes: klein does (BFL's prompt-embedded table contract).
+ * Other models would just see JSON in the prompt, so the client gates on this. */
+export function modelSupportsBoxes(model?: string | null): boolean {
+  return !!model && model.toLowerCase().includes("klein");
+}
+
+/** Inpaint (mask) works everywhere the box table does not. The klein build has no
+ * inpaint pass - a mask is silently ignored and the whole image re-denoises, which
+ * at full strength is a gray smear - so the client degrades a masked klein job to an
+ * edit instead of sending the mask. */
+export function modelSupportsInpaint(model?: string | null): boolean {
+  return !modelSupportsBoxes(model);
+}
+
+/** A painted mask the request will actually send, for `model` (see modelSupportsInpaint). */
+const maskLive = (c: Composer, model?: string | null) => maskInUse(c) && modelSupportsInpaint(model);
+
+/** One box as the model reads it, on BFL's 0-1000 canvas ([y_min, x_min, y_max, x_max],
+ * top-left origin). Boxes drawn on the blank canvas are plain placements (text-to-image);
+ * boxes drawn over a reference are edit rows - keep/move/remove against that reference
+ * (ref_image_N), "new" against the output image ("target"). */
+export function boxRows(c: Pick<Composer, "boxes" | "refs">): Record<string, unknown>[] {
+  if (!c.boxes.length) return [];
+  const q = (v: number) => Math.min(1000, Math.max(0, Math.round(v * 1000)));
+  const rect = (r: BoxRect | null): [number, number, number, number] | null =>
+    r ? [q(r.y1), q(r.x1), q(r.y2), q(r.x2)] : null;
+  const out: Record<string, unknown>[] = [];
+  const live = c.boxes.filter((r) => r.ref == null || (r.ref < c.refs.length && !!c.refs[r.ref]));
+  // A placement drawn on the blank canvas is a plain row for a pure text-to-image, but a "target" row when the surviving rows also edit references.
+  const editContext = live.some((r) => r.ref != null);
+  for (const r of live) {
+    const s = rect(r.src);
+    const t = rect(r.tgt);
+    if (r.ref == null) {
+      if (!t) continue;
+      if (editContext) out.push({ id: r.id, from: "target", src_bbox: null, tgt_bbox: t, desc: r.desc });
+      else out.push({ id: r.id, bbox: t, desc: r.desc });
+    } else {
+      const from = r.kind === "new" ? "target" : `ref_image_${r.ref}`;
+      out.push({ id: r.id, from, src_bbox: s, tgt_bbox: t, desc: r.desc });
+    }
+  }
+  return out;
+}
+
+/** The table the model reads: the caption, one space, the JSON array (BFL's exact form). */
+export function appendBoxTable(prompt: string, rows: Record<string, unknown>[]): string {
+  if (!rows.length) return prompt;
+  return `${prompt} ${JSON.stringify(rows)}`;
+}
+
+/** A layout-box table at the end of a stored prompt: the caption plus the parsed rows. Display
+ * only - the service is the source of truth, so stay lenient: every row needs an id and at
+ * least one of the box fields. */
+export interface BoxTableRow {
+  id: string;
+  desc?: string;
+  bbox?: [number, number, number, number];
+  from?: string | null;
+  src_bbox?: [number, number, number, number] | null;
+  tgt_bbox?: [number, number, number, number] | null;
+}
+
+export function splitBoxTable(prompt: string): { caption: string; rows: BoxTableRow[] } | null {
+  for (let i = prompt.lastIndexOf("["); i >= 0; i = prompt.lastIndexOf("[", i - 1)) {
+    let v: unknown;
+    try {
+      v = JSON.parse(prompt.slice(i).trim());
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(v) || !v.length) continue;
+    const rows: BoxTableRow[] = [];
+    for (const r of v) {
+      if (!r || typeof r !== "object") return null;
+      const o = r as Record<string, unknown>;
+      if (typeof o.id !== "string") return null;
+      if (!Array.isArray(o.bbox) && !Array.isArray(o.src_bbox) && !Array.isArray(o.tgt_bbox)) return null;
+      rows.push({
+        id: o.id,
+        desc: typeof o.desc === "string" && o.desc ? o.desc : undefined,
+        bbox: o.bbox as BoxTableRow["bbox"],
+        from: o.from as BoxTableRow["from"],
+        src_bbox: o.src_bbox as BoxTableRow["src_bbox"],
+        tgt_bbox: o.tgt_bbox as BoxTableRow["tgt_bbox"],
+      });
+    }
+    return { caption: prompt.slice(0, i).trimEnd(), rows };
+  }
+  return null;
+}
+
 /** Composer state -> stable service request. */
-export function buildRequest(c: Composer, parentId?: string | null): GenerationRequest {
-  const maskValid = maskInUse(c);
+export function buildRequest(c: Composer, parentId?: string | null, model?: string | null): GenerationRequest {
+  // A painted mask is dropped for box models (no inpaint pass there): the job becomes an edit.
+  const maskValid = maskLive(c, model);
   const custom = c.resolution === "custom";
   // Inpaint and expand keep the source's shape; create, edit and combine take the chosen ratio.
   const shaped = !maskValid && !outpaintInUse(c);
   // Written by Prompt+ already (from the user's words, or from none: "" for a removal or Expand).
   const reviewed = c.enhancedFrom != null && !!c.prompt.trim();
   return {
-    prompt: c.prompt.trim(),
+    prompt: modelSupportsBoxes(model) ? appendBoxTable(c.prompt.trim(), boxRows(c)) : c.prompt.trim(),
     mode: composing(c) ? "compose" : c.mode,
     images: c.mode === "generate" && !composing(c) ? [] : c.refs.map((r) => r.source),
     mask: maskValid ? `input:${c.mask!.inputId}` : null,
@@ -167,7 +291,7 @@ export function buildRequest(c: Composer, parentId?: string | null): GenerationR
     client: "ui",
     parent_id: parentId ?? null,
     // A prompt Prompt+ wrote already is sent as it is, with the user's words kept beside it.
-    ...(reviewed ? { enhanced_from: c.enhancedFrom } : c.enhance ? { enhance: true, ...(c.enhanceDetail ? { enhance_detail: true } : {}) } : {}),
+    ...(reviewed ? { enhanced_from: c.enhancedFrom } : c.enhance && enhancerApplies(c, model) ? { enhance: true, ...(c.enhanceDetail ? { enhance_detail: true } : {}) } : {}),
   };
 }
 
@@ -183,8 +307,8 @@ export function wantsPromptReview(c: Composer): boolean {
 }
 
 /** The request that only writes the prompt (Prompt+ review). */
-export function reviewRequest(c: Composer): GenerationRequest {
-  return { ...buildRequest(c), enhance: true, enhance_only: true };
+export function reviewRequest(c: Composer, model?: string | null): GenerationRequest {
+  return { ...buildRequest(c, undefined, model), enhance: true, enhance_only: true };
 }
 
 /** The painted area in use is coloured marks (the prompt names them by colour). */
@@ -207,8 +331,19 @@ export function typedWords(c: Composer): string {
 
 /** False for a removal in a painted area, which needs no description, and for Expand, which
  * continues the scene (Prompt+ can write what the new areas show). */
-export function needsPrompt(c: Composer): boolean {
-  return !((maskInUse(c) && !c.mask!.marks && c.inpaintAction === "remove") || outpaintInUse(c));
+export function needsPrompt(c: Composer, model?: string | null): boolean {
+  // A removal in a painted area needs no description (the mask shows what goes) - except on a
+  // box model, whose mask is dropped: its removal degrades to an edit and needs the user's words.
+  const removal = maskInUse(c) && !c.mask!.marks && c.inpaintAction === "remove" && !modelSupportsBoxes(model);
+  return !(removal || outpaintInUse(c));
+}
+
+/** The prompt enhancer applies to every mode (a painted area and Expand get prompts of
+ * their own; in external mode the sidecar VLM writes them, the engine does not need an
+ * in-engine LLM for it). A BFL box model degrades its mask to an edit reference, which
+ * the enhancer covers as an edit. */
+export function enhancerApplies(_c: Composer, _model?: string | null): boolean {
+  return true;
 }
 
 /** Advanced fields that change how the model samples. They last for the session only: a value
@@ -1067,4 +1202,23 @@ export function jobStepText(j: Pick<JobView, "status" | "step">): string {
  * installer is shared with Settings and the first setup). */
 export function downloadIsFor(st: Pick<InstallStatus, "running" | "preset"> | null | undefined, preset: string): boolean {
   return !!st?.running && st.preset === preset;
+}
+
+/** The full external-engine definition for one selectable model: the gateway comes from the
+ * entry's override or the configured engine, the model, sample and VLM details from the entry
+ * (config `models`). */
+export function modelRequest(external: ExternalEngine, m: ExternalModel): ExternalEngine {
+  const r: ExternalEngine = { gateway: m.gateway ?? external.gateway, model: m.model, modelName: m.modelName, sample: m.sample };
+  if (m.vlm) r.vlm = m.vlm;
+  if (m.promptBundle) r.promptBundle = m.promptBundle;
+  return r;
+}
+
+/** The configured model entry that made a generation, matched on the model name recorded on it
+ * (the engine's own name). The full name is tried first, then the file stem, in case one
+ * side keeps the extension and the other does not. */
+export function entryForModel(models: ExternalModel[], model: string | null | undefined): ExternalModel | null {
+  if (!model) return null;
+  const stem = (s: string) => s.replace(/\.[^.]+$/, "");
+  return models.find((m) => m.modelName === model) ?? models.find((m) => stem(m.modelName) === stem(model)) ?? null;
 }

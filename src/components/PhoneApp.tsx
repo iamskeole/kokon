@@ -12,6 +12,7 @@ import { haptic } from "../lib/haptics";
 import { projectTitle, timeAgo } from "../lib/logic";
 import { native } from "../lib/native";
 import { deleteProject, deleteProjects, newProject, renameProject, setState, switchProject, useStore, type ProjectMeta } from "../lib/store";
+import { BoxEditor } from "./BoxEditor";
 import { Composer } from "./Composer";
 import { DevelopImg } from "./Develop";
 import { ExpandEditor } from "./ExpandEditor";
@@ -71,6 +72,7 @@ export function PhoneApp() {
       {library ? <Library /> : <ProjectScreen />}
       {overlay === "inpaint" && <InpaintEditor />}
       {overlay === "expand" && <ExpandEditor />}
+      {overlay === "boxes" && <BoxEditor />}
       <PhotoReview />
       <StatusTint />
     </div>
@@ -104,7 +106,7 @@ function ProjectScreen() {
       <div className="main">
         <Stage />
       </div>
-      {overlay !== "inpaint" && overlay !== "expand" && <Composer />}
+      {overlay !== "inpaint" && overlay !== "expand" && overlay !== "boxes" && <Composer />}
     </div>
   );
 }

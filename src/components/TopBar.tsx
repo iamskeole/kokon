@@ -19,6 +19,7 @@ import { IconButton, Popover } from "./ui";
 export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
   const connected = useStore((s) => s.connected);
   const server = useStore((s) => s.server);
+  const external = useStore((s) => s.external);
   const busy = useStore((s) => Object.values(s.jobs).some((j) => !["done", "failed", "cancelled"].includes(j.status)));
   let cls = "dot";
   let text = "Connecting";
@@ -28,20 +29,23 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
       case "ready":
         cls = "dot ready";
         text = busy ? "Working" : "Ready";
-        title = server.owned ? "Model loaded" : "Using an inference server that was already running";
+        title = server.owned ? "Model loaded" : "Loaded on demand: " + (server.model ?? "the model");
         break;
       case "starting":
         cls = "dot busy";
-        text = "Loading model";
+        text = server.model ? "Loading " + server.model : "Loading model";
         break;
       case "error":
         cls = "dot error";
         text = server.error?.message ?? "Inference server error";
-        title = isMissingModel(server.error) ? "Find or download the missing file" : "Open Diagnostics";
+        title = isMissingModel(server.error) && !external ? "Find or download the missing file" : "Open Diagnostics";
         break;
       default:
-        text = "Model not loaded";
-        title = "Click to load the model now";
+        text = external ? "No model loaded" : "Model not loaded";
+        // An externally managed engine loads on its own schedule (it loads when a job runs):
+        // this is a display, not a request. A click that asks the endpoint to load can evict
+        // whatever it is serving, so only Settings → Performance makes that explicit request.
+        title = external ? "The model loads when you generate an image" : "Click to load the model now";
     }
   }
   if (quiet && cls === "dot ready" && !busy) return null;
@@ -50,9 +54,9 @@ export function StatusIndicator({ quiet = false }: { quiet?: boolean }) {
       className="status"
       title={title}
       onClick={() => {
-        if (server.state === "error" && isMissingModel(server.error)) openModelSetup();
+        if (server.state === "error" && isMissingModel(server.error) && !external) openModelSetup();
         else if (server.state === "error") setState({ overlay: "settings" });
-        else if (server.state === "stopped" && connected) api.startBackend().then(refreshStatus, toastError);
+        else if (server.state === "stopped" && connected && !external) api.startBackend().then(refreshStatus, toastError);
       }}
     >
       {cls === "dot busy" || (cls === "dot ready" && busy) ? <SilkSpin size={18} /> : <span className={cls} />}

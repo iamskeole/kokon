@@ -1,12 +1,12 @@
-import { ArrowUp, Brush, Check, ChevronDown, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
+import { ArrowUp, Brush, Check, ChevronDown, Cpu, Expand, Eye, FolderOpen, Gauge, ImagePlus, Layers, Lightbulb, Maximize, Pencil, Settings, Settings2, SlidersHorizontal, Sparkles, Square, Undo2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
-import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, moveRef, needsPrompt, parseRatio, toggleLora, typedWords, wantsPromptReview, withActionVerb, type Ref } from "../lib/logic";
+import { activeLoras, activeOverrides, aspectLabel, buildRequest, composing, editing, enhancerApplies, expansionPixels, formatDuration, hasOutpaint, imageName, MAX_LORAS, modelRequest, modelSupportsBoxes, moveRef, needsPrompt, parseRatio, toggleLora, typedWords, wantsPromptReview, withActionVerb, type Ref } from "../lib/logic";
 import { native } from "../lib/native";
 import { haptic } from "../lib/haptics";
 import { inBrowser, useNarrow } from "../lib/platform";
 import {
-  addAsReference, addInputs, openEditor, cancelPromptReview, editShownImage, enhancerAvailable, focusPrompt, getState, itemSource, openSettings, selectedItem, sessionLabels, setProjectLoras, setState, startNewImage, submitComposer, toastError, undoEnhancedPrompt, updateComposer, useStore, type SessionItem,
+  addAsReference, addInputs, openEditor, cancelPromptReview, editShownImage, enhancerAvailable, focusPrompt, getState, itemSource, openSettings, refreshStatus, selectedItem, sessionLabels, setProjectLoras, setState, startNewImage, submitComposer, toastError, undoEnhancedPrompt, updateComposer, useStore, type SessionItem,
 } from "../lib/store";
 import type { InpaintAction, Plan, Quality } from "../lib/types";
 import { AdvancedPanel } from "./Advanced";
@@ -174,6 +174,7 @@ function TargetBar() {
   const session = useStore((s) => s.session);
   const nameOf = useRefNames();
   const narrow = useNarrow();
+  const boxesOn = modelSupportsBoxes(useStore((s) => s.external?.model));
 
   if (!c.refs.length) {
     if (!session.some((i) => i.gen || i.input)) return null;
@@ -204,6 +205,8 @@ function TargetBar() {
 
   const first = c.refs[0];
   const name = nameOf(first)?.toLowerCase() ?? (first.source.startsWith("gen:") ? "this result" : first.name);
+  // A painted mask only takes effect for models with an inpaint pass; for box models it
+  // degrades to an edit (the build would ignore it and re-denoise the whole image).
   const outPx = hasOutpaint(c.outpaint) ? expansionPixels(c.outpaint!, first.width, first.height) : null;
   const what =
     c.refs.length > 1 ? `Combining ${c.refs.length} images` : c.mask?.marks ? `Adding at the coloured marks on ${name}` : c.mask ? `${INPAINT_VERB[c.inpaintAction]} the painted area of ${name}` : outPx ? `Expanding ${name}` : `Editing ${name}`;
@@ -224,9 +227,16 @@ function TargetBar() {
       </span>
       <span className="spacer" />
       <span className="tool-group">
-        <button className={`tool ${c.mask ? "on" : ""}`} data-tour="paint" onClick={() => openEditor("inpaint")} title="Paint where things go (one colour each), or the area to change; the rest stays as it is">
-          <Brush size={14} /> <span className="lbl">{c.mask?.marks ? "Colours painted" : c.mask ? "Area painted" : "Paint area"}</span>
-        </button>
+        {!boxesOn && (
+          <button className={`tool ${c.mask ? "on" : ""}`} data-tour="paint" onClick={() => openEditor("inpaint")} title="Paint where things go (one colour each), or the area to change; the rest stays as it is">
+            <Brush size={14} /> <span className="lbl">{c.mask?.marks ? "Colours painted" : c.mask ? "Area painted" : "Paint area"}</span>
+          </button>
+        )}
+        {boxesOn && (
+          <button className="tool" onClick={() => setState({ overlay: "boxes" })} title="Layout boxes: draw rectangles to place, keep or remove things">
+            <Square size={14} /> <span className="lbl">Boxes</span>
+          </button>
+        )}
         {c.mask && (
           <button className="tool-x" title="Remove the painted area" onClick={() => updateComposer({ mask: null })}>
             <X size={13} />
@@ -315,12 +325,13 @@ function AddImage() {
 
 function usePlanPreview(): { plan: Plan | null; error: string | null } {
   const c = useStore((s) => s.composer);
+  const model = useStore((s) => s.external?.model);
   const connected = useStore((s) => s.connected);
   const [res, setRes] = useState<{ plan: Plan | null; error: string | null }>({ plan: null, error: null });
   useEffect(() => {
     if (!connected) return;
     const prompt = c.prompt.trim() || "image";
-    const req = { ...buildRequest(c), prompt };
+    const req = { ...buildRequest(c, undefined, model), prompt };
     let cancelled = false;
     const t = window.setTimeout(() => {
       api.plan(req).then(
@@ -488,6 +499,9 @@ function PromptContext() {
   );
 }
 
+/** Layout boxes: draw rectangles to place, keep or remove things. klein reads them as a JSON
+ * table at the end of the prompt (BFL's contract); other models would just see JSON, so the
+ * button appears for them never. */
 /** Under the prompt: the prompt in the box was written by Prompt+ from the user's words. */
 function EnhancedFrom({ words }: { words: string }) {
   return (
@@ -505,12 +519,17 @@ function EnhancedFrom({ words }: { words: string }) {
 
 export function Composer() {
   const c = useStore((s) => s.composer);
+  const external = useStore((s) => s.external);
+  const server = useStore((s) => s.server);
+  const models = useStore((s) => s.models);
   const hasProject = useStore((s) => s.session.length > 0);
   const { plan, error } = usePlanPreview();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const hasImages = c.refs.length > 0;
+  const model = useStore((s) => s.external?.model);
+  const boxesPillOn = modelSupportsBoxes(model) && c.refs.length === 0;
   const overrides = activeOverrides(c.advanced);
-  const canEnhance = useStore(enhancerAvailable);
+  const canEnhance = useStore(enhancerAvailable) && enhancerApplies(c, model);
   const newImage = !editing(c);
   // Prompt+ review: the prompt it is writing streams into the box, which is read-only meanwhile.
   const review = useStore((s) => s.review);
@@ -655,7 +674,7 @@ export function Composer() {
       className="send"
       title={wantsPromptReview(c) ? "Write the prompt with Prompt+ (Enter)" : newImage ? "Create (Enter)" : "Apply (Enter)"}
       aria-label={wantsPromptReview(c) ? "Write the prompt" : "Generate"}
-      disabled={!typedWords(c) && needsPrompt(c)}
+      disabled={!typedWords(c) && needsPrompt(c, model)}
       onClick={submit}
     >
       {wantsPromptReview(c) ? <WandSparkles size={17} strokeWidth={2.2} /> : <ArrowUp size={18} strokeWidth={2.4} />}
@@ -728,6 +747,42 @@ export function Composer() {
               {(close) => <ResolutionMenu plan={plan} close={close} />}
             </Popover>
 
+            {external && models.length > 0 && (
+              <Popover
+                trigger={(open, toggle) => (
+                  <button
+                    className={`pill ${open ? "on" : ""}`}
+                    onClick={toggle}
+                    title="Model: the model you picked. The engine loads it when you generate (or when you ask in Settings → Performance)."
+                  >
+                    <Cpu size={15} />
+                    <span className="lbl">{server.state === "starting" ? "Loading…" : models.find((m) => m.model === external.model)?.label ?? external.model}</span>
+                    <ChevronDown size={13} className="chev" />
+                  </button>
+                )}
+              >
+                {(close) =>
+                  models.map((m) => (
+                    <Option
+                      key={m.model}
+                      selected={m.model === external.model}
+                      label={m.label}
+                      sub={m.sub}
+                      onClick={() => {
+                        if (m.model === external.model) return close();
+                        if (server.state === "starting") return toastError(new Error("A model switch is already in progress"));
+                        const req = modelRequest(external, m);
+                        // Switching only records the pick; the engine is loaded by the next
+                        // generation. The server saves the config before answering, so the
+                        // picker can show the new model at once.
+                        api.switchModel(req).then(() => { setState({ external: req }); refreshStatus(); }, toastError).finally(close);
+                      }}
+                    />
+                  ))
+                }
+              </Popover>
+            )}
+
             <Popover
               trigger={(open, toggle) => (
                 <button className={`pill ${open ? "on" : ""}`} onClick={toggle} title="Quality">
@@ -743,6 +798,13 @@ export function Composer() {
             </Popover>
 
             {canEnhance && <PromptPlus />}
+
+            {boxesPillOn && (
+              <button className="pill" onClick={() => setState({ overlay: "boxes" })} title="Layout boxes: draw where new objects should appear in the image">
+                <Square size={14} />
+                <span className="lbl">Boxes{c.boxes.length ? ` ${c.boxes.length}` : ""}</span>
+              </button>
+            )}
 
             <LoraBadge />
 
