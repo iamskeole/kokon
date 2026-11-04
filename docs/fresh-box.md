@@ -138,11 +138,13 @@ directory. The exact engine invocations (verified):
   conditioner `Qwen3-VL-8B-Instruct` (Q4_K_M + mmproj-F16); VAE the
   texture-fix one. Same flag set as klein.
 
-The **klein serve script is a joint supervisor**: one process lifetime runs the
-engine *and* its PUP sidecar together, so the pair loads and dies as one
-(18–20 GB together). It also reads a one-word **policy file** (`protect-vllm`
-/ `take-gpu`): in `protect-vllm` it refuses to evict a resident heavy tenant
-instead of OOMing, and the gateway reports the refusal as a fast failure.
+The **klein serve script is a joint supervisor**: one process lifetime runs
+the engine *and* its PUP sidecar together, so the pair loads and dies as one
+(18–20 GB together) — the one thing the gateway cannot do natively (start
+two processes from one request). It is a thin launcher: it adopts a healthy
+pair, and its only GPU action is a last-resort zombie clear (it never stops
+anything the router knows about — the router is the sole eviction authority,
+see the gateway section).
 
 **llama.cpp** (the sidecars' named build — `build/bin/llama-server` with CUDA
 and vision):
@@ -208,33 +210,43 @@ routing:
           v: qwen3.8-27b
           cf: creative-fast     cs: creative-slow
         sets:
-          klein:  "k & p & v"
+          klein:  "k & p"
           qwen-t: "qt & pq"
           qwen-f: "qf & pqf"
-          small:  "(cf | cs) & v"
+          small:  "cf | cs"
 ```
 
 Three rules: a **set** declares which models may co-reside; it never starts
 anything. A request for a model **keeps every running model that sits in some
 set containing it and evicts the rest** (cheapest first, `evict_costs`, default
-1). A model that is a **leaf of no set at all** makes every request for it evict
-*everything* — so on this card, where one GPU holds one heavy model at a time,
-every model is a leaf of at least one set. The semantics:
+1). A model that is a **leaf of no set at all** is an *orphan*: a request for
+it evicts *everything* running. Here **vLLM is deliberately the only orphan** —
+a request for it reclaims the whole card, and (the part that matters) the
+daemon's **FIFO scheduler** (in stock since v225; the default, no config
+needed) **defers that request while any of them is still handling one** —
+journal: `queuing request for model … (would evict in-flight process)` — and
+retries on every completion. An in-flight request is never interrupted; the
+evictor waits. The sets:
 
-- `klein: k & p & v` — the klein engine, its PUP sidecar, and the chat model
-  may co-reside. The engine script's policy gate (above) handles the case where
-  all three would not actually fit, so the router's keep decision never OOMs.
+- `klein: k & p` — the klein engine plus its PUP sidecar. A klein request
+  evicts everything else, vLLM included: the card holds one heavy job, the
+  job runs, and the chat model comes back when a request for it reclaims the
+  card (warm boot ~60–90 s).
 - `qwen-t` / `qwen-f` — each qwen flavor is its engine plus its PUP door. The
-  two flavors never mix (different engine variants share one port anyway), and
-  each evicts everything else when requested.
-- `small: (cf | cs) & v` — one creative model and the chat model.
+  two flavors never mix (different engine variants share one port anyway),
+  and each evicts everything else when requested.
+- `small: cf | cs` — one creative writer; the two writers never share the
+  card (26B + 31B > 24 GB), and a creative request evicts vLLM and any image
+  pair too.
 
-Because one card can hold one heavy tenant, **vLLM is a leaf of two sets**
-(klein and small): the matrix can keep or evict it by context in a way the
-older groups router could not express. The deploy directory keeps the full
-write-up of the router, the live-change protocol, and a rollback note; the
-upstream docs (`docs/kb/guides/routing/groups-and-matrix.md`) describe the
-semantics generically.
+The router is the **sole eviction authority**: it stops what it evicts via
+each model's `cmdStop`, and the serve scripts no longer kill anything on
+their own — their only GPU action is a last-resort clear for out-of-state
+zombies that never touches vLLM. The deploy directory keeps the full
+write-up (router + scheduler + the wrapper contract + the live-change
+protocol); the upstream docs
+(`docs/kb/guides/routing/groups-and-matrix.md`) describe the semantics
+generically.
 
 Before any live use: `./llama-swap -config config.yaml -validate` (validates
 and exits).
@@ -305,6 +317,9 @@ VLM is part of the quality contract, not an optional garnish.
    show the matrix decisions, e.g.
    `matrix: model=kokon-turbo set=qwen-t … evict=[…] … cost=N` — that line is
    the proof the matrix router (not the groups fallback) is what decided.
+   The scheduler's own lines are Debug-level: `logLevel: debug` in a
+   candidate config shows the deferral behavior
+   (`queuing request for model … (would evict in-flight process)`).
 4. **Idle unload**: after 120 s without requests the pair's ports go quiet
    (TTL); the next request reloads it.
 
@@ -321,13 +336,16 @@ VLM is part of the quality contract, not an optional garnish.
   in-flight boot instead of evicting and relaunching (a 2026-11-04 incident:
   a wrapper parked in an eviction wait relaunched a model the router had just
   evicted, resurrecting it before its targets loaded).
-- **The policy file** (`protect-vllm`) is the operator's GPU priority knob for
-  the klein pair; flip it to `take-gpu` to let a klein request evict a
-  resident heavy tenant.
-- **Rollback ladder** (all one config swap each, in the deploy directory):
-  the current config → the previous versioned config (kept as
-  `config.yaml.<previous>`) → the engine-rollback notes in the deploy
-  directory cover stock ↔ the older build.
+- **The wrappers are thin.** The serve scripts adopt a healthy co-resident
+  and otherwise only run the last-resort zombie clear (never vLLM). There is
+  no policy file any more: the sets above are the policy, and the scheduler
+  makes every conflict a deferrable, in-flight-safe eviction.
+- **Rollback ladder** (in the deploy directory): the current config → the
+  previous versioned config (`config.yaml.<previous>`) → the engine-rollback
+  notes cover stock ↔ the older build. If a rollback crosses the point where
+  the wrapper scripts changed generation (a set that contains vLLM needs the
+  older, gate-era scripts), restore both the config and the script snapshot
+  together — the deploy directory keeps the pre-change scripts.
 - **A window is a script, not a habit**: self-deadline, a separate watcher
   process as backstop, and the marker written only after the box is back to
   its known-good state.

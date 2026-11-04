@@ -244,3 +244,52 @@ it from me.
       which does not preempt. If the owner ever wants "chat can always cut a long
       creative job", that is a feature to ask upstream for (priority preemption with
       a drain deadline), not something to bolt on here.
+
+## implemented — 2026-11-04 (autonomy span, after the owner's "proceed")
+
+All of unit 1's files landed (host side; the llama-swap tree stayed clean):
+
+- **`config.yaml.stock-016`** — stock-015 with `klein: "k & p"`,
+  `small: "cf | cs"`, comments rewritten to the router+scheduler model
+  (vLLM the only orphan; the wrapper contract; deltas vs 015).
+  `llama-swap -validate`: valid, 9 models; all 9 model blocks identical
+  to stock-015 except descriptions (byte-level checked).
+  **`config.yaml.window-020`** = stock-016 + `logLevel: debug`.
+- **`gpu-empty.sh`** (new) — the last-resort clear: 9100/9101/39160/
+  39170/39171/39175/39176/39177 SIGTERM→10 s→SIGKILL, wait for
+  nvidia-smi 0 apps + <1500 MiB, **never :18020**, no policy, no docker
+  touches. Its wait doubles as the 22:46-style in-flight-unload grace.
+- **Wrappers made thin** (all syntax-checked): `vllm-serve.sh` (the
+  fully-down branch now `gpu-empty.sh 900`; adoption + booting branch
+  keep); `creative-fast/slow.sh` (`gpu-empty 600`); `sd-cpp-serve-qwen-
+  stock.sh` + `sd-cpp-serve-klein-stock.sh` (the gate block and
+  `heavy_up` deleted; fresh-boot branch `gpu-empty 300`); the three PUP
+  doors (`qwen-pup-serve-9.sh`, `qwen-pup-serve.sh`, `pup-serve.sh`) got
+  the **vLLM fit-check** — 30 s wait for a mid-stop, then `exit 1` with
+  the unload hint; never stops vLLM.
+- **`evict-gpu.sh` re-headered MANUAL** (whole card incl. vLLM; no
+  automatic caller); **`evict-kokon.sh` and `kokon-policy.txt`
+  deleted**; the complete gate-era generation (11 files) snapshotted at
+  **`refs/pre-020/`** for the cross-generation rollback.
+- **Docs**: `MATRIX.md` rewritten (the three rules; a new scheduler
+  section — in-flight deferral, TTL skip, non-preemptive, the boundary,
+  the knobs; the wrapper contract; the new-set recipe; live-change; the
+  vllm-serve trap; the rollback incl. the pre-020 rule); `README.local.
+  md` (the swap section and the routing paragraph); `docs/fresh-box.md`
+  (routing block → stock-016, the supervisor paragraph, the ops
+  bullets); `QWEN-ROLLBACK.md` + `KLEIN-ROLLBACK.md` got the
+  016-boundary note (config-only rollback is valid within a wrapper
+  generation; a v-containing klein set needs the `refs/pre-020/`
+  scripts too).
+
+**Next (unit 3):** the `jobs/m020-*` family, then launch: P1 swap to
+window-020 → P2 canonical vLLM revival → P3 klein job with vLLM
+resident (journal `evict=[qwen3.8-27b]`, job completes — the refusal is
+dead) → P4 turbo job (9B door cmdline proof) → **P4-def:** a vLLM
+1-token request mid-quality-job (journal "would evict in-flight
+process"; the job unharmed; the response after the job + boot) →
+**P5-def:** a ~1200-token vLLM stream in flight, a 1-token turbo-door
+request through the gateway parked until the stream ends (the reverse
+direction) → P6 vLLM reclaim of an idle qwen pair (journal shows the
+orphan set) → P7 teardown + active-klein + DONE last. Restore target:
+stock-015 **and** the `refs/pre-020/` wrapper generation.
