@@ -102,7 +102,17 @@ error until a main request evicts it — the two simply cannot co-reside.
   scope here; the window proves the model works, not that the agent uses
   it.
 - **The old task text said :18022** — superseded by the same-port
-  decision above; every artifact in this task is built same-port.
+  decision above; every artifact in this task is built same-port.- **KV headroom (a1 measured, 2026-11-04): keep `7372M` as-is.** The
+  vision variant totals **24128 MiB** (448 MiB headroom to the 24576
+  ceiling) vs the main variant's **23236 MiB** (1340) — the vision tower
+  costs ~900 MiB. `--kv-cache-memory-bytes` is a **cap, not a target**
+  (vLLM allocates at most that much), and `MAX_SEQS=2` bounds the
+  batch spikes the comment worries about, so the tighter headroom is
+  acceptable; the measured 448 MiB is recorded here as the source. If a
+  concurrent image+text load ever OOMs, the knob to turn is lowering
+  the cap (vLLM then auto-caps `max_num_seqs`/`max_model_len`), and the
+  number gets re-measured with its source at that point.
+
 
 ## Progress (2026-11-04)
 
@@ -174,6 +184,107 @@ error until a main request evicts it — the two simply cannot co-reside.
   budget — the no-second-boot invariant holds even when a same-name
   process is alive and unhealthy. The main wrapper's LAUNCH path is
   covered by the window itself (P3/P5 invoke it for real).
+
+## Progress (continued — wrapper hardening, attempts 1-2, 2026-11-04)
+
+**m021 attempt 1 (17:32–17:38, FAIL at 345 s) — the vision variant is
+proven end-to-end; the failure was a test assertion plus a real wrapper
+defect.**
+
+- **The vision variant works.** P2's request booted it through the
+  router on :18020: boot 188 s (engine init 129.82 s incl. 75.97 s
+  compilation; the port binds only at the *end* of init — "Application
+  startup complete"), `/v1/models` returned **exactly**
+  `['qwen3.8-27b-vision']` (max_model_len 131072, fp8 KV 7372 MiB as
+  configured, no `language_model_only`), the 1-token completion was 200.
+  VRAM: 24128 MiB (see the KV decision).
+- **P2's assertion was wrong (our bug).** It demanded the set line
+  `matrix: model=… set= dsl="" … cost=0`, which v269 prints only for an
+  orphan request **with evict targets**; a box-empty orphan takes a fast
+  path that prints no set line at all (`matrix: model=X starting (no
+  models running)` + `starting swap for model X, evicting []`). Fixed to
+  that shape and dry-run against a1's own journal before relaunch
+  (the standing discipline that caught the m020 bugs).
+- **The wrapper killed a healthy, already-serving process (its bug —
+  the serious one).** a1's boot took 188 s; the wrapper's LAUNCH loop
+  declared its child "stuck" (no port holder, no fresh engine core)
+  from t+1 and the 90 s stuck-kill fired at t+191 — **4 s after the
+  port bound and the process was healthy and serving** (the job got a
+  200 in that window; the EngineCore log shows the abort at the kill
+  moment). SLOG tick arithmetic decoded it: the kill line's "173" was
+  the tick counter (191 s / 173 ticks), `gone()` had in fact been false
+  for ticks 91–172 (a fresh `VLLM::EngineCore` was visible) and flipped
+  true only in a 2–4 s microsecond state right after bind — a window
+  that does **not** reproduce when the identical checks run from the
+  daemon's own context (a systemd-user-service probe in the daemon's
+  exact netns/pidns sees its child's socket and core fine; the daemon
+  has no namespace directives). Root cause: a transient detection gap,
+  plus a threshold shorter than vLLM 0.27's own boot time.
+- **The hardening (both production wrappers, `bash -n` clean):**
+  (a) `gone()` is now health-aware — a 200 on `/health` outranks every
+  absence heuristic; (b) the stuck-kill threshold is
+  `STUCK_KILL_SECS=1200` (the daemon's own `healthCheckTimeout` — the
+  daemon gives a boot 20 minutes; the wrapper must never give up before
+  it) and fires only while `gone()` (health-aware) still holds; (c)
+  from 60 s, any sustained `gone` window logs **forensics every 5 s**
+  (health code, port pid, the raw `ss -ltnp` line, the engine-core
+  pid) into the SLOG, so the next a1-class event is self-documenting.
+  A healthy or serving process is now structurally unkillable by the
+  wrapper.
+- **Restore bug (the old `m021-restore`):** its service-health probe hit
+  `/api/v1/status` unauthenticated → 401 (the endpoint requires the
+  bearer token even for liveness) → read as "down" → needless
+  `docker restart kokon` (~1 min of service outage). Fixed: token first,
+  auth-aware probe, tokenless root endpoint as fallback. a2's restore
+  ran the fixed path: no restart.
+
+**m021 attempt 2 (17:47–17:50, FAIL at 180 s) — a generation mismatch,
+not a product problem.** a1's restore correctly rolled the stable-dir
+files back to the pre-021 generation; a2's *new* vision wrapper then
+launched the *old* `serve-vision.sh`/`start_qwen.sh`, which have no
+`SERVED_NAME`/`VISION` gate — so the "vision" request booted the **main
+text variant** (the boot log proves it: `served_model_name=qwen3.8-27b`,
+`--language-model-only`). The 404 `The model 'qwen3.8-27b-vision' does
+not exist.` was the correct behavior of a main-variant process; a
+second subtlety cost the single-shot request: vLLM 0.27 binds its port
+only at the end of a 101–130 s init and the served model can 404 for a
+few seconds after "Application startup complete". Fixes: (a)
+`refs/post-021/` — a snapshot of the **post**-021 generation (the
+stable-dir files, reconstructed byte-exact from this session's transcript
+edit records and verified by dry-running the assembled argv against
+a1's actual boot args), re-applied by the job at **P0b of every
+attempt**; the restore keeps rolling back to `refs/thin-021/` and now
+`rm -f`s the new `vllm-serve-vision.sh`; (b) the job's one-token
+requests are now a bounded retry loop (first attempt blocks up to
+1500 s through the gateway's health-gated proxy; then 25 × 60 s);
+(c) the 401 noise on `/v1/models` in the boot log is the daemon's
+keyless discovery probe — cosmetic, not a key failure (the
+completion request got past auth).
+
+**Rehearsal round 2 (the hardened kit, isolated).** All eight scenarios
+re-ran on a fresh kit with rehearsal-only served names and a throwaway
+port — a first same-box attempt was contaminated for exactly the reason
+the name anchoring exists: the **production** main vLLM on this box
+matches the main wrapper's pattern (it is, by definition, "ours"), so a
+rehearsal must never reuse a name that runs in production here.
+Results, all as designed: R1 LAUNCH-from-down → `saw_mine=1` → SIGTERM →
+exit 0; R3 ADOPT-at-entry → release on death; R2 foreign holds at entry
+→ dies t+10 → LAUNCH → adopt; R4 child aborts t+1 + foreign appears in
+grace → **exit 0 without adopting, foreign survives** (the a2 shape);
+R5 main-derivation LAUNCH clean; R6 foreign holds forever → exit 1
+naming the holder, foreign untouched; R7 **the a1-killer shape scaled**
+(slow bind at t+38 with no core visible before it, threshold 60) →
+**no kill, no forensics, adopted** — the old 90 s threshold would have
+killed this; R8 a child that never binds → three forensics lines
+(health 000, empty port, raw `ss` header-only, core pid) then the kill
+at t+76 → exit 1. The kill path and its forensic trail work; the
+a1-shape cannot be re-killed.
+
+**State before attempt 3:** on-disk deploy-dir wrappers = the hardened
+pair; `refs/thin-021/` = pre-021 (rollback), `refs/post-021/` = the
+tested generation (5 files; re-applied at P0b); stable dir = pre-021
+(by design); `config.yaml == stock-016` (LIVE); the main variant is
+serving this session; window-021 validates "10 model(s), 0 peer(s)".
 
 ## Acceptance criteria
 
