@@ -376,3 +376,83 @@ be re-applied.
 
 **Attempt 2** launches with the same window plan; restore target =
 stock-015 + the thin generation.
+
+
+## attempt 2 (window 10:47-11:12 UTC; FAIL at P4d after 1441 s; the wrapper's blind spot)
+
+**P1-P3 all passed, including the task's headline proof for the first
+time:** with vLLM (22-23 GB) resident, a klein job completed in 25 s -
+journal: `matrix: model=kokon-klein set=klein dsl="k & p" evict=[qwen3.8-27b]
+target=[kokon-klein kokon-pup] cost=1` - and vLLM later reclaimed its slot
+via the `auto:orphans` set. The re-entrant second supervisor instance
+worked as designed (the `pup` cmd spawned, detected the live pair,
+joined). The turbo job (P4) completed in 31 s (9B-Q8 door pid proven from
+the process list).
+
+**P4d failed for three compounding reasons - only one of them a bug:**
+
+1. **The 1-token vLLM request landed in the enhance->img_gen gap** (job
+   10:56:22; enhance 10:56:36-40; the request reached the router at
+   10:56:57, after enhance had drained). At that moment neither the door
+   nor the engine held a *sustained* in-flight request - qwen generation
+   is submit-and-poll: the journal shows ~1 req/s to the engine, each
+   <50 ms, gaps of 1 s - so the FIFO deferral correctly did NOT apply
+   and the router started the vLLM swap, evicting
+   `[kokon-full kokon-pup-qwen-f]`. This is the **A-boundary** flagged in
+   the design: deferral covers in-flight request windows, not
+   submit-and-poll generation. On this 24 GB card the two cannot co-reside
+   anyway (27B + any engine > 24 GB), so the interruption is the *correct*
+   policy (chat wins), not a scheduler error - but the test had assumed
+   deferral. **Design note for MATRIX.md**: on the image side, "busy" =
+   sustained HTTP windows (VLM enhance, vLLM streams) only, not polling.
+2. **vLLM was healthy for exactly one second** (10:57:53 -> :54). The
+   job's 60 s retry (drained 10:57:54) immediately evicted vLLM again
+   (journal: `starting swap ... evicting [qwen3.8-27b]`). The vLLM
+   process: EngineCore force-killed in <1 s (the GPU freed instantly -
+   the "no compute apps" the owner saw for the next 15 minutes), but the
+   API server hung at "shutting down FastAPI HTTP server" until
+   do_stop's +30 s SIGKILL backstop (a vLLM 0.11.1 shutdown-path quirk;
+   future upstream item, no action on our side).
+3. **The real bug - my wrapper's 900 s health blind loop.** The 1-second
+   200 window fell between the wrapper's 5 s /health ticks, so it never
+   saw a 200 and kept polling a dead port until the post-launch loop's
+   900 s expiry (11:12:03), then `exit 1`. The router's `sendStopSignal`
+   runs `cmdStop` but does NOT signal the tracked wrapper process - the
+   blocked swap waited for the wrapper to exit on its own. The job had
+   meanwhile burned its 900 s service `EXTERNAL_LOAD_TIMEOUT` (failed
+   11:12:10, 7 s after the wrapper finally released the swap). Under the
+   old design this same 1-second window would have cost every subsequent
+   swap on the card 15 minutes.
+
+**The fix (implemented 2026-11-04, rehearsed, ready for attempt 3):** the
+gateway launch path no longer detaches into a systemd scope. `serve.sh`
+(and `serve-vision.sh`, task-021) gains `start --no-scope`: identical
+env/args/`start_qwen.sh`, but it **execs** into the venv vllm, so the
+subshell the wrapper spawns *is* the vllm process - the wrapper becomes
+vllm's **direct parent** and watches the child process (`kill -0`)
+instead of health: death is visible on any timescale, group signals reach
+vllm directly. The scope path stays for human launches (terminal-death
+history). Rehearsal against a fake vllm on :18099 (four scenarios): the
+a2 replay (1 s 200 window + SIGTERM) -> wrapper exits 0 **1 s** after
+death (was 900 s); early crash (port never bound) -> exit 1 promptly;
+foreign boot appearing mid-launch -> adopt + watch, exit 0 on its death;
+stuck launch (no port for 90 s) -> child tree killed, exit 1. Rehearsal
+also caught the 1-s tick on the port latch (a 5 s poll missed a 2 s port
+lifetime - the same failure class one level down). `refs/thin-020/`
+re-synced with the parent wrapper; the daemon's config hot-reload picks
+the new script up on the next window.
+
+**Test redesign - P4d becomes "chat wins; the job must recover"** (the
+deferral semantics it assumed do not apply to submit-and-poll
+generation): the 1-token vLLM request is fired mid-generation; the
+expected and asserted outcome is the pair evicted, vLLM boots and
+answers, the job's 60 s retries take the card back, the pair reloads,
+and the job ends **DONE** - which now also *proves* the new wrapper
+unblocks the vLLM stop in ~30 s (a2's 15-minute dead stretch becomes a
+~3-minute recovery). Journal asserts: vLLM swap start required; the
+deferral line is NOTE-level (present or not depending on timing); the
+job's take-back line (`evicting [qwen3.8-27b]`) is NOTE-level. P5d (busy
+vLLM stream -> door deferral) is unchanged, fire moved 15 s -> 8 s for a
+tighter stream hit. Restore unchanged (stock-015 + thin-020).
+
+**Attempt 3** re-runs the same window plan with the new wrapper.
