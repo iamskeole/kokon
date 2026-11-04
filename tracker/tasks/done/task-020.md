@@ -253,6 +253,15 @@ it from me.
   A-boundary, documented in `MATRIX.md`). Owner decision point: keep
   chat-wins (stock behavior, accepted here) or fail-the-chat-instead (needs
   router awareness of image jobs — a non-stock feature).
+- **Chat priority — RESOLVED (owner, 2026-11-04): keep the stock behavior.**
+  The owner accepts the compromise (a vLLM request mid-image-job fails the
+  job cleanly; the box recovers) to get the current work out the door. The
+  no-fork alternative — a CPU-only "hold" sidecar member of each image set
+  that the service keeps a request open against for the job's lifetime,
+  making the stock in-flight counter protect the set — is documented in
+  **parked task-023** (owner-triggered: only if concurrent use becomes a
+  real problem; the cleaner long-term path is an upstream lease feature,
+  a candidate to ride the task-017 PR).
 - **API-key consolidation → task-022 (owner question, 2026-11-04):** the
   owner asked whether the vLLM key can move to the gateway. Answer: the
   v269 gateway forwards the client `Authorization` as-is (no per-upstream
