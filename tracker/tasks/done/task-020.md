@@ -244,6 +244,24 @@ it from me.
       which does not preempt. If the owner ever wants "chat can always cut a long
       creative job", that is a feature to ask upstream for (priority preemption with
       a drain deadline), not something to bolt on here.
+- **Chat-priority is the measured product fact (a3/a4/a6):** an image job is
+  submit-and-poll, so a chat (vLLM) request arriving mid-job evicts the pair
+  and the job fails cleanly with `lost track of the job` — no OOM, box
+  recovers, the pair is reloaded by the job's own retry (the "take-back").
+  The FIFO deferral protects only sustained in-flight requests (a vLLM
+  stream, a VLM enhance) — never the gaps of a submit-and-poll client (the
+  A-boundary, documented in `MATRIX.md`). Owner decision point: keep
+  chat-wins (stock behavior, accepted here) or fail-the-chat-instead (needs
+  router awareness of image jobs — a non-stock feature).
+- **API-key consolidation → task-022 (owner question, 2026-11-04):** the
+  owner asked whether the vLLM key can move to the gateway. Answer: the
+  v269 gateway forwards the client `Authorization` as-is (no per-upstream
+  key field), so a single gateway key works iff the upstream is keyless or
+  shares the exact key. Target topology (all engines 127.0.0.1-only,
+  gateway the sole LAN door with one key) is scoped in task-022 with two
+  owner decisions (vLLM keyless-on-loopback vs shared key; kokon UI
+  :39152 stay 0.0.0.0 or loopback-only). Not done mid-window (vLLM is
+  this session's runtime).
 
 ## implemented — 2026-11-04 (autonomy span, after the owner's "proceed")
 
@@ -642,3 +660,59 @@ finding, fixed in the window design (a6).
   class (canonical vs daemon-launched vLLM during the restore); the
   surviving vLLM (1390317) enforces the correct key. Cosmetic; the
   one-door topology (task-022) eliminates the whole class.
+
+## window attempt 6 — 2026-11-04 14:41-14:52 (DONE, 631 s) — the box is on stock-016
+
+- **P2**: 2-min fallback → canonical start 14:43:28; the daemon's own
+  invocation (the route probe) raced it — child hit the port-held guard,
+  **adopted the canonical boot at t+15 s** (the grace), healthy
+  through the gateway 14:44:21.
+- **P3 (headline)**: klein done 14:44:47 (26 s); journal 14:44:21
+  `matrix: model=kokon-klein set=klein dsl="k & p" evict=[qwen3.8-27b]`
+  — the klein pair evicted a RESIDENT vLLM to run.
+- **P4**: turbo done 14:45:22; door = 9B Q8_0 (pid 1410768, 10.9 GB).
+- **P4d (chat priority, complete)**: canary 200 in 11 s (pair warm);
+  job seed 22; vLLM request 14:46:0x → **14:46:04 `starting swap for
+  model qwen3.8-27b, evicting [kokon-full kokon-pup-qwen-f]`**; vLLM
+  answered 60 s after the request; the job's retry took the card back
+  **14:47:02 (`queued request for model kokon-full now starting swap,
+  evicting [qwen3.8-27b]`)**; **the job failed 10 s after the vLLM
+  answer with exactly `generation_failed: The inference server lost
+  track of the job (it may have restarted).`** — the expected
+  chat-priority semantics; box recovered (pair reloaded, vLLM down,
+  ports free).
+- **P5d (reverse deferral, complete)**: vLLM canary 200 in 41 s (cold
+  boot absorbed); stream in flight; **14:48:01 `queuing request for
+  model kokon-pup-qwen (would evict in-flight process)`** → stream
+  landed intact 14:48:12 (6122 chars) → **14:48:12 `queued request for
+  model kokon-pup-qwen now starting swap, evicting [qwen3.8-27b]`** —
+  the deferred request released in the same second the stream ended;
+  vLLM clean exit 14:48:14; the deferred door answered 10 s later.
+- **P6 (orphan reclaim)**: idle turbo door resident; vLLM request
+  14:48:23 → **`matrix: model=qwen3.8-27b set= dsl="" evict=[kokon-pup-qwen]
+  cost=0`** — immediate eviction, no deferral (an orphan). Note: v269
+  prints the orphan set as EMPTY — the `auto:orphans` name never
+  appears in the journal; the window's earlier grep pattern was wrong
+  (fixed in `m020-test.sh`).
+- **P7 (cutover)**: stock-016 live 14:49:17; the reload cycled vLLM;
+  2-min wait → canonical start 14:51:28 (the daemon's invocation raced
+  again, adopted at t+15 s); vLLM healthy and serving this session
+  (pid 1417932, 23.2 GB); final state verified: `config.yaml ==
+  stock-016`, active=klein, all image ports free.
+- **Self-log (the forensics that was missing in a2/a3):** six wrapper
+  invocations across the window, all clean exits, both canonical-race
+  shapes absorbed by the 90 s concurrent-boot grace, every stop
+  propagating in <50 s. The a3 12:49:00 one-off `exit status 1` class
+  never recurred — empirically closed.
+- **Product facts and journal formats** from a3-a6 are now in
+  `MATRIX.md` (deploy dir): the A-boundary (deferral does not protect
+  submit-and-poll clients → chat wins a mid-job conflict by design),
+  the three journal line shapes, and the cold-page-cache load hazard
+  (canary preload through the router's health endpoint).
+
+**Task-020: DONE.** Acceptance criteria met (all window phases proven
+live; wrappers make no out-of-band kills; policy gates retired;
+vLLM a pure orphan under stock v269; cutover to `config.yaml.stock-016`
+completed and verified; rollback ladders recorded). Remaining owner
+decision points (non-blocking): chat-priority vs fail-the-chat (above)
+and the task-022 one-door topology.
