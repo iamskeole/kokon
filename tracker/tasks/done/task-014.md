@@ -288,3 +288,21 @@ rule).
   closes in STATUS.md with the visual-confirmation caveat. G2 (qwen set)
   and the qwen half of G5 are satisfied by this task's repo side +
   cutover; G5's remaining half (if any) and G6+ go to WP4.
+
+## Closed — owner visual confirmation (2026-11-04)
+
+The owner inspected the renders on his phone (via the pi bridge):
+- **Canary pair** (`/tmp/qwabl5/legC/`) and **full standing set**
+  (`/tmp/qwabl5/img-f*` vs `img-g*`): "images look good and virtually
+  indistinguishable between pup quants" — the Q4 forced by the Q8 OOM
+  costs no visible quality; the 9B quants are at parity with each other.
+- The enhanced prompts (all ten, linked for review) also pass.
+- **Verdict: the klein PUP is locked for qwen generation** (and stays
+  the klein sidecar). The 9B doors as live in `config.yaml.stock-014`
+  — now carried by `stock-015` (routing-only change) — are the final
+  configuration. D-QW is closed with no caveat: the 8B rollback
+  (`config.yaml.stock-013`) remains available as an escape hatch, not
+  a pending outcome.
+- The inspection also produced the input for **task-019** (parked):
+  one shared PUP sidecar process across all image families — the
+  quant-parity finding is the prerequisite it needed.
