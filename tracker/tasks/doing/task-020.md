@@ -456,3 +456,88 @@ vLLM stream -> door deferral) is unchanged, fire moved 15 s -> 8 s for a
 tighter stream hit. Restore unchanged (stock-015 + thin-020).
 
 **Attempt 3** re-runs the same window plan with the new wrapper.
+
+
+**Window attempt 3 (12:43:53-12:53:38, FAIL @ P4d, 585 s)** — passed P1-P4
+again and produced the decisive semantics discovery that redefined the
+rest of the window:
+
+- **The 12:46:04 race (new wrapper finding, fixed).** The job's 2-minute
+  fallback started vLLM canonically (scope; venv 1321104, port bound early
+  by the venv fork) at the same moment the daemon ran the new wrapper;
+  the wrapper's child hit serve.sh's port-held guard and aborted in ~2 s,
+  orphaning the sibling boot. Fix: after a fast child exit with
+  `saw_port=0`, the wrapper now watches **90 s for a concurrent boot** and
+  adopts it (exit 0 only when that boot later dies). Rehearsal S6 (fake
+  vllm, exact shape) passes: adopt at t+6 s, exit 0 on its death. The
+  12:46:19 retry hit the WAIT branch and adopted the same boot; healthy
+  28 s later.
+- **P3 (headline, passed again)**: klein job done in 25 s with vLLM
+  resident; journal `matrix: model=kokon-klein set=klein dsl="k & p"
+  evict=[qwen3.8-27b] target=[kokon-klein kokon-pup] cost=1`.
+- **P4 (passed)**: turbo job 31 s; door pid 1322954 = the 9B Q8_0 PUP
+  (the task-014 production door).
+- **P4d failed — and correctly so, under the OLD test design.** The
+  1-token vLLM request (12:48:18, 0 s router gap) evicted the generating
+  pair (`starting swap for model qwen3.8-27b, evicting [kokon-full
+  kokon-pup-qwen-f]`, both "exited cleanly"); vLLM booted in 38 s (the
+  direct-parent wrapper's child 1324063; the stop at 12:48:57 → process
+  gone by 12:49:00, seconds — the a2 15-minute class is dead) and
+  answered; the job's retry took the card back the same second
+  (`evicting [qwen3.8-27b]`); kokon-full reloaded 12:49:00-08; and **the
+  job FAILED 12:49:08 with "The inference server lost track of the job
+  (it may have restarted)"**. The old P4d asserted the job would end
+  DONE — and that recovery is **impossible**: the service's img_gen is
+  submit-and-poll against the engine's job table; when the engine process
+  dies the job table dies with it, and the service has no resume path (a
+  restarted engine cannot continue a generation it no longer knows).
+  Since chat and image cannot co-reside on this 24 GB card at all, "the
+  chat request wins; the job fails clean (no OOM, no zombies) and the box
+  recovers in ~50 s" IS the product behavior on this box.
+- **OPEN mystery (instrumented for a4)**: the 12:49:00 journal line
+  `process stopped by llama-swap: exit status 1` indicates wrapper #3
+  self-exited 1 ~3 s after the stop signal, even though its child WAS the
+  live vllm (port bound ~10 s at the 1-s tick — `saw_port` should have
+  latched). The daemon journal does not carry cmd stdout (v269: in-memory
+  ring buffer only), so the wrapper now keeps a **persistent self-log**
+  (`/tmp/vllm-serve.log`: every branch decision, child pid, exit rc,
+  `saw_port` at exit; die() collects it into the workdir, boot log tail
+  included) — attempt 4 will settle it directly.
+- **401 discovery root-caused (cosmetic)**: the daemon's capcompat
+  `/v1/models` probe 401s only when vLLM was launched canonically (key
+  from `api_key.txt`) while the daemon config carries a different env
+  key — two sources, drift. Daemon-launched vLLM (window path) matches
+  and discovery works. Resolved by the owner's single-key proposal →
+  **task-022**.
+
+**Test redesign (attempt 4).** P4d asserts the true semantics: vLLM 200;
+job ends **FAILED** (lost-track class; `done` would die the window — no
+interruption proven); the take-back line `evicting [qwen3.8-27b]`
+required; vLLM down + pair port resident at the end (box recovered);
+job-error field + service-log lines collected. P5d adapts to the
+post-P4d state (pair resident, vLLM down): the 1200-token request fires
+first (it boots vLLM), the gate is `vllm_present` (healthy = in-flight;
+the request is non-streaming so the response file stays empty until the
+end — a file-size gate cannot work), the door request fires 5 s into the
+generation window; plus a stronger journal proof: the door's `starting
+swap` timestamp must be ≥ the stream's end. `refs/thin-020/` re-synced
+and **extended to 12 files** (adds the stable `serve.sh` /
+`serve-vision.sh` with `--no-scope`); the restore covers them. The deep
+rollback (`refs/pre-020/`) predates `--no-scope`; the scope path of
+serve.sh is behaviour-identical to pre-020 (the new code is an additive
+branch on a new flag + a log-tag fix) and the exact reversion (delete
+the `if [ "$no_scope" -eq 1 ]` block, restore the plain separator line)
+is recorded here so a byte-perfect pre-020 serve.sh is reconstructible.
+
+**Owner decision points accumulated** (both go into the post-window
+report): (1) chat-priority semantics — stock behavior: a chat request
+mid-image-job fails the job (cleanly, recoverable box); the alternative
+(defer/fail the chat instead) needs the router to know about image jobs —
+a non-stock feature, upstream-PR candidate (task-017 era). (2) the
+owner's one-door single-key topology — new **task-022** (vLLM
+loopback-only + keyless; gateway the sole LAN door with one key; all
+engine binds 127.0.0.1; works on stock v269 because the gateway
+forwards the client Authorization as-is and v269 has no per-upstream key
+injection).
+
+**Attempt 4** re-runs the window with the redesigned P4d/P5d.
