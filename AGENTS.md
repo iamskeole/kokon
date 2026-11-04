@@ -174,6 +174,7 @@ minutes (real inference, benchmarks, release builds) is run by the maintainer: h
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, tests, code style, licences |
 | [docs/engineering-notes.md](docs/engineering-notes.md) | architecture, module map, verified backend facts, engine updates |
 | [docs/platforms.md](docs/platforms.md), [docs/linux.md](docs/linux.md) | per-platform notes; Linux plan and the 0.11 server design |
+| [docs/fresh-box.md](docs/fresh-box.md) | the whole stack on a new machine (fork layout): the pinned gateway + matrix config, the stock engines, the models, the service image |
 | [docs/releasing.md](docs/releasing.md) | publishing a version (maintainer) |
 | [docs/prompting.md](docs/prompting.md), [docs/showcase-prompts.md](docs/showcase-prompts.md) | prompt guide and examples |
 | [marketing/](marketing/) | videos, showcase images, release notes per version |
