@@ -151,8 +151,44 @@ Both the klein and the qwen jobs consume it.
   added a `[ -s ]` check on the copied render. Evidence preserved at
   `/tmp/m015-attempt1/` and `/tmp/m015-attempt2/` (digests carry the
   matrix journal lines for both attempts). Window re-running (attempt
-  3) — P5, the vLLM-reclaims-the-resident-qwen-pair test, is the only
-  step not yet proven.
+  3; P5, the vLLM-reclaims-the-resident-qwen-pair test, was the only
+  step not yet proven).
+- 2026-11-04 (window attempt 3, 06:38–06:43, **DONE in 255 s — task
+  complete, stock-015 is now production**): all six phases passed.
+  P1 swap + reload in 8 s. P2 vLLM revived through the matrix gateway
+  (1-token completion 200; canonical start after the 2-min daemon
+  grace). P3 the klein protect-vllm regression under the matrix: vLLM
+  KEPT (it is in the klein set), supervisor gate refused cleanly after
+  its 30 s grace (`policy=protect-vllm vllm=up ... refused cleanly`),
+  job failed fast, GPU and every port untouched — third clean
+  reproduction. P4 the production turbo job: journal `matrix:
+  model=kokon-turbo set=qwen-t dsl="qt & pq" evict=[qwen3.8-27b]
+  target=[kokon-pup-qwen kokon-turbo] cost=1`; vLLM evicted and NOT
+  resurrected (the fixed `vllm-serve.sh` sat out), engine + 9B-Q8 door
+  loaded together (VRAM 9696 + 10938 MiB; door `/proc` cmdline proves
+  the task-014 9B cutover is what production runs), one image rendered
+  in 23 s (enhanced 1167 chars, render 1,242,832 bytes copied out).
+  **P5 the new behaviour**: with the qwen pair still resident, a
+  vLLM request produced journal `matrix: model=qwen3.8-27b set=klein
+  dsl="k & p & v" evict=[kokon-pup-qwen kokon-turbo] target=[kokon-
+  klein kokon-pup qwen3.8-27b] cost=2` — both qwen models evicted
+  (evicted=1, not a TTL race) and vLLM booted clean, completing with
+  http 200: the nudge-404 failure class is fixed at the router level.
+  P6 end state: live config = **stock-015 (the matrix router) in
+  production**, active model kokon-klein, vLLM healthy, all image
+  ports free. One-step rollback: `cp config.yaml.stock-014
+  config.yaml.new && mv -f ...` (the groups router; scripts are
+  router-agnostic). Deploy-dir doc written: **`MATRIX.md`** (how to
+  define a new job's model set — vars/sets DSL, membership rules,
+  evict_costs, the orphans trap, the live-change window protocol, the
+  `vllm-serve.sh` booting-trap and its rehearsal, rollback) with a
+  pointer from README.local.md. All ACs met: pinned v269 config
+  expresses arbitrary sets per job; klein and qwen both use it; TTL
+  (120 s grace observed in P5) / eviction (strict-superset replay +
+  live journal) / reload semantics unchanged; no upstream PR needed.
+  Evidence: `/tmp/m015/` (final), `/tmp/m015-attempt1/`,
+  `/tmp/m015-attempt2/`, `/tmp/q15-replay.txt`,
+  `refs/m015-solver-replay/`, gateway journal since 06:38.
 - 2026-11-04 (window attempt 1, 06:00–06:08, FAIL — root-caused and
   fixed): P1 (swap, reload in 8 s), P2 (vLLM revival through the
   matrix), and **P3 (the protect-vllm regression) passed exactly as
