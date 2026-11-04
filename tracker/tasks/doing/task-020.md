@@ -541,3 +541,66 @@ forwards the client Authorization as-is and v269 has no per-upstream key
 injection).
 
 **Attempt 4** re-runs the window with the redesigned P4d/P5d.
+
+
+**Window attempt 4 (13:40:33-13:47:32, FAIL @ P5d, 705 s)** — passed
+**every real proof**; the sole failure was the window's own journal-parsing
+code.
+
+- **P1-P2**: window-020 live. The 13:42:45 wrapper (invoked on the P2
+  route probe) raced the 2-min fallback's canonical boot; its child hit
+  the port-held guard and the **new 90 s concurrent-boot grace worked
+  exactly as designed**: adopt at t+15 s, watch, exit 0 on eviction.
+  (a3's same shape had orphaned the boot; now one wrapper survives to
+  adopt.)
+- **P3 (headline)**: klein done 25 s over a resident vLLM
+  (`evict=[qwen3.8-27b]`).
+- **P4**: turbo done; door = the 9B Q8_0 PUP.
+- **P4d (chat priority — complete)**: vLLM request 13:45:12 →
+  `starting swap for model qwen3.8-27b, evicting [kokon-full
+  kokon-pup-qwen-f]` (pair out 13:45:13-17; the job's own poll request
+  queued as `collides with in-flight swap`) → vLLM 200 13:46:03 → the
+  job's retry takes the card back 13:46:01 (`queued request for model
+  kokon-full now starting swap, evicting [qwen3.8-27b]`) → vLLM process
+  out 13:46:05 (wrapper self-log: child rc=0, `saw_port=1` — the stop
+  propagates in ~4 s) → **the job FAILED 13:46:13 with exactly
+  `generation_failed: The inference server lost track of the job (it may
+  have restarted).`** (error field + service-log line collected) → box
+  recovered (pair reloaded, vLLM down, ports free).
+- **P5d (reverse deferral — complete)**: stream fired 13:46:18 (boots
+  vLLM; wrapper `saw_port=1`, rc=0); **13:47:09 `queuing request for
+  model kokon-pup-qwen (would evict in-flight process)`** (the stream
+  mid-flight); stream lands intact 13:47:17 (5,913 chars);
+  **13:47:17 `queued request for model kokon-pup-qwen now starting
+  swap, evicting [qwen3.8-27b]`** — the deferred request released in the
+  same second the stream ended; vLLM out 13:47:18; door ready 13:47:27,
+  answered 13:47:32.
+- **The FAIL was two test-code bugs of mine, not box behavior**:
+  (1) the journal's timestamp is three fields (`Nov 04 HH:MM:SS`) but my
+  awk took two → parsed midnight; (2) `grep -m1 "starting swap for
+  model kokon-pup-qwen"` matched the **qwen-f** door (substring) first —
+  and in any case v269 logs a resumed deferred request as
+  `queued request … now starting swap`, never as a fresh `starting
+  swap`. Fixed (`tail -n1` on the correct patterns + 3-field parse) and
+  **dry-run against a4's own journal-early.txt passes**: deferral -8 s
+  vs stream end, release +0 s.
+- **Mystery closed — a3's 12:49:00 `exit status 1`**: a4's self-log
+  shows the final wrapper handling that exact scenario correctly (both
+  vLLM-lifetime wrappers: `saw_port=1`, rc=0, exit 0; stops propagate in
+  3-4 s). Three wrapper invocations in a4, all clean — the a3 one-off
+  is empirically non-recurring (its pre-rewrite log is gone; cause
+  unrecoverable).
+- **The 401 artifact is fully root-caused (cosmetic)**: capcompat
+  discovery 401s when the daemon's probe key and vLLM's enforced key
+  differ (a4's 13:47:00 line: daemon probe, no key in the config `env:`
+  vs vLLM enforcing the `api_key.txt` fallback). Serving always carries
+  the client's key, so it is unaffected. The restore probe's 401
+  (13:52:37) was transient (a boot race between the canonical and a
+  daemon-launched vLLM; the surviving listener 1370625 enforces the
+  `api_key.txt` key — verified: wrong key 401 / api_key 200 / none
+  401). The missing key in the worker child's environ is vLLM's own
+  spawn behavior (it prunes the API key from worker envs) — an earlier
+  check had hit the worker, not the API server.
+- **P6 (orphan reclaim) and P7 (cutover) never ran** (the marker
+  stopped at P5d). **Attempt 5** re-runs the full window with the fixed
+  proof code; everything else is unchanged since a4.
