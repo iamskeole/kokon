@@ -133,3 +133,41 @@ Both the klein and the qwen jobs consume it.
   is the 9B-Q8 PUP; P5 distinguishes matrix-eviction from a TTL race
   and records which happened). Box green at prep time (live==stock-014,
   gateway/vLLM 200, image ports free, service active=klein).
+- 2026-11-04 (window attempt 1, 06:00–06:08, FAIL — root-caused and
+  fixed): P1 (swap, reload in 8 s), P2 (vLLM revival through the
+  matrix), and **P3 (the protect-vllm regression) passed exactly as
+  designed** — the journal shows `matrix: model=kokon-turbo ...`-style
+  decisions with vLLM KEPT for the klein request (it is in the klein
+  set), the supervisor gate refused cleanly after its 30 s grace
+  (`policy=protect-vllm vllm=up ... refused cleanly`, GPU untouched),
+  and the klein job failed fast with vLLM and every port intact. P4
+  then failed: the matrix correctly decided `evict=[qwen3.8-27b]
+  target=[kokon-pup-qwen kokon-turbo]` for the turbo job, but **vLLM
+  was resurrected 2 s after the router killed it** (boot log:
+  `vllm.sh start` 06:03:37), so `serve.sh stop`'s 90 s GPU-empty wait
+  never completed, the qwen pair never loaded, and the job hard-failed
+  on the service's 5-min VLM timeout (D-FB). Root cause — a real latent
+  race, not a window artifact: a gateway `vllm-serve.sh` wrapper
+  spawned 06:02:40 (my P2 probe while vLLM was still booting) was
+  parked inside `evict-gpu.sh`'s "wait for the GPU to empty"; the
+  moment P4's evict killed the booting vLLM, that parked wrapper woke
+  to an empty GPU and cold-launched vLLM again — reviving the exact
+  model the router had just evicted, before its targets loaded. The
+  same sequence is reachable in production (a qwen request arriving
+  while vLLM is cold-booting). **Fix: `llama-swap-deploy/vllm-serve.sh`
+  gained a booting branch** — port held (or a <600 s fresh
+  `VLLM::EngineCore`, mirroring serve.sh's BOOT_GRACE) but not healthy
+  = a boot in progress → the wrapper waits for it to resolve (watch if
+  it becomes healthy; release WITHOUT launching if it dies or crawls
+  past 15 min). Only a fully-down vLLM (no port, no fresh core) takes
+  the evict+launch path, so the on-demand revival (the 23:52 style)
+  is preserved. Rehearsed on a throwaway port with a fake dying boot:
+  the wrapper now logs `in-flight boot died ... NOT relaunching` and
+  exits 0, with the box's real (stale) vLLM core present — the old
+  version's `pgrep` pattern also false-positived on stale cores, which
+  the freshness check removes. Post-mortem evidence:
+  `/tmp/m015/` (run.log, digest.txt, turbo-job.json, journal lines in
+  the digest), `/tmp/vllm_boot.log` (the 06:02:08 / 06:03:37 boot
+  markers), the systemd scope `run-p1029862` (the resurrected vLLM —
+  now serving the box's chat, healthy).
+
