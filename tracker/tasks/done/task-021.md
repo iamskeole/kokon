@@ -385,3 +385,67 @@ serving this session; window-021 validates "10 model(s), 0 peer(s)".
   extended to the second variant — the wrappers never kill a foreign
   holder, even when it blocks them); both wrappers' self-logs land in
   `/tmp/`; the window ends on the production config, marker last.
+
+## Live follow-up (2026-11-04 evening): the owner's photo — 2 MP cap + tower offload
+
+First real use of the variant (the owner's 1500×2000 phone photo in a new pi
+session, 20:40) failed: the vision process died ~6 s after boot and the
+client timed out at ~2 min. Three data points, then the fix, then proof:
+
+1. **20:42 OOM (uncapped).** The processor default budget is 16.7 MP; the
+   3 MP photo = ~2914 visual tokens = ~3.2 GiB of encoder working memory
+   vs 2.85 GiB free above the settled 24128 MiB → `torch.OutOfMemoryError`
+   in the ViT inductor graph → process dead. (An intermediate fix attempt
+   cut the KV to 2048M: below the 4.59 GiB engine minimum for 131k, so it
+   died at boot every time, and a probe-retry loop turned it into ~5 dead
+   boots in 8 min — a protocol violation, not an engine defect; the KV is
+   back at the owner's 7372M.)
+2. **22:07 OOM (2 MP cap alone).** The cap cut the photo to 2028 tokens
+   and the settled VRAM to 23314 (vLLM profiles the encoder at its largest
+   accepted image — capping that peak pays back VRAM), but the photo still
+   OOM'd — this time in the **GDN chunked-attention kernel**
+   (`third_party/flash_linear_attention/ops/chunk_o.py: o =
+   torch.empty_like(v)`, 20 MiB tried against 15.81 MiB free): on this
+   hybrid model an image prefill's transient is dominated by the LM's GDN
+   layers, and with the 0.86 GiB tower resident there was ~1.2 GiB of
+   headroom, not enough. The same wall the sibling HyperQwen tree's
+   `VISION_OFFLOAD` knob was built for.
+3. **Fix (both owner-sanctioned parts).** (a) the 2 MP pixel cap
+   (`--mm-processor-kwargs {"max_pixels":2097152}` in `serve-vision.sh`
+   `EXTRA_ARGS`) — owner ruling: on this path vision is needed at most for
+   code-dev screenshots, 1920×1080 = 2.07 MP, which the 2 MP budget passes
+   uncapped; and (b) the **vision tower in pinned host RAM** — owner:
+   "worst case scenario just keep it on cpu", and the knob lives in the
+   sibling trees (`stable/hyperqwen-031` / `latest/HyperQwen`:
+   `VLLM_VISION_CPU_OFFLOAD_GB`, `patches/vision-tower-cpu-offload.patch`,
+   exported from cpuchip/vllm 13299b528 for 0.28.0). Ported 1:1 to the 0.27.1
+   venv as `stable/qwen38-27b-rtx3090/patches/vision-tower-cpu-offload-027.patch`
+   (two files: `envs.py` declaration+loader, `qwen3_vl.py` tower wrap — the
+   0.27.1 `UVAOffloader` and `Qwen3_VisionTransformer` are API- and
+   shape-identical to the patch's targets). Static verification before any
+   GPU time: clean `patch` apply, env reads 0.0/1.0, both files
+   `py_compile` + import clean, and the 0.27.1-specific bulk-copy forward
+   wrapper measured **bit-exact** on this card (0.00e+00 delta, both call
+   directions, real CUDA). Pre-patch venv files backed up at
+   `/tmp/venv-backup-photofix/`. Wired with one `export
+   VLLM_VISION_CPU_OFFLOAD_GB=1` in `serve-vision.sh` (the child inherits
+   it); `refs/post-021/` re-synced. KV 7372M, 131k max-len, 1024 batched,
+   MAX_SEQS 2, GPU_UTIL 0.97 all untouched; the main variant is unchanged.
+4. **Proof window (22:17, single-shot, guaranteed-restore):** DONE in
+   685 s. Vision booted in 210 s with the offload engaged in the production
+   path (in-boot line `Total CPU offloaded parameters: 0.85`; settled
+   22372 MiB = −942 vs the tower-resident 23314); **the same 20:42 photo →
+   200 in 11 s** (`multimodal_tokens: 2028`, 743-char answer + 1470-char
+   thinking, peak 23410/24576 — fits, no OOM, no restart); main back in 61
+   s. During both windows the owner's photo session — a second client on
+   the same shared port — made its own vision/main requests and the router
+   handled every direction correctly (the journal shows four clean
+   evict/restore decisions); that concurrent-use pattern is what parked
+   task-023 would address if it ever bites.
+
+Net production change: `serve-vision.sh` (2 MP cap + offload env), the
+venv (2-file patch), `refs/post-021/` (re-synced). The a6 KV-headroom
+acceptance is superseded by the measurement this follow-up made real:
+with the tower offloaded the settled vision VRAM is 22372 MiB, leaving
+~2.2 GiB for image prefills — the 131k/7372M KV config stands as the
+owner tuned it.
