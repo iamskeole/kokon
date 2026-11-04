@@ -1,0 +1,4 @@
+{
+  "t2i_canvas": "TARGET CANVAS: {width}:{height}\n{request}",
+  "i2i_scaffold": "Reference images follow in order (the first image, the second image, ...).\nUser request: {request}\nOutput the caption."
+}
