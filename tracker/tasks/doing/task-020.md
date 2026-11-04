@@ -293,3 +293,86 @@ request through the gateway parked until the stream ends (the reverse
 direction) → P6 vLLM reclaim of an idle qwen pair (journal shows the
 orphan set) → P7 teardown + active-klein + DONE last. Restore target:
 stock-015 **and** the `refs/pre-020/` wrapper generation.
+
+## window attempt 1 — 2026-11-04 09:44 (FAIL at P3, 616 s; box auto-restored)
+
+The window ran P0–P2 clean, then died in P3 (the klein job with vLLM
+resident). **The router worked exactly as designed; my surgery broke the
+pair.** Evidence: `/tmp/m020-attempt1/` (journal-p3-recovered.txt is the
+key file).
+
+Failure chain (all timestamps UTC, from the gateway journal):
+1. `09:47:36` — the klein job's first gateway request (the service's
+   3 s readiness probe) triggers the swap: `matrix: model=kokon-klein
+   set=klein dsl="k & p" evict=[qwen3.8-27b] target=[kokon-klein kokon-pup]
+   cost=1` — the headline line the window wanted. vLLM evicted cleanly in
+   3 s.
+2. `09:47:39` — the (new thin) joint supervisor runs, starts the engine
+   **and** its own sidecar.
+3. `09:47:41` — the service's 3 s probe times out and is cancelled
+   (`matrix: cancelled request … pruned from scheduler`). By service
+   design (`crates/qls-core/src/process.rs::ensure_external`) this is
+   harmless: a 900 s follow-up request joins the same swap and carries
+   the load.
+4. `09:47:42` — the router runs the `cmd` for the **second alias**
+   (kokon-pup), which at that moment was still the **standalone
+   `pup-serve.sh`** → a **second** PUP load.
+5. The engine's DiT loaded in 3.02 s (warm cache) and sd-server binds its
+   port only after the full load, so the router's check endpoint
+   (`/sdcpp/v1/capabilities`) answered 200 at t+5 s — a true ready, but
+   the 120 s TTL clock started there.
+6. ~30 GB of concurrent loads on a 24 GB card (engine 8.4 + supervisor
+   sidecar 10 + standalone sidecar 10): the supervisor's sidecar wedged
+   in `fitting params to device memory` and never came up; the standalone
+   sidecar never became healthy within the router's 120 s start budget.
+7. `09:49:44` — the engine's 120 s TTL fires (no in-flight: the probe was
+   cancelled, the 900 s request had completed at ready) → router Stop →
+   the joint supervisor's one-lifetime dies with it → the standalone
+   sidecar is killed at its failed-start budget → `matrix: starting
+   kokon-pup failed: upstream command exited prematurely` → 500 on the
+   service's enhance → job hard-fail (code `upsampler`) → die.
+
+The die behaved per protocol: restore → digest → FAIL marker last; the
+blocking wait landed on a live route (the nudge-404 class did not
+recur). The restore, as written, returned the box to the **gate-era**
+generation (its wrapper list was the pre-020 snapshot) — correct for a
+rollback to stock-015, but the thin surgery was thereby wiped and had to
+be re-applied.
+
+## the fix (implemented 2026-11-04, pre-attempt-2)
+
+- **One sidecar provider.** `kokon-pup`'s `cmd` is now the **same joint
+  supervisor** as `kokon-klein` (and its `cmdStop` is the klein stop
+  script), made **re-entrant**: a second instance (the gateway runs the
+  cmd once per alias) detects the live first supervisor via
+  `supervisor.pid` — with a 2 s re-check against same-second double
+  spawns — launches nothing, waits up to 600 s for the pair, then watches
+  the sidecar until it goes away. One PUP load per pair, ever; a Stop on
+  either alias takes the pair down (the one shared lifetime, made
+  router-visible).
+- **TTL 600 s on all six kokon models** (stock-016/window-020): the
+  klein engine becomes ready ~5 s into a load, long before the
+  60–120 s sidecar; a 120 s TTL anchored on that early ready reaps the
+  pair mid-job (attempt 1, step 7). 600 s outlives any realistic
+  enhance→img_gen gap; on-demand eviction (another set's request) is
+  unaffected — it takes the card at once regardless of TTL.
+- **The thin wrapper surgery re-applied** to all live scripts (the
+  restore had put the gate era back): both engine supervisors (no gate,
+  `gpu-empty.sh 300` in the fresh-boot branch), the three PUP doors
+  (fit-check → `exit 1`, never stop vLLM), `pup-serve.sh` (standalone
+  loader, no longer a gateway cmd; `gpu-empty.sh 900`), `vllm-serve.sh`
+  (fully-down branch → `gpu-empty.sh 900`), the creatives (`gpu-empty.sh
+  600`), `evict-gpu.sh` re-headered **manual-only**; `evict-kokon.sh`
+  and `kokon-policy.txt` deleted again; the thin generation snapshotted
+  at **`refs/thin-020/`** (10 files) so the next restore is
+  self-sufficient — `m020-restore.sh` now restores **thin-020** (and
+  removes gate-era relics) and its double-logging bug is fixed;
+  `m020-test.sh`'s `die()` captures the journal before anything else.
+- `config.yaml.stock-016` / `config.yaml.window-020` rebuilt with the
+  deltas (single-provider cmd/cmdStop, six × `ttl: 600`, descriptions);
+  both `-validate` clean (9 models). Verified delta vs stock-015:
+  description + ttl on the six kokon models, cmd/cmdStop on kokon-pup,
+  the two set lines.
+
+**Attempt 2** launches with the same window plan; restore target =
+stock-015 + the thin generation.
