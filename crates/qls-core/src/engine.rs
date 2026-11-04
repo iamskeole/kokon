@@ -11,6 +11,7 @@ use image::GrayImage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, broadcast};
 
+use crate::bbox;
 use crate::config::{AppConfig, LoraEntry};
 use crate::diagnostics::{GpuInfo, query_gpus};
 use crate::enhancer;
@@ -20,9 +21,11 @@ use crate::imaging::{self, LoadedImage};
 use crate::lora::{self, AppliedLora};
 use crate::paths;
 use crate::pipeline;
-use crate::planner::{self, GenerationRequest, Mode, OutputFormat, Plan, PlanInputs, ResolutionMode, ResolvedMode};
+use crate::planner::{
+    self, GenerationRequest, Mode, OutputFormat, Plan, PlanInputs, ResolutionMode, ResolvedMode,
+};
 use crate::process::{BackendProgress, BackendStage, ProgressParser, ServerManager, ServerState};
-use crate::sdcpp::{BackendJobStatus, CancelOutcome, Capabilities, SdcppClient, TextGenRequest, UpscaleRequest};
+use crate::sdcpp::{BackendJobStatus, CancelOutcome, Capabilities, SdcppClient, TextGenDone, TextGenRequest, TextUsage, UpscaleRequest};
 use crate::store::{GenerationRecord, InputRecord, PipelineRecord, ReferenceRecord, Store, new_id, now_rfc3339};
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -111,13 +114,29 @@ struct Job {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    Job { job: Box<JobView> },
-    Server { state: ServerState, owned: bool, error: Option<AppError> },
-    Gallery { id: String, change: &'static str },
+    Job {
+        job: Box<JobView>,
+    },
+    Server {
+        state: ServerState,
+        owned: bool,
+        error: Option<AppError>,
+        model: Option<String>,
+    },
+    Gallery {
+        id: String,
+        change: &'static str,
+    },
     /// A project changed (`rev`) or was removed: the other devices reload it.
-    Projects { id: String, rev: u64, deleted: bool },
+    Projects {
+        id: String,
+        rev: u64,
+        deleted: bool,
+    },
     /// Settings → Performance → Benchmark this Mac.
-    MacBench { bench: crate::mac_bench::BenchState },
+    MacBench {
+        bench: crate::mac_bench::BenchState,
+    },
 }
 
 pub struct Engine {
@@ -138,18 +157,22 @@ pub struct Engine {
     active: Mutex<Option<String>>,
     wake: Notify,
     pub events: broadcast::Sender<Event>,
-    gpus: Mutex<(Option<Instant>, Vec<GpuInfo>)>,
+    gpus: crate::bounded_cache::BoundedCache<(Option<Instant>, Vec<GpuInfo>)>,
     /// `--list-devices` of the engine, keyed by its path and modification time.
-    devices: Mutex<Option<DeviceList>>,
+    devices: crate::bounded_cache::BoundedCache<Option<DeviceList>>,
     /// First-run downloads (setup wizard).
     pub installer: Arc<crate::installer::Installer>,
     pub mac_bench: Arc<crate::mac_bench::MacBench>,
-    backend_version: Mutex<Option<String>>,
+    backend_version: crate::bounded_cache::BoundedCache<Option<String>>,
     last_activity: Mutex<Instant>,
 }
 
 /// An engine's path, its modification time and its `--list-devices` output.
-type DeviceList = (PathBuf, Option<std::time::SystemTime>, Vec<(String, String)>);
+type DeviceList = (
+    PathBuf,
+    Option<std::time::SystemTime>,
+    Vec<(String, String)>,
+);
 
 fn random_seed() -> i64 {
     let b = uuid::Uuid::new_v4();
@@ -196,13 +219,21 @@ pub fn avoid_reference_seeds(seed: i64, batch: u32, references: &[i64]) -> Optio
 
 /// The note for a seed changed by [`avoid_reference_seeds`].
 fn reused_seed_note(matched: i64, used: i64, references: usize) -> String {
-    let what = if references > 1 { "a reference image" } else { "the source image" };
+    let what = if references > 1 {
+        "a reference image"
+    } else {
+        "the source image"
+    };
     format!("Seed {matched} made {what}; reusing it breaks edits, used {used} instead.")
 }
 
 /// Runs CPU-heavy image work off the async runtime.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(AppError::internal)?
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(AppError::internal)?
 }
 
 /// How results are enlarged (from the plan and the settings).
@@ -217,12 +248,21 @@ struct EnlargeOptions {
 }
 
 /// Planner inputs from the configuration and measured facts.
-pub fn plan_inputs(cfg: &AppConfig, image_sizes: Vec<Size>, mask: Option<(Size, Option<crate::geometry::Rect>, f64)>, vram_total_mib: Option<u64>) -> PlanInputs {
+pub fn plan_inputs(
+    cfg: &AppConfig,
+    image_sizes: Vec<Size>,
+    mask: Option<(Size, Option<crate::geometry::Rect>, f64)>,
+    vram_total_mib: Option<u64>,
+) -> PlanInputs {
     PlanInputs {
         image_sizes,
         mask,
         vram_total_mib,
-        upscale_tile: crate::planner::upscale_tile(cfg.upscale_tile_size, vram_total_mib, &cfg.upscaler().map(|u| u.0).unwrap_or_default()),
+        upscale_tile: crate::planner::upscale_tile(
+            cfg.upscale_tile_size,
+            vram_total_mib,
+            &cfg.upscaler().map(|u| u.0).unwrap_or_default(),
+        ),
         upscaler: cfg.upscaler().map(|u| u.0),
         metal: cfg.gpu_backend == crate::config::GpuBackend::Metal,
         vulkan: cfg.gpu_backend == crate::config::GpuBackend::Vulkan,
@@ -241,17 +281,26 @@ impl Engine {
         // Leftovers of a crash or forced exit while private mode was on.
         let _ = std::fs::remove_dir_all(&private_dir);
         for sub in ["inputs", "thumbs", "out"] {
-            std::fs::create_dir_all(private_dir.join(sub)).map_err(|e| AppError::io("create the data folder", &private_dir, e))?;
+            std::fs::create_dir_all(private_dir.join(sub))
+                .map_err(|e| AppError::io("create the data folder", &private_dir, e))?;
         }
         let private_store = Arc::new(Store::open_in_memory(&private_dir)?);
         let (events, _) = broadcast::channel(512);
-        Ok(Arc::new(Self {
+        let engine = Arc::new(Self {
             cfg: RwLock::new(cfg),
             server: ServerManager::new(data_dir.to_path_buf()),
             store,
             private_store,
-            projects: if cfg!(test) { crate::projects::ProjectStore::in_memory() } else { crate::projects::ProjectStore::open(data_dir) },
-            speed: if cfg!(test) { crate::speed::SpeedBook::in_memory() } else { crate::speed::SpeedBook::open(data_dir) },
+            projects: if cfg!(test) {
+                crate::projects::ProjectStore::in_memory()
+            } else {
+                crate::projects::ProjectStore::open(data_dir)
+            },
+            speed: if cfg!(test) {
+                crate::speed::SpeedBook::in_memory()
+            } else {
+                crate::speed::SpeedBook::open(data_dir)
+            },
             data_dir: data_dir.to_path_buf(),
             private_dir,
             jobs: Mutex::new(HashMap::new()),
@@ -259,13 +308,20 @@ impl Engine {
             active: Mutex::new(None),
             wake: Notify::new(),
             events,
-            gpus: Mutex::new((None, Vec::new())),
-            devices: Mutex::new(None),
+            gpus: crate::bounded_cache::BoundedCache::new((None, Vec::new())),
+            devices: crate::bounded_cache::BoundedCache::new(None),
             installer: crate::installer::Installer::new(),
             mac_bench: crate::mac_bench::MacBench::new(),
-            backend_version: Mutex::new(None),
+            backend_version: crate::bounded_cache::BoundedCache::new(None),
             last_activity: Mutex::new(Instant::now()),
-        }))
+        });
+        // In external mode the engine only runs on demand, so its capabilities are only
+        // known once it has run: restore what the configured model reported last time
+        // (without claiming it is loaded), so the UI can show what it supports at once.
+        if let Some(ext) = engine.cfg.read().unwrap().external_engine.as_ref() {
+            engine.server.restore_external_caps(&ext.model);
+        }
+        Ok(engine)
     }
 
     pub fn config(&self) -> AppConfig {
@@ -280,16 +336,27 @@ impl Engine {
         if cfg.gpu_backend != crate::config::GpuBackend::Cuda {
             return false;
         }
-        let cached = {
-            let g = self.gpus.lock().unwrap();
-            g.0.is_some().then(|| g.1.clone())
-        };
+        // Queried once if the list was never taken; a refresh in flight does not
+        // make this wait (BoundedCache keeps the last known list readable).
+        let cached = self.gpus.age().is_some().then(|| self.gpus.get().1);
         let cards = cached.unwrap_or_else(|| self.gpus());
         let i = if cards.len() < 2 {
             0
         } else {
-            let devices = self.devices.lock().unwrap().as_ref().map(|d| d.2.clone()).unwrap_or_default();
-            crate::diagnostics::card_for_device(&devices, &cards, &cfg.effective_device(), cfg.gpu_backend.device_prefix()).unwrap_or(0)
+            // The cached device list, without triggering a probe: `get` only reads.
+            let devices = self
+                .devices
+                .get()
+                .as_ref()
+                .map(|d| d.2.clone())
+                .unwrap_or_default();
+            crate::diagnostics::card_for_device(
+                &devices,
+                &cards,
+                &cfg.effective_device(),
+                cfg.gpu_backend.device_prefix(),
+            )
+            .unwrap_or(0)
         };
         cards.get(i).is_some_and(GpuInfo::lacks_sage_attention)
     }
@@ -311,12 +378,13 @@ impl Engine {
         new.sage_unsupported = self.lacks_sage_attention(&new);
         let mut g = self.cfg.write().unwrap();
         g.sage_unsupported = self.lacks_sage_attention(&g);
-        let restart = crate::process::build_server_args(&g, g.profile()) != crate::process::build_server_args(&new, new.profile())
+        let restart = crate::process::build_server_args(&g, g.profile())
+            != crate::process::build_server_args(&new, new.profile())
             || g.sdcpp_dir != new.sdcpp_dir
             || g.gpu_backend != new.gpu_backend;
         // The engine's version is probed again only when another build is in use.
         if g.server_exe() != new.server_exe() {
-            *self.backend_version.lock().unwrap() = None;
+            self.backend_version.reset(None);
         }
         *g = new;
         drop(g);
@@ -367,7 +435,10 @@ impl Engine {
     pub fn update_lora(&self, id: &str, patch: LoraPatch) -> AppResult<LoraEntry> {
         let _lock = lora::LIBRARY.lock().unwrap_or_else(|e| e.into_inner());
         let mut list = self.config().loras;
-        let l = list.iter_mut().find(|l| l.id == id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "This LoRA is no longer loaded."))?;
+        let l = list
+            .iter_mut()
+            .find(|l| l.id == id)
+            .ok_or_else(|| AppError::new(ErrorCode::NotFound, "This LoRA is no longer loaded."))?;
         if let Some(n) = patch.name {
             let n = n.trim();
             if n.is_empty() {
@@ -396,7 +467,9 @@ impl Engine {
     pub fn remove_lora(&self, id: &str) -> AppResult<()> {
         let _lock = lora::LIBRARY.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = self.config();
-        let Some(l) = cfg.loras.iter().find(|l| l.id == id) else { return Ok(()) };
+        let Some(l) = cfg.loras.iter().find(|l| l.id == id) else {
+            return Ok(());
+        };
         let path = lora::entry_path(&cfg, l);
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -409,7 +482,13 @@ impl Engine {
     /// The loaded LoRAs, with whether Kokon's copy is still there.
     pub fn loras(&self) -> Vec<LoraView> {
         let cfg = self.config();
-        cfg.loras.iter().map(|l| LoraView { available: lora::entry_path(&cfg, l).is_file(), entry: l.clone() }).collect()
+        cfg.loras
+            .iter()
+            .map(|l| LoraView {
+                available: lora::entry_path(&cfg, l).is_file(),
+                entry: l.clone(),
+            })
+            .collect()
     }
 
     /// Copies the upscaler shipped with the app into the configured folder when it is missing
@@ -463,22 +542,35 @@ impl Engine {
     }
 
     pub fn place_bundled_upscaler(&self) {
-        let Some(bundle) = crate::installer::bundle_dir() else { return };
+        let Some(bundle) = crate::installer::bundle_dir() else {
+            return;
+        };
         let dir = self.config().sdcpp_dir;
         match crate::installer::install_bundled(&crate::catalog::UPSCALER, &dir, &bundle) {
             Ok(true) => tracing::info!("bundled upscaler copied into {}", dir.display()),
             Ok(false) => {}
-            Err(e) => tracing::warn!("could not copy the bundled upscaler into {}: {e}", dir.display()),
+            Err(e) => tracing::warn!(
+                "could not copy the bundled upscaler into {}: {e}",
+                dir.display()
+            ),
         }
     }
 
     /// Deletes the original VAE from the app's folder once the texture fix replaced it and no
     /// profile uses it (after the update, and at start in case a busy server held it open).
     pub fn remove_unused_original_vae(&self) {
-        let Some(old) = crate::catalog::unused_original_vae(&self.config()) else { return };
+        let Some(old) = crate::catalog::unused_original_vae(&self.config()) else {
+            return;
+        };
         match std::fs::remove_file(&old) {
-            Ok(()) => tracing::info!("deleted the original VAE {} (replaced by the texture fix)", old.display()),
-            Err(e) => tracing::warn!("could not delete the original VAE {} yet: {e}", old.display()),
+            Ok(()) => tracing::info!(
+                "deleted the original VAE {} (replaced by the texture fix)",
+                old.display()
+            ),
+            Err(e) => tracing::warn!(
+                "could not delete the original VAE {} yet: {e}",
+                old.display()
+            ),
         }
     }
 
@@ -486,10 +578,18 @@ impl Engine {
     /// profile uses it (after the update, and at start in case a busy server held it open).
     /// Files outside the app's folder are never deleted.
     pub fn remove_unused_old_dit(&self) {
-        let Some(old) = crate::catalog::unused_old_dit(&self.config()) else { return };
+        let Some(old) = crate::catalog::unused_old_dit(&self.config()) else {
+            return;
+        };
         match std::fs::remove_file(&old) {
-            Ok(()) => tracing::info!("deleted the Q4_K image model {} (replaced by the Q4_K_M)", old.display()),
-            Err(e) => tracing::warn!("could not delete the Q4_K image model {} yet: {e}", old.display()),
+            Ok(()) => tracing::info!(
+                "deleted the Q4_K image model {} (replaced by the Q4_K_M)",
+                old.display()
+            ),
+            Err(e) => tracing::warn!(
+                "could not delete the Q4_K image model {} yet: {e}",
+                old.display()
+            ),
         }
     }
 
@@ -502,18 +602,32 @@ impl Engine {
         if engines.iter().all(|d| d.is_present(&cfg.sdcpp_dir)) {
             return false;
         }
-        let managed = engines.iter().any(|d| d.engine_tag.is_some() && d.installed_tag(&cfg.sdcpp_dir).is_some());
-        managed || !self.server.capabilities().is_some_and(|c| c.has_upscaler(crate::catalog::UPSCALER_NAME, true))
+        let managed = engines
+            .iter()
+            .any(|d| d.engine_tag.is_some() && d.installed_tag(&cfg.sdcpp_dir).is_some());
+        managed
+            || !self
+                .server
+                .capabilities()
+                .is_some_and(|c| c.has_upscaler(crate::catalog::UPSCALER_NAME, true))
     }
 
     /// The store holding generation `id`: the gallery, or the private-mode store.
     pub fn gen_store(&self, id: &str) -> &Arc<Store> {
-        if self.store.get_generation(id).is_err() && self.private_store.get_generation(id).is_ok() { &self.private_store } else { &self.store }
+        if self.store.get_generation(id).is_err() && self.private_store.get_generation(id).is_ok() {
+            &self.private_store
+        } else {
+            &self.store
+        }
     }
 
     /// The store holding input `id` (see [`Self::gen_store`]).
     pub fn input_store(&self, id: &str) -> &Arc<Store> {
-        if self.store.get_input(id).is_err() && self.private_store.get_input(id).is_ok() { &self.private_store } else { &self.store }
+        if self.store.get_input(id).is_err() && self.private_store.get_input(id).is_ok() {
+            &self.private_store
+        } else {
+            &self.store
+        }
     }
 
     /// The records of project `id`'s versions (see [`crate::projects::Records`]), from either
@@ -539,12 +653,21 @@ impl Engine {
     /// Where a generation's image file may be deleted from: the output folder, or the
     /// private folder for private results.
     pub fn output_root(&self, id: &str) -> PathBuf {
-        if Arc::ptr_eq(self.gen_store(id), &self.private_store) { self.private_dir.join("out") } else { self.config().output_dir }
+        if Arc::ptr_eq(self.gen_store(id), &self.private_store) {
+            self.private_dir.join("out")
+        } else {
+            self.config().output_dir
+        }
     }
 
     /// Ends private mode: forgets every private record and deletes its files.
     pub fn clear_private(&self) -> AppResult<usize> {
-        let (items, _) = self.private_store.list_generations(&crate::store::ListQuery { limit: Some(500), ..Default::default() })?;
+        let (items, _) = self
+            .private_store
+            .list_generations(&crate::store::ListQuery {
+                limit: Some(500),
+                ..Default::default()
+            })?;
         self.private_store.clear()?;
         let mut removed = 0;
         for sub in ["inputs", "thumbs", "out"] {
@@ -558,7 +681,10 @@ impl Engine {
             }
         }
         if !items.is_empty() {
-            tracing::info!("private mode cleared ({} results, {removed} files)", items.len());
+            tracing::info!(
+                "private mode cleared ({} results, {removed} files)",
+                items.len()
+            );
         }
         Ok(items.len())
     }
@@ -576,12 +702,21 @@ impl Engine {
     }
 
     fn has_jobs(&self) -> bool {
-        self.active.lock().unwrap().is_some() || self.jobs.lock().unwrap().values().any(|j| !j.view.status.is_terminal())
+        self.active.lock().unwrap().is_some()
+            || self
+                .jobs
+                .lock()
+                .unwrap()
+                .values()
+                .any(|j| !j.view.status.is_terminal())
     }
 
     /// Starts Kokon's Mac engine benchmark on the active model files: refused while images or an install are
     /// running; stops the server and keeps it stopped until the bench ends (the next job starts it again).
-    pub async fn start_mac_bench(self: &Arc<Self>, quick: bool) -> Result<crate::mac_bench::BenchState, AppError> {
+    pub async fn start_mac_bench(
+        self: &Arc<Self>,
+        quick: bool,
+    ) -> Result<crate::mac_bench::BenchState, AppError> {
         use crate::mac_bench as mb;
         let cfg = self.config();
         if let Some(e) = mb::unavailable(&cfg) {
@@ -591,16 +726,20 @@ impl Engine {
             return Ok(self.mac_bench.state());
         }
         if self.has_jobs() || self.installer.is_running() {
-            return Err(AppError::new(ErrorCode::QueueFull, "Wait for the current images to finish, then run the benchmark."));
+            return Err(AppError::new(
+                ErrorCode::QueueFull,
+                "Wait for the current images to finish, then run the benchmark.",
+            ));
         }
-        self.server.hold(Some("The Mac is running the benchmark: images can be made when it ends.".into()));
+        self.server.hold(Some(
+            "The Mac is running the benchmark: images can be made when it ends.".into(),
+        ));
         self.server.stop().await;
         self.emit_server();
         let report = mb::report_path(&self.data_dir);
         let args = mb::bench_args(cfg.profile(), &report, quick);
         let envs = vec![("KOKON_ENGINE_VERSION".to_string(), format!("0.1.1 (experimental), Kokon {APP_VERSION}"))];
-        let command = mb::BenchCommand { exe: cfg.server_exe(), args, envs, report, quick };
-        let (e1, e2) = (self.clone(), self.clone());
+        let command = mb::BenchCommand { exe: cfg.server_exe(), args, envs, report, quick };        let (e1, e2) = (self.clone(), self.clone());
         let r = self.mac_bench.start(
             command,
             move |bench| {
@@ -615,31 +754,55 @@ impl Engine {
     }
 
     /// Every graphics card found (refreshed every few seconds for the live memory use).
+    /// The refresh runs `nvidia-smi` off the reader's path: readers take the last known
+    /// list even while a refresh is in flight (a driver stall must not freeze callers).
     pub fn gpus(&self) -> Vec<GpuInfo> {
-        let mut g = self.gpus.lock().unwrap();
-        if !g.0.is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
-            *g = (Some(Instant::now()), query_gpus().unwrap_or_default());
-        }
-        g.1.clone()
+                let cur = self.gpus.get();
+        // Fresh for 3 s. A stale or never-taken list triggers one bounded
+        // refresh: nvidia-smi is killed at 5 s (measured 2026-11-02: an
+        // unbounded nvidia-smi during a GPU changeover stalled the driver and
+        // froze every caller sharing the cache lock — the service went silent
+        // for minutes and no request-timeout could fire). A failed query serves
+        // the last known list: an empty answer would wipe planning data while
+        // the driver recovers.
+        self.gpus.refresh_if_stale(
+            |t| t.0.is_some_and(|i| i.elapsed() < Duration::from_secs(3)),
+            move || match query_gpus() {
+                    Some(list) => (Some(Instant::now()), list),
+                    None => cur,
+                })
+            .1
     }
 
     /// The engine's devices (`--list-devices`); empty until the engine is installed.
+    /// The probe starts the engine binary (a CUDA initialisation); like `gpus`, readers
+    /// take the last known list instead of queuing on an in-flight probe.
     pub fn devices(&self) -> Vec<(String, String)> {
         let exe = self.config().server_exe();
         let mtime = std::fs::metadata(&exe).and_then(|m| m.modified()).ok();
         if mtime.is_none() {
             return Vec::new();
         }
-        let mut d = self.devices.lock().unwrap();
-        if let Some((p, t, list)) = d.as_ref()
-            && *p == exe
-            && *t == mtime
-        {
-            return list.clone();
-        }
-        let list = crate::diagnostics::list_devices(&exe);
-        *d = Some((exe, mtime, list.clone()));
-        list
+        // Freshness is decided against the cached entry (path + mtime); the
+        // refresher gets its own owned copy so the two closures never share a
+        // borrow with a move.
+        let (cur_path, cur_mtime) = self
+            .devices
+            .get()
+            .map(|(p, t, _)| (p, t))
+            .unwrap_or_default();
+        let path = exe.to_path_buf();
+        let list = self.devices.refresh_if_stale(
+            move |d: &Option<DeviceList>|
+            // fresh: cached for exactly this binary build (path + modification time).
+                d.as_ref()
+                    .is_some_and(|(p, t, _)| p.as_path() == cur_path.as_path() && *t == cur_mtime),
+            move || {
+                let l = crate::diagnostics::list_devices(&path);
+                Some((path, mtime, l))
+            },
+        );
+        list.map(|(_, _, l)| l).unwrap_or_default()
     }
 
     /// Index in `gpus()` of the card the engine runs on (the configured device); the first
@@ -650,7 +813,13 @@ impl Engine {
             return 0;
         }
         let cfg = self.config();
-        crate::diagnostics::card_for_device(&self.devices(), &cards, &cfg.effective_device(), cfg.gpu_backend.device_prefix()).unwrap_or(0)
+        crate::diagnostics::card_for_device(
+            &self.devices(),
+            &cards,
+            &cfg.effective_device(),
+            cfg.gpu_backend.device_prefix(),
+        )
+        .unwrap_or(0)
     }
 
     /// The card the engine runs on; plans and presets are sized for it.
@@ -663,7 +832,12 @@ impl Engine {
     /// None if the engine can't list its devices yet (not installed) or doesn't see that card.
     pub fn use_card(&self, card: usize) -> AppResult<Option<bool>> {
         let mut cfg = self.config();
-        let Some(dev) = crate::diagnostics::device_for_card(&self.devices(), &self.gpus(), card, cfg.gpu_backend.device_prefix()) else {
+        let Some(dev) = crate::diagnostics::device_for_card(
+            &self.devices(),
+            &self.gpus(),
+            card,
+            cfg.gpu_backend.device_prefix(),
+        ) else {
             return Ok(None);
         };
         if cfg.effective_device() == dev {
@@ -674,17 +848,21 @@ impl Engine {
     }
 
     pub fn backend_version(&self) -> Option<String> {
-        if let Some(v) = self.backend_version.lock().unwrap().clone() {
-            return Some(v);
-        }
-        let v = crate::diagnostics::backend_version(&self.config().server_exe());
-        *self.backend_version.lock().unwrap() = v.clone();
-        v
+        // Cached per engine build; the probe starts the engine binary, so it runs under
+        // the bounded-refresh lock like the other probes, never on a reader's path.
+        self.backend_version.refresh_if_stale(
+            |v: &Option<String>| v.is_some(),
+            || Some(crate::diagnostics::backend_version(&self.config().server_exe())).flatten(),
+        )
     }
 
     pub fn emit_projects(&self, changes: Vec<crate::projects::Change>) {
         for c in changes {
-            let _ = self.events.send(Event::Projects { id: c.id, rev: c.rev, deleted: c.deleted });
+            let _ = self.events.send(Event::Projects {
+                id: c.id,
+                rev: c.rev,
+                deleted: c.deleted,
+            });
         }
     }
 
@@ -696,7 +874,12 @@ impl Engine {
 
     pub fn emit_server(&self) {
         let s = self.server.status();
-        let _ = self.events.send(Event::Server { state: s.state, owned: s.owned, error: s.error });
+        let _ = self.events.send(Event::Server {
+            state: s.state,
+            owned: s.owned,
+            error: s.error,
+            model: s.model,
+        });
     }
 
     fn update(&self, id: &str, f: impl FnOnce(&mut Job)) {
@@ -730,7 +913,10 @@ impl Engine {
     pub fn jobs(&self) -> Vec<JobView> {
         let order = self.order.lock().unwrap();
         let jobs = self.jobs.lock().unwrap();
-        order.iter().filter_map(|id| jobs.get(id).map(|j| j.view.clone())).collect()
+        order
+            .iter()
+            .filter_map(|id| jobs.get(id).map(|j| j.view.clone()))
+            .collect()
     }
 
     pub fn active_job(&self) -> Option<JobView> {
@@ -740,7 +926,11 @@ impl Engine {
 
     /// Validates cheaply and enqueues. `workspace` is the caller's project folder (MCP),
     /// used to resolve relative paths and as an allowed output root.
-    pub fn submit(&self, mut request: GenerationRequest, workspace: Option<PathBuf>) -> AppResult<JobView> {
+    pub fn submit(
+        &self,
+        mut request: GenerationRequest,
+        workspace: Option<PathBuf>,
+    ) -> AppResult<JobView> {
         self.touch();
         let upscale = request.mode == Mode::Upscale;
         // Removing a painted area needs no description (the planner writes the prompt), nor does
@@ -757,8 +947,11 @@ impl Engine {
         }
         // A model file on a drive that is not connected, moved or deleted: say so now, so the
         // app can guide the user (Setup), instead of failing once the job starts. Also with the
-        // model loaded: sd-server opens the files again for every image.
-        if let Some(e) = self.config().missing_files_error() {
+        // model loaded: sd-server opens the files again for every image. An external engine
+        // keeps its own files behind the gateway; there is nothing local to check.
+        if self.config().external_engine().is_none()
+            && let Some(e) = self.config().missing_files_error()
+        {
             return Err(e);
         }
         if let Some(seed) = request.seed
@@ -795,12 +988,28 @@ impl Engine {
         };
         {
             let mut jobs = self.jobs.lock().unwrap();
-            jobs.insert(id.clone(), Job { view, request, cancel: false, retried_oom: false, workspace, enhanced: None });
+            jobs.insert(
+                id.clone(),
+                Job {
+                    view,
+                    request,
+                    cancel: false,
+                    retried_oom: false,
+                    workspace,
+                    enhanced: None,
+                },
+            );
             let mut order = self.order.lock().unwrap();
             order.push_back(id.clone());
             // Keep memory bounded: drop the oldest finished jobs.
             while order.len() > 300 {
-                let Some(pos) = order.iter().position(|i| jobs.get(i).map(|j| j.view.status.is_terminal()).unwrap_or(true)) else { break };
+                let Some(pos) = order.iter().position(|i| {
+                    jobs.get(i)
+                        .map(|j| j.view.status.is_terminal())
+                        .unwrap_or(true)
+                }) else {
+                    break;
+                };
                 if let Some(old) = order.remove(pos) {
                     jobs.remove(&old);
                 }
@@ -815,7 +1024,10 @@ impl Engine {
     /// Requests cancellation. Queued jobs stop immediately; a running job is stopped as
     /// soon as the backend allows (see `run_job`).
     pub fn cancel(&self, id: &str) -> AppResult<JobView> {
-        let status = self.job(id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?.status;
+        let status = self
+            .job(id)
+            .ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?
+            .status;
         if status.is_terminal() {
             return Ok(self.job(id).unwrap());
         }
@@ -835,7 +1047,12 @@ impl Engine {
     pub fn cancel_client_jobs(&self, client: &str) -> usize {
         let ids: Vec<String> = {
             let jobs = self.jobs.lock().unwrap();
-            jobs.values().filter(|j| !j.view.status.is_terminal() && j.view.client.as_deref() == Some(client)).map(|j| j.view.id.clone()).collect()
+            jobs.values()
+                .filter(|j| {
+                    !j.view.status.is_terminal() && j.view.client.as_deref() == Some(client)
+                })
+                .map(|j| j.view.id.clone())
+                .collect()
         };
         for id in &ids {
             let _ = self.cancel(id);
@@ -846,7 +1063,14 @@ impl Engine {
     fn next_queued(&self) -> Option<String> {
         let order = self.order.lock().unwrap();
         let jobs = self.jobs.lock().unwrap();
-        order.iter().find(|id| jobs.get(*id).map(|j| j.view.status == JobStatus::Queued).unwrap_or(false)).cloned()
+        order
+            .iter()
+            .find(|id| {
+                jobs.get(*id)
+                    .map(|j| j.view.status == JobStatus::Queued)
+                    .unwrap_or(false)
+            })
+            .cloned()
     }
 
     /// Worker loop: one job at a time (the GPU is the bottleneck); the queue keeps order.
@@ -860,7 +1084,13 @@ impl Engine {
             self.queue_positions();
             let r = self.clone().run_job(&id).await;
             if let Err(e) = r {
-                let cancelled = self.jobs.lock().unwrap().get(&id).map(|j| j.cancel).unwrap_or(false);
+                let cancelled = self
+                    .jobs
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .map(|j| j.cancel)
+                    .unwrap_or(false);
                 self.update(&id, |j| {
                     if cancelled || e.code == ErrorCode::Cancelled {
                         j.view.status = JobStatus::Cancelled;
@@ -881,18 +1111,36 @@ impl Engine {
     }
 
     fn is_cancelled(&self, id: &str) -> bool {
-        self.jobs.lock().unwrap().get(id).map(|j| j.cancel).unwrap_or(true)
+        self.jobs
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|j| j.cancel)
+            .unwrap_or(true)
     }
 
     fn check_cancel(&self, id: &str) -> AppResult<()> {
-        if self.is_cancelled(id) { Err(AppError::new(ErrorCode::Cancelled, "Cancelled.")) } else { Ok(()) }
+        if self.is_cancelled(id) {
+            Err(AppError::new(ErrorCode::Cancelled, "Cancelled."))
+        } else {
+            Ok(())
+        }
     }
 
     /// Loads one image source: "input:<id>", "gen:<id>" or an absolute path. A private job
     /// keeps its copy of the input in the private store.
-    pub fn resolve_source(&self, src: &str, workspace: Option<&Path>, private: bool) -> AppResult<(LoadedImage, InputRecord)> {
+    pub fn resolve_source(
+        &self,
+        src: &str,
+        workspace: Option<&Path>,
+        private: bool,
+    ) -> AppResult<(LoadedImage, InputRecord)> {
         let (bytes, original_path, name) = self.read_source(src, workspace)?;
-        let store = if private { &self.private_store } else { &self.store };
+        let store = if private {
+            &self.private_store
+        } else {
+            &self.store
+        };
         let rec = store.put_input(&bytes, name.as_deref(), original_path.as_deref())?;
         let img = imaging::decode_image(&bytes)?;
         Ok((img, rec))
@@ -924,20 +1172,34 @@ impl Engine {
     }
 
     /// The bytes of an image source, with its original path and file name.
-    fn read_source(&self, src: &str, workspace: Option<&Path>) -> AppResult<(Vec<u8>, Option<String>, Option<String>)> {
+    fn read_source(
+        &self,
+        src: &str,
+        workspace: Option<&Path>,
+    ) -> AppResult<(Vec<u8>, Option<String>, Option<String>)> {
         Ok(if let Some(id) = src.strip_prefix("input:") {
             let rec = self.input_store(id).get_input(id)?;
-            let b = std::fs::read(&rec.path).map_err(|e| AppError::io("read the stored image", Path::new(&rec.path), e))?;
+            let b = std::fs::read(&rec.path)
+                .map_err(|e| AppError::io("read the stored image", Path::new(&rec.path), e))?;
             (b, rec.original_path.clone(), rec.original_name.clone())
         } else if let Some(id) = src.strip_prefix("gen:") {
             let rec = self.gen_store(id).get_generation(id)?;
             let p = PathBuf::from(&rec.file_path);
-            let b = std::fs::read(&p).map_err(|e| AppError::io("read the generated image", &p, e))?;
-            (b, Some(rec.file_path.clone()), p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            let b =
+                std::fs::read(&p).map_err(|e| AppError::io("read the generated image", &p, e))?;
+            (
+                b,
+                Some(rec.file_path.clone()),
+                p.file_name().map(|n| n.to_string_lossy().into_owned()),
+            )
         } else {
             let p = paths::validate_input_image(src, workspace, &[])?;
             let b = std::fs::read(&p).map_err(|e| AppError::io("read the image", &p, e))?;
-            (b, Some(p.to_string_lossy().into_owned()), p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            (
+                b,
+                Some(p.to_string_lossy().into_owned()),
+                p.file_name().map(|n| n.to_string_lossy().into_owned()),
+            )
         })
     }
 
@@ -949,15 +1211,29 @@ impl Engine {
     /// A library LUT on a "gen:"/"input:" source at full strength, reduced to `max_side`, for
     /// the live preview (the UI shows the intensity as its opacity over the image). JPEG, or
     /// PNG when the image has transparency or a colour profile to keep. Returns the content type.
-    pub fn lut_preview(&self, src: &str, name: &str, max_side: u32) -> AppResult<(Vec<u8>, &'static str)> {
+    pub fn lut_preview(
+        &self,
+        src: &str,
+        name: &str,
+        max_side: u32,
+    ) -> AppResult<(Vec<u8>, &'static str)> {
         if !src.starts_with("gen:") && !src.starts_with("input:") {
-            return Err(AppError::new(ErrorCode::InvalidInput, "LUTs apply to results and imported images."));
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "LUTs apply to results and imported images.",
+            ));
         }
         let lut = self.luts().load(name)?;
         let img = imaging::decode_image(&self.read_source(src, None)?.0)?;
-        let small = lut.apply(&imaging::thumbnail(&img.pixels, max_side.clamp(256, 4096)), 1.0);
+        let small = lut.apply(
+            &imaging::thumbnail(&img.pixels, max_side.clamp(256, 4096)),
+            1.0,
+        );
         if img.has_transparency || img.icc_profile.is_some() {
-            Ok((imaging::encode_png(&small, &[], img.icc_profile.as_deref(), true)?, "image/png"))
+            Ok((
+                imaging::encode_png(&small, &[], img.icc_profile.as_deref(), true)?,
+                "image/png",
+            ))
         } else {
             Ok((imaging::encode_jpeg(&small, 92)?, "image/jpeg"))
         }
@@ -979,14 +1255,25 @@ impl Engine {
     /// Applies a library LUT to a "gen:"/"input:" source at `intensity` (0-1) and saves the
     /// result as a new version made from it (mode "lut"; the source stays as it is). Private
     /// when asked or when the source itself is private. Same file format as a source result.
-    pub fn apply_lut(&self, src: &str, name: &str, intensity: f32, private: bool) -> AppResult<GenerationRecord> {
+    pub fn apply_lut(
+        &self,
+        src: &str,
+        name: &str,
+        intensity: f32,
+        private: bool,
+    ) -> AppResult<GenerationRecord> {
         let started = Instant::now();
         let library = self.luts();
         let lut = library.load(name)?;
         let parent = match src.strip_prefix("gen:") {
             Some(id) => Some(self.gen_store(id).get_generation(id)?),
             None if src.starts_with("input:") => None,
-            None => return Err(AppError::new(ErrorCode::InvalidInput, "LUTs apply to results and imported images.")),
+            None => {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    "LUTs apply to results and imported images.",
+                ));
+            }
         };
         let source_private = match (&parent, src.strip_prefix("input:")) {
             (Some(p), _) => Arc::ptr_eq(self.gen_store(&p.id), &self.private_store),
@@ -995,22 +1282,48 @@ impl Engine {
         };
         let private = private || source_private;
         let (img, input) = self.resolve_source(src, None, private)?;
-        let intensity = if intensity.is_finite() { intensity.clamp(0.0, 1.0) } else { 1.0 };
+        let intensity = if intensity.is_finite() {
+            intensity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         let out = lut.apply(&img.pixels, intensity);
         library.touch(name);
 
         let cfg = self.config();
         let id = new_id();
         let now = chrono::Local::now();
-        let store = if private { &self.private_store } else { &self.store };
-        let dir = if private { self.private_dir.join("out") } else { cfg.output_dir.join(now.format("%Y-%m-%d").to_string()) };
-        std::fs::create_dir_all(&dir).map_err(|e| AppError::io("create the output folder", &dir, e))?;
-        let format = match parent.as_ref().and_then(|p| Path::new(&p.file_path).extension()).map(|e| e.to_string_lossy().to_ascii_lowercase()).as_deref() {
+        let store = if private {
+            &self.private_store
+        } else {
+            &self.store
+        };
+        let dir = if private {
+            self.private_dir.join("out")
+        } else {
+            cfg.output_dir.join(now.format("%Y-%m-%d").to_string())
+        };
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AppError::io("create the output folder", &dir, e))?;
+        let format = match parent
+            .as_ref()
+            .and_then(|p| Path::new(&p.file_path).extension())
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .as_deref()
+        {
             Some("jpg" | "jpeg") => OutputFormat::Jpeg,
             Some("webp") => OutputFormat::Webp,
             _ => OutputFormat::Png,
         };
-        let file = paths::unique_path(dir.join(format!("{}-lut-{}.{}", now.format("%H%M%S"), paths::sanitize_file_stem(name), format.ext())), &[]);
+        let file = paths::unique_path(
+            dir.join(format!(
+                "{}-lut-{}.{}",
+                now.format("%H%M%S"),
+                paths::sanitize_file_stem(name),
+                format.ext()
+            )),
+            &[],
+        );
         let pct = (intensity * 100.0).round();
         let mut rec = GenerationRecord {
             id: id.clone(),
@@ -1033,7 +1346,13 @@ impl Engine {
             strength: None,
             quality: String::new(),
             resolution: String::new(),
-            references: vec![ReferenceRecord { index: 0, input_id: input.id.clone(), original_path: input.original_path.clone(), width: input.width, height: input.height }],
+            references: vec![ReferenceRecord {
+                index: 0,
+                input_id: input.id.clone(),
+                original_path: input.original_path.clone(),
+                width: input.width,
+                height: input.height,
+            }],
             mask_input_id: None,
             outpaint: None,
             file_path: file.to_string_lossy().into_owned(),
@@ -1137,14 +1456,19 @@ impl Engine {
         }
         store.insert_generation(&rec)?;
         if !private {
-            let _ = self.events.send(Event::Gallery { id: id.clone(), change: "added" });
+            let _ = self.events.send(Event::Gallery {
+                id: id.clone(),
+                change: "added",
+            });
         }
         Ok(rec)
     }
 
     /// How this machine's measured speed compares with the time model (None: not measured).
     fn speed_factor(&self, cfg: &AppConfig) -> Option<f32> {
-        self.speed.get(&crate::speed::machine_key(cfg, self.gpu().as_ref())).map(|c| c.factor)
+        self.speed
+            .get(&crate::speed::machine_key(cfg, self.gpu().as_ref()))
+            .map(|c| c.factor)
     }
 
     /// VRAM to plan with: the card's (or the simulated size), less what the user's own model
@@ -1152,11 +1476,17 @@ impl Engine {
     fn planning_vram(&self, cfg: &AppConfig) -> Option<u64> {
         let gpu = self.gpu();
         let unified = gpu.as_ref().is_some_and(|g| g.unified);
-        cfg.planning_vram_mib(gpu.map(|g| g.planning_mib())).map(|v| v.saturating_sub(cfg.model_vram_extra_mib(unified)))
+        cfg.planning_vram_mib(gpu.map(|g| g.planning_mib()))
+            .map(|v| v.saturating_sub(cfg.model_vram_extra_mib(unified)))
     }
 
     /// Dry run: the plan a request would get (used by the UI to show working sizes).
-    pub fn preview_plan(&self, req: &GenerationRequest, sizes: Vec<Size>, mask: Option<(Size, Option<crate::geometry::Rect>, f64)>) -> AppResult<Plan> {
+    pub fn preview_plan(
+        &self,
+        req: &GenerationRequest,
+        sizes: Vec<Size>,
+        mask: Option<(Size, Option<crate::geometry::Rect>, f64)>,
+    ) -> AppResult<Plan> {
         let cfg = self.config();
         let vram = self.planning_vram(&cfg);
         let mut inputs = plan_inputs(&cfg, sizes, mask, vram);
@@ -1169,7 +1499,9 @@ impl Engine {
         let started = Instant::now();
         let (request, workspace) = {
             let jobs = self.jobs.lock().unwrap();
-            let j = jobs.get(id).ok_or_else(|| AppError::internal("job vanished"))?;
+            let j = jobs
+                .get(id)
+                .ok_or_else(|| AppError::internal("job vanished"))?;
             (j.request.clone(), j.workspace.clone())
         };
         self.update(id, |j| {
@@ -1177,8 +1509,11 @@ impl Engine {
             j.view.started_at = Some(now_rfc3339());
             j.view.queue_position = 0;
         });
-        // A file that went missing while the job was queued (see `submit`).
-        if let Some(e) = self.config().missing_files_error() {
+        // A file that went missing while the job was queued (see `submit`); external engines
+        // have no local files to miss.
+        if self.config().external_engine().is_none()
+            && let Some(e) = self.config().missing_files_error()
+        {
             return Err(e);
         }
 
@@ -1217,8 +1552,19 @@ impl Engine {
         let cfg = self.config();
         let profile = cfg.profile().clone();
         let vram = self.planning_vram(&cfg);
-        let mask_info = mask.as_ref().map(|(m, _)| (Size::new(m.width(), m.height()), imaging::mask_bbox(m, 16), imaging::mask_coverage(m, 16)));
-        let mut plan_inputs = plan_inputs(&cfg, images.iter().map(|i| i.size()).collect(), mask_info, vram);
+        let mask_info = mask.as_ref().map(|(m, _)| {
+            (
+                Size::new(m.width(), m.height()),
+                imaging::mask_bbox(m, 16),
+                imaging::mask_coverage(m, 16),
+            )
+        });
+        let mut plan_inputs = plan_inputs(
+            &cfg,
+            images.iter().map(|i| i.size()).collect(),
+            mask_info,
+            vram,
+        );
         plan_inputs.speed_factor = self.speed_factor(&cfg);
         plan_inputs.unified_memory = self.gpu().is_some_and(|g| g.unified);
         let plan = planner::plan(&request, &plan_inputs, &profile.recommended_settings)?;
@@ -1245,9 +1591,23 @@ impl Engine {
 
         // 3. Backend.
         // A job that also starts the server is not a fair speed sample (startup, first load).
-        let model_loaded = self.server.capabilities().is_some_and(|c| c.model_matches(&profile.diffusion_model));
+        // External engines are matched by the file name the gateway's model reports, not by a local path.
+        let ext_model = self
+            .config()
+            .external_engine()
+            .map(|e| e.model_name.clone());
+        let model_loaded = self
+            .server
+            .capabilities()
+            .is_some_and(|c| match &ext_model {
+                Some(name) => c.model_matches(Path::new(name)),
+                None => c.model_matches(&profile.diffusion_model),
+            });
         let mut cold_start = false;
-        if self.server.status().state != ServerState::Ready || self.server.owned_alive() == Some(false) || !model_loaded {
+        if self.server.status().state != ServerState::Ready
+            || self.server.owned_alive() == Some(false)
+            || !model_loaded
+        {
             cold_start = true;
             self.update(id, |j| j.view.status = JobStatus::StartingBackend);
             self.emit_server();
@@ -1261,14 +1621,28 @@ impl Engine {
         // Whether the running server can use the upscaler (an engine older than MoSR lists the
         // file but cannot run it; an external server may lack --hires-upscalers-dir):
         // enlargements fall back to Lanczos. Fresh, because the server rescans the folder.
-        let client = SdcppClient::new(self.server.port());
-        let caps = client.capabilities(Duration::from_secs(5)).await.ok().or_else(|| self.server.capabilities()).unwrap_or_default();
+        let client = SdcppClient::new_url(cfg.engine_base_url());
+        let caps = client
+            .capabilities(Duration::from_secs(5))
+            .await
+            .ok()
+            .or_else(|| self.server.capabilities())
+            .unwrap_or_default();
         let esrgan = plan.upscaler.clone().filter(|n| caps.has_upscaler(n, true));
-        let needs_esrgan = plan.upscale.is_some() || plan.output.area() as f64 > plan.content.area() as f64 * 1.21;
+        let needs_esrgan =
+            plan.upscale.is_some() || plan.output.area() as f64 > plan.content.area() as f64 * 1.21;
         if needs_esrgan && plan.upscaler.is_some() && esrgan.is_none() {
             self.update(id, |j| j.view.notes.push("The inference engine cannot run the upscaler (update it in Setup); enlarged with Lanczos.".into()));
-        } else if plan.upscaler.is_none() && needs_esrgan && cfg.upscaler_model.trim() != crate::config::LANCZOS {
-            self.update(id, |j| j.view.notes.push("The upscaler model is missing (install it in Setup); enlarged with Lanczos.".into()));
+        } else if plan.upscaler.is_none()
+            && needs_esrgan
+            && cfg.upscaler_model.trim() != crate::config::LANCZOS
+        {
+            self.update(id, |j| {
+                j.view.notes.push(
+                    "The upscaler model is missing (install it in Setup); enlarged with Lanczos."
+                        .into(),
+                )
+            });
         }
         let quick_upscale = plan.upscale.is_some();
         let icc = images.first().and_then(|i| i.icc_profile.clone());
@@ -1277,7 +1651,10 @@ impl Engine {
 
         let (contents, post) = if quick_upscale {
             // No diffusion: the source itself is enlarged.
-            let src = images.into_iter().next().ok_or_else(|| AppError::invalid("Choose an image to upscale."))?;
+            let src = images
+                .into_iter()
+                .next()
+                .ok_or_else(|| AppError::invalid("Choose an image to upscale."))?;
             let size = src.size();
             let post = pipeline::PostProcess {
                 kind: pipeline::PostKind::Plain,
@@ -1301,9 +1678,19 @@ impl Engine {
                 .await
                 .map_err(AppError::internal)??;
             let pipeline::PreparedJob { request: mut sd_req, mut post, enhancer: view } = prepared;
+            // An externally managed engine may run a model with different sampling defaults
+            // (config externalEngine.sample: steps / cfg / sampler / clear_sigmas).
+            if let Some(ext) = &cfg.external_engine {
+                pipeline::apply_sample_overrides(&mut sd_req, &ext.sample);
+            }
             if let Some(what) = caps.mac_engine_unsupported(&sd_req) {
-                return Err(AppError::new(ErrorCode::Unsupported, format!("Kokon's Mac engine (experimental) does not do {what} yet."))
-                    .suggest("Turn it off in Settings → Performance to use the standard engine for this."));
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    format!("Kokon's Mac engine (experimental) does not do {what} yet."),
+                )
+                .suggest(
+                    "Turn it off in Settings → Performance to use the standard engine for this.",
+                ));
             }
 
             // 4a. Blend into scene: only the reading of the place the object stands in.
@@ -1320,6 +1707,9 @@ impl Engine {
 
             // 4b. Prompt enhancer: rewrites the user's prompt, looking at the references
             // exactly as the image model gets them.
+// The model for the sidecar prompt paths: the external engine's, or the built-in one.
+let qwen_model = cfg.profile().model_name();
+        let model_name = cfg.external_engine.as_ref().map(|e| e.model.as_str()).unwrap_or_else(|| qwen_model.as_str());
             if request.enhance && enhancer::applies_to(plan.mode, plan.marks) {
                 // A painted area or an expansion: Prompt+ writes what goes there, from its own view,
                 // and Kokon's instruction is kept round it.
@@ -1328,14 +1718,14 @@ impl Engine {
                         pipeline::EnhancerKind::Area { action, color } => enhancer::area_request(*action, color, &request.prompt, v.image.clone(), seed),
                         pipeline::EnhancerKind::Expand { sides } => enhancer::expand_request(sides, &request.prompt, v.image.clone(), seed),
                     };
-                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg, plan.mode, &request.prompt, &[], seed, Some(req), request.enhance_detail).await?;
+                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg,model_name, plan.mode, &request.prompt, &[], Some((plan.output.width, plan.output.height)), seed, Some(req), request.enhance_detail).await?;
                     if let Some(text) = &enhanced {
                         sd_req.prompt = v.prompt(&plan, text);
                     }
                 } else {
                     // Marks: an edit of the marked region (its one reference).
                     let as_mode = if plan.marks { ResolvedMode::Edit } else { plan.mode };
-                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg, as_mode, &request.prompt, &sd_req.ref_images, seed, None, request.enhance_detail).await?;
+                    enhanced = self.enhance_prompt(id, &client, &caps, &cfg,model_name, as_mode, &request.prompt, &sd_req.ref_images, Some((plan.output.width, plan.output.height)), seed, None, request.enhance_detail).await?;
                     if let Some(text) = &enhanced {
                         sd_req.prompt = pipeline::enhanced_prompt(&request.prompt, text);
                         // The rewrite understood a transparency request the keywords missed: keep the alpha.
@@ -1348,7 +1738,11 @@ impl Engine {
             if request.enhance_only {
                 if enhanced.is_none() {
                     let why = self.job(id).map(|j| j.notes.join(" ")).unwrap_or_default();
-                    return Err(AppError::new(ErrorCode::GenerationFailed, "Prompt+ could not write a prompt; yours is unchanged.").detail(why));
+                    return Err(AppError::new(
+                        ErrorCode::GenerationFailed,
+                        "Prompt+ could not write a prompt; yours is unchanged.",
+                    )
+                    .detail(why));
                 }
                 self.update(id, |j| {
                     j.view.status = JobStatus::Done;
@@ -1395,32 +1789,54 @@ impl Engine {
                     }
                 }
                 if self.is_cancelled(id) {
-                    return self.cancel_running(id, &client, &accepted.id, &self.config()).await;
+                    return self
+                        .cancel_running(id, &client, &accepted.id, &self.config())
+                        .await;
                 }
                 if last_poll.elapsed() >= Duration::from_millis(500) {
                     last_poll = Instant::now();
                     match client.job(&accepted.id).await {
                         Ok(bj) => match bj.status {
-                            BackendJobStatus::Completed | BackendJobStatus::Failed | BackendJobStatus::Cancelled => break bj,
-                            BackendJobStatus::Queued if !detailed => self.update(id, |j| j.view.stage = None),
-                            BackendJobStatus::Generating if !detailed => self.update(id, |j| j.view.stage = Some(BackendStage::Generating)),
+                            BackendJobStatus::Completed
+                            | BackendJobStatus::Failed
+                            | BackendJobStatus::Cancelled => break bj,
+                            BackendJobStatus::Queued if !detailed => {
+                                self.update(id, |j| j.view.stage = None)
+                            }
+                            BackendJobStatus::Generating if !detailed => {
+                                self.update(id, |j| j.view.stage = Some(BackendStage::Generating))
+                            }
                             _ => {}
                         },
                         Err(e) => {
                             if self.server.owned_alive() == Some(false) {
                                 let tail = self.server.log.tail(30).join("\n");
-                                self.server.mark_lost(AppError::new(ErrorCode::ServerCrashed, "The inference server stopped unexpectedly."));
+                                self.server.mark_lost(AppError::new(
+                                    ErrorCode::ServerCrashed,
+                                    "The inference server stopped unexpectedly.",
+                                ));
                                 self.emit_server();
-                                let mut err = translate_generation_failure("server process exited", &tail, (plan.working.width, plan.working.height), None);
+                                let mut err = translate_generation_failure(
+                                    "server process exited",
+                                    &tail,
+                                    (plan.working.width, plan.working.height),
+                                    None,
+                                );
                                 if err.code == ErrorCode::GenerationFailed {
-                                    err = AppError::new(ErrorCode::ServerCrashed, "The inference server stopped unexpectedly.")
-                                        .suggest("It will restart automatically on the next job.")
-                                        .detail(tail);
+                                    err = AppError::new(
+                                        ErrorCode::ServerCrashed,
+                                        "The inference server stopped unexpectedly.",
+                                    )
+                                    .suggest("It will restart automatically on the next job.")
+                                    .detail(tail);
                                 }
                                 return self.maybe_retry_oom(id, err).await;
                             }
                             if e.code == ErrorCode::NotFound {
-                                return Err(AppError::new(ErrorCode::GenerationFailed, "The inference server lost track of the job (it may have restarted)."));
+                                return Err(AppError::new(
+                                    ErrorCode::GenerationFailed,
+                                    "The inference server lost track of the job (it may have restarted).",
+                                ));
                             }
                         }
                     }
@@ -1430,11 +1846,24 @@ impl Engine {
 
             match backend_job.status {
                 BackendJobStatus::Completed => {}
-                BackendJobStatus::Cancelled => return Err(AppError::new(ErrorCode::Cancelled, "Cancelled.")),
+                BackendJobStatus::Cancelled => {
+                    return Err(AppError::new(ErrorCode::Cancelled, "Cancelled."));
+                }
                 _ => {
-                    let msg = backend_job.error.map(|e| format!("{}: {}", e.code, e.message)).unwrap_or_default();
-                    let smaller = Size::new(((plan.working.width as f64) * 0.75) as u32 / 32 * 32, ((plan.working.height as f64) * 0.75) as u32 / 32 * 32);
-                    let err = translate_generation_failure(&msg, &job_log.join("\n"), (plan.working.width, plan.working.height), Some((smaller.width, smaller.height)));
+                    let msg = backend_job
+                        .error
+                        .map(|e| format!("{}: {}", e.code, e.message))
+                        .unwrap_or_default();
+                    let smaller = Size::new(
+                        ((plan.working.width as f64) * 0.75) as u32 / 32 * 32,
+                        ((plan.working.height as f64) * 0.75) as u32 / 32 * 32,
+                    );
+                    let err = translate_generation_failure(
+                        &msg,
+                        &job_log.join("\n"),
+                        (plan.working.width, plan.working.height),
+                        Some((smaller.width, smaller.height)),
+                    );
                     return self.maybe_retry_oom(id, err).await;
                 }
             }
@@ -1442,13 +1871,19 @@ impl Engine {
             if !cold_start && loras.is_empty() {
                 let key = crate::speed::machine_key(&cfg, self.gpu().as_ref());
                 let predicted = planner::backend_seconds(&plan, cfg.uses_sage_attention());
-                if let Some(f) = self.speed.record(&key, submitted.elapsed().as_secs_f32(), predicted) {
+                if let Some(f) =
+                    self.speed
+                        .record(&key, submitted.elapsed().as_secs_f32(), predicted)
+                {
                     tracing::info!("speed calibration {key}: x{f:.2}");
                 }
             }
             let result = backend_job.result.unwrap_or_default();
             if result.images.is_empty() {
-                return Err(AppError::new(ErrorCode::GenerationFailed, "The inference server returned no image."));
+                return Err(AppError::new(
+                    ErrorCode::GenerationFailed,
+                    "The inference server returned no image.",
+                ));
             }
             let post = Arc::new(post);
             let mut contents = Vec::with_capacity(result.images.len());
@@ -1456,13 +1891,18 @@ impl Engine {
                 let p = post.clone();
                 contents.push(
                     blocking(move || {
-                        let raw = imaging::decode_image(&crate::sdcpp::b64_decode(&im.b64_json)?)?.pixels;
+                        let raw =
+                            imaging::decode_image(&crate::sdcpp::b64_decode(&im.b64_json)?)?.pixels;
                         Ok(pipeline::crop_content(raw, &p))
                     })
                     .await?,
                 );
             }
-            (contents, Arc::try_unwrap(post).map_err(|_| AppError::internal("post-process still shared"))?)
+            (
+                contents,
+                Arc::try_unwrap(post)
+                    .map_err(|_| AppError::internal("post-process still shared"))?,
+            )
         };
 
         // 6. Enlarge (ESRGAN), post-process and save.
@@ -1476,8 +1916,22 @@ impl Engine {
             let target = pipeline::enlarge_target(&post);
             // Kept when the upscaler enlarges it, so the user can still see and save it.
             let original = target.map(|_| content.clone());
-            let how = EnlargeOptions { tile: plan.upscale_tile, blend: cfg.upscale_blend, prescale: cfg.upscale_prescale };
-            let (content, enlarged_with) = self.enlarge(id, &client, content, target, esrgan.as_deref(), how, (i as u32 + 1, count)).await?;
+            let how = EnlargeOptions {
+                tile: plan.upscale_tile,
+                blend: cfg.upscale_blend,
+                prescale: cfg.upscale_prescale,
+            };
+            let (content, enlarged_with) = self
+                .enlarge(
+                    id,
+                    &client,
+                    content,
+                    target,
+                    esrgan.as_deref(),
+                    how,
+                    (i as u32 + 1, count),
+                )
+                .await?;
             let original = original.filter(|_| enlarged_with.is_some());
             self.update(id, |j| {
                 j.view.status = JobStatus::Saving;
@@ -1500,16 +1954,43 @@ impl Engine {
             if let Some(j) = self.job(id) {
                 plan3.notes = j.notes;
             }
-            let (p, req3, inputs3, mask3, icc3, ws, enh3, loras3) = (post.clone(), request.clone(), inputs_meta.clone(), mask_rec.clone(), icc.clone(), workspace.clone(), enhanced.clone(), loras.clone());
+            let (p, req3, inputs3, mask3, icc3, ws, enh3, loras3) = (
+                post.clone(),
+                request.clone(),
+                inputs_meta.clone(),
+                mask_rec.clone(),
+                icc.clone(),
+                workspace.clone(),
+                enhanced.clone(),
+                loras.clone(),
+            );
             let rec = blocking(move || {
                 let final_img = pipeline::finish(content, &p)?;
                 let duration_ms = duration_start.elapsed().as_millis() as u64;
                 let pipeline = (pipeline_rec != PipelineRecord::default()).then_some(pipeline_rec);
-                this.save_result(&final_img, &req3, &plan3, seed + i as i64, &inputs3, mask3.as_ref(), icc3.as_deref(), duration_ms, ws.as_deref(), i, pipeline, original.as_ref(), enh3, loras3)
+                this.save_result(
+                    &final_img,
+                    &req3,
+                    &plan3,
+                    seed + i as i64,
+                    &inputs3,
+                    mask3.as_ref(),
+                    icc3.as_deref(),
+                    duration_ms,
+                    ws.as_deref(),
+                    i,
+                    pipeline,
+                    original.as_ref(),
+                    enh3,
+                    loras3,
+                )
             })
             .await?;
             if !request.private {
-                let _ = self.events.send(Event::Gallery { id: rec.id.clone(), change: "added" });
+                let _ = self.events.send(Event::Gallery {
+                    id: rec.id.clone(),
+                    change: "added",
+                });
             }
             records.push(rec);
         }
@@ -1531,7 +2012,13 @@ impl Engine {
     }
 
     /// The LoRAs job `id` uses (see `lora::resolve`); skipped ones are noted on the job.
-    fn job_loras(&self, id: &str, cfg: &AppConfig, request: &GenerationRequest, caps: &Capabilities) -> Vec<AppliedLora> {
+    fn job_loras(
+        &self,
+        id: &str,
+        cfg: &AppConfig,
+        request: &GenerationRequest,
+        caps: &Capabilities,
+    ) -> Vec<AppliedLora> {
         let (loras, notes) = lora::resolve(cfg, request.loras.as_deref());
         let (loras, notes) = if !loras.is_empty() && !caps.img_feature("lora") {
             (Vec::new(), vec!["This inference engine can't use LoRAs (update it in Setup); made without them.".to_string()])
@@ -1584,14 +2071,131 @@ impl Engine {
     /// new prompt, or None when the job keeps the user's prompt: the engine cannot write text,
     /// or the enhancer failed (both noted on the job). Errors only for a cancel or a crash.
     #[allow(clippy::too_many_arguments)]
-    async fn enhance_prompt(&self, id: &str, client: &SdcppClient, caps: &Capabilities, cfg: &AppConfig, mode: ResolvedMode, prompt: &str, images: &[String], seed: i64, own: Option<TextGenRequest>, detail: bool) -> AppResult<Option<String>> {
+    /// Bridges a sidecar reply to the in-engine `text_gen` done-event shape, so the
+    /// enhance path treats both token sources identically.
+    fn vlm_to_textgen(d: crate::vlm::VlmReply, seed: i64) -> TextGenDone {
+        TextGenDone {
+            text: d.text,
+            finish_reason: d.finish_reason,
+            seed,
+            usage: TextUsage {
+                prompt_tokens: d.prompt_tokens,
+                completion_tokens: d.completion_tokens,
+            },
+            timings: serde_json::Value::Null,
+        }
+    }
+
+    async fn enhance_prompt(
+        &self,
+        id: &str,
+        client: &SdcppClient,
+        caps: &Capabilities,
+        cfg: &AppConfig,
+        model: &str,
+        mode: ResolvedMode,
+        prompt: &str,
+        images: &[String],
+        canvas: Option<(u32, u32)>,
+        seed: i64,
+own: Option<TextGenRequest>,
+detail: bool,
+    ) -> AppResult<Option<String>> {
         // A retry after running out of memory keeps the first prompt.
-        if let Some(done) = self.jobs.lock().unwrap().get(id).and_then(|j| j.enhanced.clone()) {
+        if let Some(done) = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|j| j.enhanced.clone())
+        {
             return Ok(Some(done));
         }
-        if !caps.text_generation {
+        // Upsampler routing, first match wins: (1) the pipeline's own endpoint
+        // (models[].vlm) — stock engines carry no LLM, so a pipeline whose engine is
+        // one points here at a sidecar serving the same weights the engine conditions
+        // with; (2) the shared externalEngine.vlm — the BFL pipelines' captions come
+        // from the committed bundle; (3) the engine's own LLM (bundled engines, and
+        // the qwen fork's conditioner, which doubled as its PUP until the stock
+        // cutover moved that pipeline to (1)).
+        // D-FB: a configured VLM that is down is a hard job failure - a model trained on
+        // upsampler captions degrades on the user's raw words, so there is no
+        // "used as written" fallback for it.
+        let pipeline_vlm = cfg
+            .models
+            .iter()
+            .find(|m| m.model == model)
+            .and_then(|m| m.vlm.as_ref());
+        let vlm = match pipeline_vlm {
+            Some(v) => Some(crate::vlm::VlmClient::new(v)),
+            None if enhancer::bfl_pup(model) => cfg
+                .external_engine
+                .as_ref()
+                .and_then(|e| e.vlm.as_ref())
+                .map(crate::vlm::VlmClient::new),
+            None => None,
+        };
+        if vlm.is_none() && !caps.text_generation {
             self.update(id, |j| j.view.notes.push("This inference engine has no prompt enhancer (update it in Setup); your prompt was used as written.".into()));
             return Ok(None);
+        }
+        // BFL pipelines upsample with BFL's committed prompt bundle: the config names it
+        // (promptBundle, resolved against the deployment's data dir) and the service loads
+        // it here, per job, so a replacement dropped into that folder applies to the next
+        // job. A missing or broken bundle is a configuration failure of the job: a model
+        // trained on the upsampler's captions cannot run on the user's raw words.
+        let bundle = if enhancer::bfl_pup(model) {
+            let dir = cfg
+                .external_engine
+                .as_ref()
+                .and_then(|e| e.prompt_bundle_path())
+                .ok_or_else(|| {
+                    AppError::new(
+                        ErrorCode::InvalidConfig,
+                        "this pipeline has no prompt bundle configured: set its promptBundle to the BFL bundle (the deployment ships the bundle in its data dir's assets folder)",
+                    )
+                })?;
+            Some(crate::pup::load(&dir)?)
+        } else {
+            // The Qwen path carries its own bundle too (the pipeline's promptBundle,
+            // schema 13; the deployment's data dir). Unlike the BFL bundle it is not a
+            // training contract: a missing or broken one falls back to the built-in
+            // Qwen prompts with a job-level note — the Qwen path must never hard-fail.
+            let dir = cfg
+                .models
+                .iter()
+                .find(|m| m.model == model)
+                .and_then(|m| m.prompt_bundle_path());
+            match dir {
+                Some(d) => match crate::pup::load(&d) {
+                    Ok(b) => Some(b),
+                    Err(e) => {
+                        self.update(id, |j| {
+                            j.view.notes.push(format!(
+                                "The pipeline's prompt bundle at {} could not be loaded ({}); the built-in prompts were used.",
+                                d.display(),
+                                e.message
+                            ))
+                        });
+                        None
+                    }
+                },
+                None => None,
+            }
+        };
+        // The BFL family must be complete before any BFL path uses it (the bbox and
+        // request builders take the unwrapped form): a BFL pipeline pointed at a
+        // non-BFL or partial bundle fails the job cleanly here.
+        let bfl = if enhancer::bfl_pup(model) {
+            Some(bundle.as_ref().expect("the BFL bundle was loaded above").bfl()?)
+        } else {
+            None
+        };
+        // BFL layout boxes: a finished caption (every table id cited) is the upsampler's
+        // own output. BFL skips re-upsampling it, and the DiT gets the table as written.
+        let boxes = bfl.as_ref().and_then(|b| enhancer::bfl_bbox(model, mode, prompt, canvas, b));
+        if boxes.as_ref().is_some_and(|b| b.finished) {
+            return Ok(Some(prompt.to_string()));
         }
         self.update(id, |j| {
             j.view.status = JobStatus::EnhancingPrompt;
@@ -1601,32 +2205,75 @@ impl Engine {
         let started = Instant::now();
         // A new image from references: each reference is labelled alone first, then the scene is
         // written from the labels without the images (see `enhancer::COMPOSE_SYSTEM_PROMPT`).
-        let req = if let Some(r) = own {
-            // A painted area or an expansion: its request is made with its own view.
-            r
-        } else if mode == ResolvedMode::Compose {
+let req = if let Some(r) = own {
+    // A painted area or an expansion: its request is made with its own view.
+    r
+} else if mode == ResolvedMode::Compose && !enhancer::bfl_pup(model) {
             let mut labels = Vec::with_capacity(images.len());
             for img in images {
-                let r = client.text_gen(&enhancer::label_request(img.clone(), prompt, seed), Duration::from_secs(120), |_| {}, || self.is_cancelled(id)).await;
+                let lr = enhancer::label_request(img.clone(), prompt, seed, bundle.as_ref());
+                let r = match &vlm {
+                    Some(v) => v
+                        .chat(&lr, Duration::from_secs(120))
+                        .await
+                        .map(|d| Self::vlm_to_textgen(d, lr.sampling.seed)),
+                    None => client
+                        .text_gen(&lr, Duration::from_secs(120), |_| {}, || self.is_cancelled(id))
+                        .await,
+                };
                 match r {
                     Ok(done) => labels.push(enhancer::clean_label(&done.text)),
                     Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
-                    // A missing label leaves the image model to see that reference by itself.
+                    // D-FB: a down sidecar must not degrade a composition into unlabeled
+                    // references.
+                    Err(e) if vlm.is_some() => {
+                        self.update(id, |j| j.view.enhanced_prompt = None);
+                        return Err(e);
+                    }
+                    // A missing label (in-engine path only) leaves the image model to see
+                    // that reference by itself.
                     Err(e) => {
-                        tracing::warn!("prompt enhancer: labelling a reference failed: {} {:?}", e.message, e.detail);
+                        tracing::warn!(
+                            "prompt enhancer: labelling a reference failed: {} {:?}",
+                            e.message,
+                            e.detail
+                        );
                         labels.push("the subject of this reference".into());
                     }
                 }
             }
-            tracing::info!("prompt enhancer: {} reference labels in {:.1} s: {:?}", labels.len(), started.elapsed().as_secs_f32(), labels);
-            enhancer::compose_request(cfg, &labels, prompt, seed)
+            tracing::info!(
+                "prompt enhancer: {} reference labels in {:.1} s: {:?}",
+                labels.len(),
+                started.elapsed().as_secs_f32(),
+                labels
+            );
+            enhancer::compose_request(cfg, &labels, prompt, seed, bundle.as_ref())
         } else {
-            enhancer::request(cfg, mode, prompt, images.to_vec(), seed)
+            // BFL-style models (and every non-compose case) go straight to the upsampler
+            // with the references it sees.
+            enhancer::request(
+                cfg,
+                model,
+                mode,
+                prompt,
+                images.to_vec(),
+                canvas,
+                seed,
+                bundle.as_ref(),
+            )?
         };
         let req = if detail { enhancer::detailed(req, mode) } else { req };
         let mut text = String::new();
         let mut last_emit = Instant::now();
-        let on_delta = |d: &str| {
+        // When a retry replaces a degenerate answer, the stream restarts from empty. (An
+        // AtomicBool, not a Cell: the closure borrows this and the async fn must stay
+        // Send for the worker task.)
+        let reset = std::sync::atomic::AtomicBool::new(false);
+        let mut on_delta = |d: &str| {
+            if reset.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                text.clear();
+            }
             text.push_str(d);
             // The UI follows the text at ~10 updates a second.
             if last_emit.elapsed() >= Duration::from_millis(100) {
@@ -1635,11 +2282,102 @@ impl Engine {
                 self.update(id, |j| j.view.enhanced_prompt = Some(partial));
             }
         };
-        let r = client.text_gen(&req, Duration::from_secs(300), on_delta, || self.is_cancelled(id)).await;
+        let mut r = match &vlm {
+            // The sidecar answers a whole turn at a time (no streaming yet): the UI gets
+            // the finished answer in one update.
+            Some(v) => match v.chat(&req, Duration::from_secs(300)).await {
+                Ok(done) => {
+                    self.update(id, |j| j.view.enhanced_prompt = Some(done.text.clone()));
+                    Ok(Self::vlm_to_textgen(done, req.sampling.seed))
+                }
+                Err(e) => {
+                    // D-FB: the job fails with the actionable message; the view does not
+                    // keep an empty "enhancing" box behind it.
+                    self.update(id, |j| j.view.enhanced_prompt = None);
+                    Err(e)
+                }
+            },
+            None => client
+                .text_gen(&req, Duration::from_secs(300), &mut on_delta, || {
+                    self.is_cancelled(id)
+                })
+                .await,
+        };
+        // A degenerate answer (the table without a caption, or the user's own words
+        // echoed back) is what the first call on a cold upsampler does. Running it
+        // once more, warm, fixes it - do not fail the job over it.
+        let mut degenerate: Option<&'static str> = match &r {
+            Ok(done) => {
+                boxes.as_ref().and_then(|b| enhancer::degenerate_answer(&b.original, &done.text))
+            }
+            Err(_) => None,
+        };
+        if let Some(why) = degenerate {
+            tracing::info!("prompt enhancer: degenerate answer ({why}); retrying once");
+            // Greedy sampling with the same seed would just write the same answer - nudge
+            // the seed so the warm retry can differ.
+            let mut retry = req.clone();
+            retry.sampling.seed += 1;
+            // The UI has been following the first answer - restart the stream on the new one.
+            reset.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.update(id, |j| j.view.enhanced_prompt = Some(String::new()));
+            r = match &vlm {
+                Some(v) => match v.chat(&retry, Duration::from_secs(300)).await {
+                    Ok(done) => {
+                        self.update(id, |j| j.view.enhanced_prompt = Some(done.text.clone()));
+                        Ok(Self::vlm_to_textgen(done, retry.sampling.seed))
+                    }
+                    Err(e) => {
+                        self.update(id, |j| j.view.enhanced_prompt = None);
+                        Err(e)
+                    }
+                },
+                None => client
+                    .text_gen(&retry, Duration::from_secs(300), &mut on_delta, || {
+                        self.is_cancelled(id)
+                    })
+                    .await,
+            };
+            degenerate = match &r {
+                Ok(done) => {
+                    boxes.as_ref().and_then(|b| enhancer::degenerate_answer(&b.original, &done.text))
+                }
+                Err(_) => None,
+            };
+        }
         let failure = match r {
-            Ok(done) => match enhancer::clean(&done.text) {
-                Some(t) => {
-                    tracing::info!("prompt enhancer: {} tokens in {:.1} s ({}, seed {})", done.usage.completion_tokens, started.elapsed().as_secs_f32(), done.finish_reason, done.seed);
+            Ok(done) => {
+                let written: Option<String> = match &boxes {
+                    // The upsampler answered: the user's boxes go back in. A row that
+                    // re-plans a locked box (IoU ≥ 0.9) takes the locked id, the locked
+                    // rows stay verbatim (adopting its descriptions), its own rows follow.
+                    Some(b) => {
+                        let (caption, _) = bbox::split(&done.text);
+                        if caption.trim().is_empty() {
+                            None
+                        } else {
+                            let reconciled = bbox::reconcile(&done.text, &b.locked);
+                            let (cap, rows) = bbox::split(&reconciled);
+                            // The DiT follows the caption's sentences, not the table: if the
+                            // model reworded a locked removal as a move, the object would stay.
+                            let fixed = bbox::fix_remove_actions(&cap, &b.locked);
+                            Some(match rows {
+                                Some(rows) => format!("{} {}", fixed, serde_json::to_string(&rows).unwrap_or_default()),
+                                None => fixed,
+                            })
+                        }
+                    }
+                    None => enhancer::clean(&done.text),
+                };
+                match written {
+                    Some(t) => {
+                    tracing::info!(
+                        "prompt enhancer: {} tokens in {:.1} s ({}, seed {})",
+                        done.usage.completion_tokens,
+                        started.elapsed().as_secs_f32(),
+                        done.finish_reason,
+                        done.seed
+                    );
                     let cut = done.finish_reason == "length";
                     self.update(id, |j| {
                         j.view.enhanced_prompt = Some(t.clone());
@@ -1649,33 +2387,52 @@ impl Engine {
                         }
                     });
                     return Ok(Some(t));
+                    }
+                    None => degenerate
+                        .map(|w| format!("{w} - twice"))
+                        .unwrap_or_else(|| "it wrote nothing".to_string()),
                 }
-                None => "it wrote nothing".to_string(),
             },
             Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+            // D-FB: a down upsampler fails the job; the generic soft-fail below is only
+            // for the in-engine path.
+            Err(e) if e.code == ErrorCode::Upsampler => return Err(e),
             Err(e) => {
                 if self.server.owned_alive() == Some(false) {
                     let tail = self.server.log.tail(30).join("\n");
-                    self.server.mark_lost(AppError::new(ErrorCode::ServerCrashed, "The inference server stopped unexpectedly."));
+                    self.server.mark_lost(AppError::new(
+                        ErrorCode::ServerCrashed,
+                        "The inference server stopped unexpectedly.",
+                    ));
                     self.emit_server();
                     return Err(AppError::new(ErrorCode::ServerCrashed, "The inference server stopped while writing the prompt.")
                         .suggest("It will restart automatically on the next job. Turn the prompt enhancer off if it happens again.")
                         .detail(tail));
                 }
                 tracing::warn!("prompt enhancer failed: {} {:?}", e.message, e.detail);
-                e.detail.clone().map(|d| format!("{} {d}", e.message)).unwrap_or(e.message)
+                e.detail
+                    .clone()
+                    .map(|d| format!("{} {d}", e.message))
+                    .unwrap_or(e.message)
             }
         };
         self.update(id, |j| {
             j.view.enhanced_prompt = None;
-            j.view.notes.push(format!("The prompt enhancer failed ({}); your prompt was used as written.", failure.trim_end_matches('.')));
+            j.view.notes.push(format!(
+                "The prompt enhancer failed ({}); your prompt was used as written.",
+                failure.trim_end_matches('.')
+            ));
         });
         Ok(None)
     }
 
     /// Label of an upscale request that has no prompt: the source's own prompt, if any.
     fn upscale_prompt(&self, req: &GenerationRequest) -> String {
-        let source = req.images.first().and_then(|s| s.strip_prefix("gen:")).and_then(|g| self.gen_store(g).get_generation(g).ok());
+        let source = req
+            .images
+            .first()
+            .and_then(|s| s.strip_prefix("gen:"))
+            .and_then(|g| self.gen_store(g).get_generation(g).ok());
         match source {
             Some(g) if !g.prompt.trim().is_empty() => g.prompt,
             _ => "Upscaled image".into(),
@@ -1687,14 +2444,28 @@ impl Engine {
     /// enlargement is done; upscaler failures fall back to Lanczos with a note. `image` is
     /// (this image, images in the batch), for the progress.
     #[allow(clippy::too_many_arguments)]
-    async fn enlarge(&self, id: &str, client: &SdcppClient, content: image::RgbaImage, target: Option<Size>, esrgan: Option<&str>, how: EnlargeOptions, image: (u32, u32)) -> AppResult<(image::RgbaImage, Option<String>)> {
-        let Some(target) = target else { return Ok((content, None)) };
+    async fn enlarge(
+        &self,
+        id: &str,
+        client: &SdcppClient,
+        content: image::RgbaImage,
+        target: Option<Size>,
+        esrgan: Option<&str>,
+        how: EnlargeOptions,
+        image: (u32, u32),
+    ) -> AppResult<(image::RgbaImage, Option<String>)> {
+        let Some(target) = target else {
+            return Ok((content, None));
+        };
         let size = Size::new(content.width(), content.height());
-        let factor = (target.width as f64 / size.width as f64).max(target.height as f64 / size.height as f64);
+        let factor = (target.width as f64 / size.width as f64)
+            .max(target.height as f64 / size.height as f64);
         if factor <= pipeline::ESRGAN_MIN_FACTOR {
             return Ok((content, None));
         }
-        let Some(name) = esrgan else { return Ok((content, Some("Lanczos".into()))) };
+        let Some(name) = esrgan else {
+            return Ok((content, Some("Lanczos".into())));
+        };
         self.update(id, |j| {
             j.view.status = JobStatus::Running;
             j.view.stage = Some(BackendStage::Upscaling);
@@ -1703,11 +2474,15 @@ impl Engine {
             j.view.seconds_per_step = None;
         });
         let content = Arc::new(content);
-        let r = self.esrgan_enlarge(id, client, content.clone(), target, name, how).await;
+        let r = self
+            .esrgan_enlarge(id, client, content.clone(), target, name, how)
+            .await;
         let r = match r {
             Ok(Some(img)) if how.blend < 1.0 => {
                 let src = content.clone();
-                blocking(move || Ok(pipeline::blend_with_lanczos(img, &src, how.blend))).await.map(Some)
+                blocking(move || Ok(pipeline::blend_with_lanczos(img, &src, how.blend)))
+                    .await
+                    .map(Some)
             }
             r => r,
         };
@@ -1717,21 +2492,46 @@ impl Engine {
             Ok(None) => Ok((content, None)),
             Err(e) if e.code == ErrorCode::Cancelled => Err(e),
             Err(e) => {
-                tracing::warn!("upscaler failed, using Lanczos: {} {:?}", e.message, e.detail);
-                self.update(id, |j| j.view.notes.push(format!("Upscaler model failed ({}); enlarged with Lanczos.", e.message)));
+                tracing::warn!(
+                    "upscaler failed, using Lanczos: {} {:?}",
+                    e.message,
+                    e.detail
+                );
+                self.update(id, |j| {
+                    j.view.notes.push(format!(
+                        "Upscaler model failed ({}); enlarged with Lanczos.",
+                        e.message
+                    ))
+                });
                 Ok((content, Some("Lanczos".into())))
             }
         }
     }
 
-    async fn esrgan_enlarge(&self, id: &str, client: &SdcppClient, content: Arc<image::RgbaImage>, target: Size, upscaler: &str, how: EnlargeOptions) -> AppResult<Option<image::RgbaImage>> {
+    async fn esrgan_enlarge(
+        &self,
+        id: &str,
+        client: &SdcppClient,
+        content: Arc<image::RgbaImage>,
+        target: Size,
+        upscaler: &str,
+        how: EnlargeOptions,
+    ) -> AppResult<Option<image::RgbaImage>> {
         // Requests are sized for the x4 model; the server tiles each one at `how.tile` px.
         let size = Size::new(content.width(), content.height());
-        let input = if how.prescale { pipeline::prescale_size(size, target, 4) } else { size };
-        let Some(ep) = pipeline::esrgan_plan(input, target, 4) else { return Ok(None) };
+        let input = if how.prescale {
+            pipeline::prescale_size(size, target, 4)
+        } else {
+            size
+        };
+        let Some(ep) = pipeline::esrgan_plan(input, target, 4) else {
+            return Ok(None);
+        };
         let tile_px = how.tile;
         let c = content.clone();
-        let input = Arc::new(blocking(move || Ok(imaging::resize(&c, ep.input.width, ep.input.height))).await?);
+        let input = Arc::new(
+            blocking(move || Ok(imaging::resize(&c, ep.input.width, ep.input.height))).await?,
+        );
         let mut stitcher = pipeline::Stitcher::new(ep.input);
         // Tiles are the upscaler's steps: (done, total) and the measured time per tile.
         let total = ep.tiles.len() as u32;
@@ -1741,8 +2541,21 @@ impl Engine {
             self.check_cancel(id)?;
             let (inp, t) = (input.clone(), *tile);
             let png = blocking(move || pipeline::tile_png_b64(&inp, &t)).await?;
-            let resp = client.upscale(&UpscaleRequest { image: png, upscaler: Some(upscaler.to_string()), tile_size: (tile_px > 0).then_some(tile_px), output_format: "png".into() }).await?;
-            let up = blocking(move || imaging::decode_engine_image(&crate::sdcpp::b64_decode(&resp.images[0].b64_json)?, pipeline::ESRGAN_MAX_OUTPUT_SIDE)).await?;
+            let resp = client
+                .upscale(&UpscaleRequest {
+                    image: png,
+                    upscaler: Some(upscaler.to_string()),
+                    tile_size: (tile_px > 0).then_some(tile_px),
+                    output_format: "png".into(),
+                })
+                .await?;
+            let up = blocking(move || {
+                imaging::decode_engine_image(
+                    &crate::sdcpp::b64_decode(&resp.images[0].b64_json)?,
+                    pipeline::ESRGAN_MAX_OUTPUT_SIDE,
+                )
+            })
+            .await?;
             stitcher.add(tile, &up)?;
             let done = k as u32 + 1;
             let per_tile = started.elapsed().as_secs_f32() / done as f32;
@@ -1763,14 +2576,26 @@ impl Engine {
         });
     }
 
-    async fn cancel_running(&self, id: &str, client: &SdcppClient, backend_id: &str, cfg: &AppConfig) -> AppResult<()> {
+    async fn cancel_running(
+        &self,
+        id: &str,
+        client: &SdcppClient,
+        backend_id: &str,
+        cfg: &AppConfig,
+    ) -> AppResult<()> {
         match client.cancel(backend_id).await {
-            Ok(CancelOutcome::Cancelled) | Ok(CancelOutcome::AlreadyFinished) | Ok(CancelOutcome::NotFound) => {}
+            Ok(CancelOutcome::Cancelled)
+            | Ok(CancelOutcome::AlreadyFinished)
+            | Ok(CancelOutcome::NotFound) => {}
             Ok(CancelOutcome::NotInterruptible) | Err(_) => {
                 // This sd-server build cannot interrupt a running job. If we own the
                 // process, restart it to free the GPU now; otherwise the result is discarded.
                 if self.server.status().owned {
-                    self.update(id, |j| j.view.notes.push("Stopping the inference server to cancel immediately.".into()));
+                    self.update(id, |j| {
+                        j.view
+                            .notes
+                            .push("Stopping the inference server to cancel immediately.".into())
+                    });
                     self.server.stop().await;
                     self.emit_server();
                     let this_cfg = cfg.clone();
@@ -1782,7 +2607,12 @@ impl Engine {
                         });
                     }
                 } else {
-                    self.update(id, |j| j.view.notes.push("The external server will finish this image; the result is discarded.".into()));
+                    self.update(id, |j| {
+                        j.view.notes.push(
+                            "The external server will finish this image; the result is discarded."
+                                .into(),
+                        )
+                    });
                 }
             }
         }
@@ -1791,7 +2621,14 @@ impl Engine {
 
     /// One automatic retry for out-of-memory: enable VAE tiling, then lower resolution.
     async fn maybe_retry_oom(&self, id: &str, err: AppError) -> AppResult<()> {
-        let can_retry = err.code == ErrorCode::OutOfMemory && !self.jobs.lock().unwrap().get(id).map(|j| j.retried_oom).unwrap_or(true);
+        let can_retry = err.code == ErrorCode::OutOfMemory
+            && !self
+                .jobs
+                .lock()
+                .unwrap()
+                .get(id)
+                .map(|j| j.retried_oom)
+                .unwrap_or(true);
         if !can_retry {
             return Err(err);
         }
@@ -1801,14 +2638,20 @@ impl Engine {
             j.request.advanced.vae_tiling = Some(true);
             if tiled {
                 j.request.resolution = match j.request.resolution {
-                    ResolutionMode::K2 | ResolutionMode::Source | ResolutionMode::Custom => ResolutionMode::K15,
+                    ResolutionMode::K2 | ResolutionMode::Source | ResolutionMode::Custom => {
+                        ResolutionMode::K15
+                    }
                     _ => ResolutionMode::K1,
                 };
                 j.request.width = None;
                 j.request.height = None;
-                j.view.notes.push("Ran out of GPU memory; retrying at a lower resolution.".into());
+                j.view
+                    .notes
+                    .push("Ran out of GPU memory; retrying at a lower resolution.".into());
             } else {
-                j.view.notes.push("Ran out of GPU memory; retrying with memory optimization.".into());
+                j.view
+                    .notes
+                    .push("Ran out of GPU memory; retrying with memory optimization.".into());
             }
             j.view.status = JobStatus::Queued;
             j.view.stage = None;
@@ -1847,27 +2690,49 @@ impl Engine {
         let cfg = self.config();
         let id = new_id();
         let now = chrono::Local::now();
-        let store = if req.private { &self.private_store } else { &self.store };
-        let dir = if req.private { self.private_dir.join("out") } else { cfg.output_dir.join(now.format("%Y-%m-%d").to_string()) };
-        std::fs::create_dir_all(&dir).map_err(|e| AppError::io("create the output folder", &dir, e))?;
+        let store = if req.private {
+            &self.private_store
+        } else {
+            &self.store
+        };
+        let dir = if req.private {
+            self.private_dir.join("out")
+        } else {
+            cfg.output_dir.join(now.format("%Y-%m-%d").to_string())
+        };
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AppError::io("create the output folder", &dir, e))?;
         let words: Vec<&str> = req.prompt.split_whitespace().take(6).collect();
-        let stem = format!("{}-{}-{seed}", now.format("%H%M%S"), paths::sanitize_file_stem(&words.join(" ")));
+        let stem = format!(
+            "{}-{}-{seed}",
+            now.format("%H%M%S"),
+            paths::sanitize_file_stem(&words.join(" "))
+        );
         // HDR from a HEIC source forces an Ultra HDR JPEG; otherwise the requested format.
         let (hdr, hdr_note) = hdr_for(img, req, plan, inputs);
-        let format = if hdr.is_some() { OutputFormat::Jpeg } else { plan.output_format };
+        let format = if hdr.is_some() {
+            OutputFormat::Jpeg
+        } else {
+            plan.output_format
+        };
         let file = paths::unique_path(dir.join(format!("{stem}.{}", format.ext())), &[]);
 
         if let Some(o) = original {
             let path = store.original_path(&id);
             let saved = (|| {
                 if let Some(d) = path.parent() {
-                    std::fs::create_dir_all(d).map_err(|e| AppError::io("create the originals folder", d, e))?;
+                    std::fs::create_dir_all(d)
+                        .map_err(|e| AppError::io("create the originals folder", d, e))?;
                 }
                 write_atomic(&path, &imaging::encode_png(o, &[], icc, true)?)
             })();
             match (saved, pipeline.as_mut()) {
                 (Ok(()), Some(p)) => p.original_path = Some(path.to_string_lossy().into_owned()),
-                (Err(e), _) => tracing::warn!("could not keep the pre-upscale image of {id}: {} {:?}", e.message, e.detail),
+                (Err(e), _) => tracing::warn!(
+                    "could not keep the pre-upscale image of {id}: {} {:?}",
+                    e.message,
+                    e.detail
+                ),
                 _ => {}
             }
         }
@@ -1881,13 +2746,23 @@ impl Engine {
             ResolvedMode::Compose => "compose",
             ResolvedMode::Upscale => "upscale",
         };
+        // The external engine's sample overrides (config externalEngine.sample) change what is
+        // actually sent: the metadata records the values that were run, not the planned ones
+        // (which describe the quality preset, not the model's recipe).
+        let (rec_steps, rec_cfg, rec_sampler) = match cfg.external_engine() {
+            Some(ext) => pipeline::effective_sample(plan.steps, plan.cfg, &plan.sampler, &ext.sample),
+            None => (plan.steps, plan.cfg, plan.sampler.clone()),
+        };
         let mut rec = GenerationRecord {
             id: id.clone(),
             created_at: now_rfc3339(),
             mode: mode.into(),
             // An enhanced job records the prompt the image was made from, and the user's.
             // A reviewed prompt (written by Prompt+, then sent by the user) keeps the user's words too.
-            original_prompt: enhanced_prompt.is_some().then(|| req.prompt.clone()).or_else(|| req.enhanced_from.clone().filter(|p| !p.trim().is_empty())),
+            original_prompt: enhanced_prompt
+                .is_some()
+                .then(|| req.prompt.clone())
+                .or_else(|| req.enhanced_from.clone().filter(|p| !p.trim().is_empty())),
             prompt: enhanced_prompt.unwrap_or_else(|| req.prompt.clone()),
             loras,
             negative_prompt: plan.negative_prompt.clone(),
@@ -1896,18 +2771,36 @@ impl Engine {
             height: img.height(),
             working_width: plan.working.width,
             working_height: plan.working.height,
-            model: cfg.profile().model_name(),
-            sampler: plan.sampler.clone(),
+            // Kokon's own engine records the profile's model. An external engine records the
+            // name it reports for itself: the gateway, not Kokon, decides what is loaded.
+            model: cfg
+                .external_engine()
+                .and_then(|_| self.server.capabilities())
+                .and_then(|c| (!c.model.name.is_empty()).then_some(c.model.name.clone()))
+                .unwrap_or_else(|| cfg.profile().model_name()),
+            sampler: rec_sampler,
             scheduler: None,
-            steps: plan.steps,
-            cfg: plan.cfg,
+            steps: rec_steps,
+            cfg: rec_cfg,
             strength: plan.strength,
-            quality: serde_json::to_value(plan.quality).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
-            resolution: serde_json::to_value(plan.resolution).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+            quality: serde_json::to_value(plan.quality)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            resolution: serde_json::to_value(plan.resolution)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
             references: inputs
                 .iter()
                 .enumerate()
-                .map(|(i, r)| ReferenceRecord { index: i, input_id: r.id.clone(), original_path: r.original_path.clone(), width: r.width, height: r.height })
+                .map(|(i, r)| ReferenceRecord {
+                    index: i,
+                    input_id: r.id.clone(),
+                    original_path: r.original_path.clone(),
+                    width: r.width,
+                    height: r.height,
+                })
                 .collect(),
             mask_input_id: mask.map(|m| m.id.clone()),
             outpaint: plan.outpaint.map(|o| o.expansion),
@@ -1918,7 +2811,7 @@ impl Engine {
             duration_ms,
             notes: plan.notes.clone(),
             app_version: APP_VERSION.into(),
-            backend_version: self.backend_version.lock().unwrap().clone(),
+            backend_version: self.backend_version.get(),
             client: req.client.clone(),
             request: serde_json::to_value(req).unwrap_or_default(),
             pipeline,
@@ -1942,19 +2835,34 @@ impl Engine {
             if let Some(w) = workspace {
                 roots.push(w.to_path_buf());
             }
-            let input_paths: Vec<PathBuf> = inputs.iter().filter_map(|r| r.original_path.as_ref().map(PathBuf::from)).collect();
-            let raw = if index == 0 { out.clone() } else { numbered(out, index) };
+            let input_paths: Vec<PathBuf> = inputs
+                .iter()
+                .filter_map(|r| r.original_path.as_ref().map(PathBuf::from))
+                .collect();
+            let raw = if index == 0 {
+                out.clone()
+            } else {
+                numbered(out, index)
+            };
             let target = paths::resolve_output_path(&raw, workspace, &roots, &input_paths)?;
             if let Some(d) = target.parent() {
-                std::fs::create_dir_all(d).map_err(|e| AppError::io("create the output folder", d, e))?;
+                std::fs::create_dir_all(d)
+                    .map_err(|e| AppError::io("create the output folder", d, e))?;
             }
-            let ext = target.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            let ext = target
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
             let fmt = match ext.as_str() {
                 "jpg" | "jpeg" => OutputFormat::Jpeg,
                 "webp" => OutputFormat::Webp,
                 _ => OutputFormat::Png,
             };
-            let data = if fmt == format { bytes.clone() } else { encode_output(img, fmt, &rec, icc)? };
+            let data = if fmt == format {
+                bytes.clone()
+            } else {
+                encode_output(img, fmt, &rec, icc)?
+            };
             write_atomic(&target, &data)?;
             rec.extra_paths.push(target.to_string_lossy().into_owned());
         }
@@ -1971,19 +2879,44 @@ impl Engine {
 /// The gain map to attach when the source is an HDR HEIC and the user kept HDR on
 /// (`advanced.hdr`, default on), plus a note saying what happened. Only for results that
 /// keep the source's framing (edit, inpaint, upscale); every failure falls back to SDR.
-fn hdr_for(img: &image::RgbaImage, req: &GenerationRequest, plan: &Plan, inputs: &[InputRecord]) -> (Option<crate::hdr::GainMap>, Option<String>) {
-    let Some(src) = inputs.first().filter(|r| r.format == "heic" && r.hdr) else { return (None, None) };
+fn hdr_for(
+    img: &image::RgbaImage,
+    req: &GenerationRequest,
+    plan: &Plan,
+    inputs: &[InputRecord],
+) -> (Option<crate::hdr::GainMap>, Option<String>) {
+    let Some(src) = inputs.first().filter(|r| r.format == "heic" && r.hdr) else {
+        return (None, None);
+    };
     if req.advanced.hdr == Some(false) {
         return (None, None);
     }
-    if !matches!(plan.mode, ResolvedMode::Edit | ResolvedMode::Inpaint | ResolvedMode::Upscale) {
-        return (None, Some("HDR not kept: only edits, inpainting and upscales keep the source's framing.".into()));
+    if !matches!(
+        plan.mode,
+        ResolvedMode::Edit | ResolvedMode::Inpaint | ResolvedMode::Upscale
+    ) {
+        return (
+            None,
+            Some(
+                "HDR not kept: only edits, inpainting and upscales keep the source's framing."
+                    .into(),
+            ),
+        );
     }
     if !crate::hdr::same_framing((src.width, src.height), img.dimensions()) {
-        return (None, Some("HDR not kept: the result's framing differs from the HEIC source.".into()));
+        return (
+            None,
+            Some("HDR not kept: the result's framing differs from the HEIC source.".into()),
+        );
     }
     let Some(ffmpeg) = crate::hdr::find_ffmpeg() else {
-        return (None, Some("HDR not kept: ffmpeg was not found on PATH (needed to read the HEIC gain map).".into()));
+        return (
+            None,
+            Some(
+                "HDR not kept: ffmpeg was not found on PATH (needed to read the HEIC gain map)."
+                    .into(),
+            ),
+        );
     };
     let attempt = || -> Result<(crate::hdr::GainMap, f32), String> {
         let path = Path::new(&src.path);
@@ -1998,7 +2931,10 @@ fn hdr_for(img: &image::RgbaImage, req: &GenerationRequest, plan: &Plan, inputs:
     };
     match attempt() {
         Ok((gm, kept)) => {
-            let note = format!("HDR kept from the HEIC source (Ultra HDR JPEG); the HDR boost was kept on {:.0}% of the image and faded where the edit changed brightness.", kept * 100.0);
+            let note = format!(
+                "HDR kept from the HEIC source (Ultra HDR JPEG); the HDR boost was kept on {:.0}% of the image and faded where the edit changed brightness.",
+                kept * 100.0
+            );
             (Some(gm), Some(note))
         }
         Err(e) => {
@@ -2010,12 +2946,25 @@ fn hdr_for(img: &image::RgbaImage, req: &GenerationRequest, plan: &Plan, inputs:
 
 fn numbered(path: &str, i: usize) -> String {
     let p = Path::new(path);
-    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
-    let ext = p.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
-    p.with_file_name(format!("{stem}-{}{ext}", i + 1)).to_string_lossy().into_owned()
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "image".into());
+    let ext = p
+        .extension()
+        .map(|s| format!(".{}", s.to_string_lossy()))
+        .unwrap_or_default();
+    p.with_file_name(format!("{stem}-{}{ext}", i + 1))
+        .to_string_lossy()
+        .into_owned()
 }
 
-pub fn encode_output(img: &image::RgbaImage, format: OutputFormat, rec: &GenerationRecord, icc: Option<&[u8]>) -> AppResult<Vec<u8>> {
+pub fn encode_output(
+    img: &image::RgbaImage,
+    format: OutputFormat,
+    rec: &GenerationRecord,
+    icc: Option<&[u8]>,
+) -> AppResult<Vec<u8>> {
     match format {
         // Each format carries the AI marking (provenance.rs).
         OutputFormat::Png => {
@@ -2035,11 +2984,19 @@ pub fn encode_output(img: &image::RgbaImage, format: OutputFormat, rec: &Generat
 
 /// Milliseconds since 1970, as the UI's `Date.now()`.
 pub fn now_ms() -> f64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    let tmp = path.with_extension(format!("{}.part", path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default()));
+    let tmp = path.with_extension(format!(
+        "{}.part",
+        path.extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
     std::fs::write(&tmp, bytes).map_err(|e| AppError::io("write the image", &tmp, e))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -2055,7 +3012,9 @@ mod tests {
     /// edit (left half 2 stops darker), HDR decision and Ultra HDR file. QLS_TEST_OUT keeps it.
     #[test]
     fn heic_edit_keeps_hdr() {
-        let Ok(p) = std::env::var("QLS_TEST_HEIC") else { return };
+        let Ok(p) = std::env::var("QLS_TEST_HEIC") else {
+            return;
+        };
         if crate::hdr::find_ffmpeg().is_none() {
             return;
         }
@@ -2076,9 +3035,19 @@ mod tests {
                 }
             }
         }
-        let mut req = GenerationRequest { prompt: "darker".into(), images: vec![format!("input:{}", input.id)], preserve_dimensions: true, ..Default::default() };
-        let pi = crate::planner::PlanInputs { image_sizes: vec![Size::new(input.width, input.height)], vram_total_mib: Some(16303), ..Default::default() };
-        let plan = crate::planner::plan(&req, &pi, &crate::config::RecommendedSettings::default()).unwrap();
+        let mut req = GenerationRequest {
+            prompt: "darker".into(),
+            images: vec![format!("input:{}", input.id)],
+            preserve_dimensions: true,
+            ..Default::default()
+        };
+        let pi = crate::planner::PlanInputs {
+            image_sizes: vec![Size::new(input.width, input.height)],
+            vram_total_mib: Some(16303),
+            ..Default::default()
+        };
+        let plan = crate::planner::plan(&req, &pi, &crate::config::RecommendedSettings::default())
+            .unwrap();
         assert_eq!(plan.mode, ResolvedMode::Edit);
 
         let (gm, note) = hdr_for(&edited, &req, &plan, std::slice::from_ref(&input));
@@ -2086,7 +3055,15 @@ mod tests {
         let note = note.unwrap();
         assert!(note.contains("HDR kept"), "{note}");
         // Roughly the right half keeps its boost.
-        let share: f64 = note.split("kept on ").nth(1).unwrap().split('%').next().unwrap().parse().unwrap();
+        let share: f64 = note
+            .split("kept on ")
+            .nth(1)
+            .unwrap()
+            .split('%')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!((35.0..65.0).contains(&share), "{note}");
         let icc = crate::heif::primary_icc(&bytes);
         let out = crate::hdr::encode_ultra_hdr(&edited, icc.as_deref(), &gm, 95, "").unwrap();
@@ -2095,9 +3072,22 @@ mod tests {
         }
 
         req.advanced.hdr = Some(false);
-        assert!(hdr_for(&edited, &req, &plan, std::slice::from_ref(&input)).0.is_none(), "toggle off");
+        assert!(
+            hdr_for(&edited, &req, &plan, std::slice::from_ref(&input))
+                .0
+                .is_none(),
+            "toggle off"
+        );
         let cropped = image::imageops::crop_imm(&edited, 0, 0, w, w).to_image();
-        let (none, why) = hdr_for(&cropped, &GenerationRequest { advanced: Default::default(), ..req.clone() }, &plan, std::slice::from_ref(&input));
+        let (none, why) = hdr_for(
+            &cropped,
+            &GenerationRequest {
+                advanced: Default::default(),
+                ..req.clone()
+            },
+            &plan,
+            std::slice::from_ref(&input),
+        );
         assert!(none.is_none() && why.unwrap().contains("framing"));
     }
 
@@ -2112,22 +3102,65 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-only env override, single-threaded setup.
         unsafe { std::env::set_var("QLS_CONFIG_DIR", dir.path().join("cfg")) };
-        let mut cfg = AppConfig { sdcpp_dir: dir.path().join("sdcpp"), ..AppConfig::default() };
+        let mut cfg = AppConfig {
+            sdcpp_dir: dir.path().join("sdcpp"),
+            ..AppConfig::default()
+        };
         cfg.normalize();
         let model = cfg.profile().diffusion_model.clone();
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
-        crate::modelfile::tests::write_gguf(&model, &[], &[], &[("transformer_blocks.0.attn.to_q.weight", 1, &[8, 8])]);
+        crate::modelfile::tests::write_gguf(
+            &model,
+            &[],
+            &[],
+            &[("transformer_blocks.0.attn.to_q.weight", 1, &[8, 8])],
+        );
         // A LoRA for that layer (header only: the copy is byte for byte).
         let src = dir.path().join("My Style.safetensors");
-        crate::modelfile::tests::write_st(&src, &[("transformer_blocks.0.attn.to_q.lora_A.weight", "BF16", &[4, 8]), ("transformer_blocks.0.attn.to_q.lora_B.weight", "BF16", &[8, 4])]);
+        crate::modelfile::tests::write_st(
+            &src,
+            &[
+                (
+                    "transformer_blocks.0.attn.to_q.lora_A.weight",
+                    "BF16",
+                    &[4, 8],
+                ),
+                (
+                    "transformer_blocks.0.attn.to_q.lora_B.weight",
+                    "BF16",
+                    &[8, 4],
+                ),
+            ],
+        );
         let e = Engine::new(cfg, dir.path()).unwrap();
 
         let added = e.add_lora(&src).unwrap();
-        assert_eq!((added.id.as_str(), added.name.as_str(), added.weight), ("my-style", "My Style", 1.0));
+        assert_eq!(
+            (added.id.as_str(), added.name.as_str(), added.weight),
+            ("my-style", "My Style", 1.0)
+        );
         let copy = e.config().lora_dir().join("my-style.safetensors");
         assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&src).unwrap());
-        e.update_lora("my-style", LoraPatch { weight: Some(0.75), trigger_words: Some(" grainscape ".into()), on_by_default: Some(true), ..Default::default() }).unwrap();
-        assert!(e.update_lora("my-style", LoraPatch { weight: Some(3.0), ..Default::default() }).is_err());
+        e.update_lora(
+            "my-style",
+            LoraPatch {
+                weight: Some(0.75),
+                trigger_words: Some(" grainscape ".into()),
+                on_by_default: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            e.update_lora(
+                "my-style",
+                LoraPatch {
+                    weight: Some(3.0),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
         // Loading the same file again keeps its settings.
         assert_eq!(e.add_lora(&src).unwrap().weight, 0.75);
 
@@ -2137,7 +3170,10 @@ mod tests {
         e.set_config(stale).unwrap();
         let l = &e.loras()[0];
         assert!(l.available);
-        assert_eq!((l.entry.trigger_words.as_str(), l.entry.on_by_default), ("grainscape", true));
+        assert_eq!(
+            (l.entry.trigger_words.as_str(), l.entry.on_by_default),
+            ("grainscape", true)
+        );
         assert_eq!(AppConfig::load().loras.len(), 1);
 
         e.remove_lora("my-style").unwrap();
@@ -2163,20 +3199,72 @@ mod tests {
         let e = Engine::new(cfg, dir.path()).unwrap();
         // A model file that is gone (drive disconnected, moved): refused before queueing.
         std::fs::rename(&te, te.with_extension("moved")).unwrap();
-        let err = e.submit(GenerationRequest { prompt: "a fox".into(), ..Default::default() }, None).unwrap_err();
+        let err = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a fox".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::MissingModel);
-        assert!(err.message.contains("Text encoder") && err.suggestion.as_deref().unwrap().contains("drive"), "{err:?}");
+        assert!(
+            err.message.contains("Text encoder")
+                && err.suggestion.as_deref().unwrap().contains("drive"),
+            "{err:?}"
+        );
         std::fs::rename(te.with_extension("moved"), &te).unwrap();
-        assert!(e.submit(GenerationRequest { prompt: " ".into(), ..Default::default() }, None).is_err());
+        assert!(
+            e.submit(
+                GenerationRequest {
+                    prompt: " ".into(),
+                    ..Default::default()
+                },
+                None
+            )
+            .is_err()
+        );
         // Remove needs no prompt; other inpaint actions do.
-        let remove = GenerationRequest { images: vec!["gen:x".into()], mask: Some("input:m".into()), inpaint_action: planner::InpaintAction::Remove, ..Default::default() };
-        assert!(e.submit(GenerationRequest { inpaint_action: planner::InpaintAction::Replace, ..remove.clone() }, None).is_err());
+        let remove = GenerationRequest {
+            images: vec!["gen:x".into()],
+            mask: Some("input:m".into()),
+            inpaint_action: planner::InpaintAction::Remove,
+            ..Default::default()
+        };
+        assert!(
+            e.submit(
+                GenerationRequest {
+                    inpaint_action: planner::InpaintAction::Replace,
+                    ..remove.clone()
+                },
+                None
+            )
+            .is_err()
+        );
         let r = e.submit(remove, None).unwrap();
         e.cancel(&r.id).unwrap();
-        let j = e.submit(GenerationRequest { prompt: "a fox".into(), seed: Some(-1), ..Default::default() }, None).unwrap();
+        let j = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a fox".into(),
+                    seed: Some(-1),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
         assert_eq!(j.status, JobStatus::Queued);
         assert_eq!(j.seed, None, "negative seed means random");
-        let j2 = e.submit(GenerationRequest { prompt: "a cat".into(), ..Default::default() }, None).unwrap();
+        let j2 = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a cat".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
         assert_eq!(e.job(&j2.id).unwrap().queue_position, 2);
         let c = e.cancel(&j.id).unwrap();
         assert_eq!(c.status, JobStatus::Cancelled);
@@ -2184,13 +3272,42 @@ mod tests {
         assert_eq!(e.next_queued().as_deref(), Some(j2.id.as_str()));
         assert!(e.cancel("nope").is_err());
         // Upscales need an image but no prompt; the job gets a readable label.
-        let up = GenerationRequest { mode: Mode::Upscale, ..Default::default() };
+        let up = GenerationRequest {
+            mode: Mode::Upscale,
+            ..Default::default()
+        };
         assert!(e.submit(up.clone(), None).is_err());
-        let j3 = e.submit(GenerationRequest { images: vec!["gen:x".into()], ..up }, None).unwrap();
+        let j3 = e
+            .submit(
+                GenerationRequest {
+                    images: vec!["gen:x".into()],
+                    ..up
+                },
+                None,
+            )
+            .unwrap();
         assert_eq!(j3.prompt, "Upscale");
         // Closing the desktop app cancels only its own jobs.
-        let ui = e.submit(GenerationRequest { prompt: "ui job".into(), client: Some("ui".into()), ..Default::default() }, None).unwrap();
-        let mcp = e.submit(GenerationRequest { prompt: "mcp job".into(), client: Some("mcp".into()), ..Default::default() }, None).unwrap();
+        let ui = e
+            .submit(
+                GenerationRequest {
+                    prompt: "ui job".into(),
+                    client: Some("ui".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let mcp = e
+            .submit(
+                GenerationRequest {
+                    prompt: "mcp job".into(),
+                    client: Some("mcp".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
         assert_eq!(e.cancel_client_jobs("ui"), 1);
         assert_eq!(e.job(&ui.id).unwrap().status, JobStatus::Cancelled);
         assert_eq!(e.job(&mcp.id).unwrap().status, JobStatus::Queued);
@@ -2210,19 +3327,36 @@ mod tests {
                     req.extend_from_slice(&buf[..n]);
                     let text = String::from_utf8_lossy(&req).to_string();
                     if let Some(end) = text.find("\r\n\r\n") {
-                        let len = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                        let len = text
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
                         if req.len() >= end + 4 + len {
                             break req[end + 4..end + 4 + len].to_vec();
                         }
                     }
                 };
                 let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                let tile = image::load_from_memory(&crate::sdcpp::b64_decode(v["image"].as_str().unwrap()).unwrap()).unwrap();
-                let up = tile.resize_exact(tile.width() * 2, tile.height() * 2, image::imageops::FilterType::Nearest);
+                let tile = image::load_from_memory(
+                    &crate::sdcpp::b64_decode(v["image"].as_str().unwrap()).unwrap(),
+                )
+                .unwrap();
+                let up = tile.resize_exact(
+                    tile.width() * 2,
+                    tile.height() * 2,
+                    image::imageops::FilterType::Nearest,
+                );
                 let mut png = std::io::Cursor::new(Vec::new());
                 up.write_to(&mut png, image::ImageFormat::Png).unwrap();
                 let out = serde_json::json!({ "images": [{ "index": 0, "b64_json": crate::sdcpp::b64(png.get_ref()) }] }).to_string();
-                let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len());
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    out.len()
+                );
                 let _ = sock.write_all(head.as_bytes()).await;
                 let _ = sock.write_all(out.as_bytes()).await;
             }
@@ -2245,14 +3379,42 @@ mod tests {
             std::fs::write(p, b"").unwrap();
         }
         let e = Engine::new(cfg, dir.path()).unwrap();
-        let id = e.submit(GenerationRequest { prompt: "a long strip".into(), ..Default::default() }, None).unwrap().id;
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a long strip".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
         let mut events = e.events.subscribe();
         // 4200 px wide: three tiles of at most 2048 px for an x4 model.
         let content = image::RgbaImage::from_pixel(4200, 40, image::Rgba([90, 120, 200, 255]));
-        let how = EnlargeOptions { tile: 0, blend: 1.0, prescale: false };
+        let how = EnlargeOptions {
+            tile: 0,
+            blend: 1.0,
+            prescale: false,
+        };
         let client = SdcppClient::new(fake_upscaler().await);
-        let (img, with) = e.enlarge(&id, &client, content, Some(Size::new(16800, 160)), Some("4x"), how, (2, 3)).await.unwrap();
-        assert_eq!((img.width(), with.as_deref()), (8400, Some("4x")), "stitched from the x2 answers");
+        let (img, with) = e
+            .enlarge(
+                &id,
+                &client,
+                content,
+                Some(Size::new(16800, 160)),
+                Some("4x"),
+                how,
+                (2, 3),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (img.width(), with.as_deref()),
+            (8400, Some("4x")),
+            "stitched from the x2 answers"
+        );
         let mut steps = Vec::new();
         while let Ok(ev) = events.try_recv() {
             if let Event::Job { job } = ev {
@@ -2265,8 +3427,20 @@ mod tests {
             }
         }
         assert_eq!(steps.first(), Some(&(None, false)));
-        let tiles: Vec<_> = steps.iter().filter_map(|(s, timed)| s.map(|s| (s, *timed))).collect();
-        assert_eq!(tiles, vec![((0, 3), false), ((1, 3), true), ((2, 3), true), ((3, 3), true)], "{steps:?}");
+        let tiles: Vec<_> = steps
+            .iter()
+            .filter_map(|(s, timed)| s.map(|s| (s, *timed)))
+            .collect();
+        assert_eq!(
+            tiles,
+            vec![
+                ((0, 3), false),
+                ((1, 3), true),
+                ((2, 3), true),
+                ((3, 3), true)
+            ],
+            "{steps:?}"
+        );
     }
 
     #[tokio::test]
@@ -2285,72 +3459,117 @@ mod tests {
             std::fs::write(p, b"").unwrap();
         }
         let e = Engine::new(cfg.clone(), dir.path()).unwrap();
-        let caps = Capabilities { text_generation: true, ..Default::default() };
-        let submit = || e.submit(GenerationRequest { prompt: "rendi il gatto nero".into(), enhance: true, ..Default::default() }, None).unwrap().id;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let submit = || {
+            e.submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id
+        };
         let images = vec!["PNG1".to_string()];
 
         // Streams into the job (~10 updates a second) and keeps the finished text.
         let id = submit();
         let mut events = e.events.subscribe();
         let (port, body) = fake_server(200, "text/event-stream", sse_answer(&["Change the cat's", " fur to black."], "stop"), Duration::from_millis(150)).await;
-        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Edit, "rendi il gatto nero", &images, 42, None, false).await.unwrap();
+        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Edit, "rendi il gatto nero", &images, None, 42, None, false).await.unwrap();
         assert_eq!(out.as_deref(), Some("Change the cat's fur to black."));
         let mut partial = false;
         while let Ok(ev) = events.try_recv() {
             if let Event::Job { job } = ev {
-                partial |= job.status == JobStatus::EnhancingPrompt && job.enhanced_prompt.as_deref() == Some("Change the cat's");
+                partial |= job.status == JobStatus::EnhancingPrompt
+                    && job.enhanced_prompt.as_deref() == Some("Change the cat's");
             }
         }
         assert!(partial, "the job shows the text while it is written");
         let v = e.job(&id).unwrap();
-        assert_eq!((v.enhanced_prompt.as_deref(), v.prompt.as_str()), (Some("Change the cat's fur to black."), "rendi il gatto nero"));
+        assert_eq!(
+            (v.enhanced_prompt.as_deref(), v.prompt.as_str()),
+            (
+                Some("Change the cat's fur to black."),
+                "rendi il gatto nero"
+            )
+        );
         let sent: serde_json::Value = serde_json::from_str(&body.await.unwrap()).unwrap();
-        assert_eq!((sent["images"][0].as_str(), sent["sampling"]["seed"].as_i64()), (Some("PNG1"), Some(42)), "the references and the job's seed");
+        assert_eq!(
+            (
+                sent["images"][0].as_str(),
+                sent["sampling"]["seed"].as_i64()
+            ),
+            (Some("PNG1"), Some(42)),
+            "the references and the job's seed"
+        );
         assert_eq!(sent["system_prompt"], enhancer::EDIT_SYSTEM_PROMPT);
         // A retry (out of memory) keeps that prompt without asking the server again.
-        let again = e.enhance_prompt(&id, &SdcppClient::new(1), &caps, &cfg, ResolvedMode::Edit, "rendi il gatto nero", &images, 43, None, false).await.unwrap();
+        let again = e.enhance_prompt(&id, &SdcppClient::new(1), &caps, &cfg, "kokon-turbo", ResolvedMode::Edit, "rendi il gatto nero", &images, None, 43, None, false).await.unwrap();
         assert_eq!(again, out);
 
         // A failure keeps the user's prompt, with a note.
         let id = submit();
         let chunks = vec!["event: delta\ndata: {\"text\":\"Chan\"}\n\n".into(), "event: error\ndata: {\"error\":\"out of memory\"}\n\n".into()];
         let (port, _) = fake_server(200, "text/event-stream", chunks, Duration::from_millis(1)).await;
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap(), None);
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap(), None);
         let v = e.job(&id).unwrap();
         assert_eq!(v.enhanced_prompt, None);
-        assert!(v.notes.last().is_some_and(|n| n.contains("prompt enhancer failed") && n.contains("out of memory") && n.ends_with("used as written.")), "{:?}", v.notes);
+        assert!(
+            v.notes
+                .last()
+                .is_some_and(|n| n.contains("prompt enhancer failed")
+                    && n.contains("out of memory")
+                    && n.ends_with("used as written.")),
+            "{:?}",
+            v.notes
+        );
         // An empty answer too.
         let id = submit();
         let (port, _) = fake_server(200, "text/event-stream", sse_answer(&["  "], "stop"), Duration::ZERO).await;
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap(), None);
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap(), None);
         assert!(e.job(&id).unwrap().notes.last().unwrap().contains("wrote nothing"));
         // A cut-off answer is used, with a note.
         let id = submit();
         let (port, _) = fake_server(200, "text/event-stream", sse_answer(&["A cat on a"], "length"), Duration::ZERO).await;
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap().as_deref(), Some("A cat on a"));
+        // 0.12: a cut-off answer is used, with a note (0.11 discarded it).
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap().as_deref(), Some("A cat on a"));
         assert!(e.job(&id).unwrap().notes.last().unwrap().contains("length limit"));
 
         // An engine without text generation (official builds): note, no request.
         let id = submit();
-        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(1), &Capabilities::default(), &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap(), None);
+        assert_eq!(e.enhance_prompt(&id, &SdcppClient::new(1), &Capabilities::default(), &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap(), None);
         assert!(e.job(&id).unwrap().notes.last().unwrap().contains("no prompt enhancer"));
         assert_eq!(e.job(&id).unwrap().status, JobStatus::Queued, "status untouched");
 
         // Cancel while the enhancer is writing: the job stops.
         let id = submit();
-        let (port, _) = fake_server(200, "text/event-stream", sse_answer(&["slow"], "stop"), Duration::from_secs(30)).await;
+        let (port, _) = fake_server(
+            200,
+            "text/event-stream",
+            sse_answer(&["slow"], "stop"),
+            Duration::from_secs(30),
+        )
+        .await;
         let (e2, id2) = (e.clone(), id.clone());
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(300)).await;
             e2.cancel(&id2).unwrap();
         });
-        let err = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Generate, "un gatto", &[], 1, None, false).await.unwrap_err();
+        let err = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Generate, "un gatto", &[], None, 1, None, false).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::Cancelled);
     }
 
     /// A text_gen endpoint that answers each request in turn with the next of `answers` (SSE),
     /// and reports the bodies it got.
-    async fn fake_text_server(answers: Vec<&'static str>) -> (u16, Arc<Mutex<Vec<serde_json::Value>>>) {
+    async fn fake_text_server(
+        answers: Vec<&'static str>,
+    ) -> (u16, Arc<Mutex<Vec<serde_json::Value>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2358,7 +3577,9 @@ mod tests {
         let log = seen.clone();
         tokio::spawn(async move {
             for answer in answers {
-                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
                 let mut req = Vec::new();
                 let mut buf = [0u8; 65536];
                 let body = loop {
@@ -2366,13 +3587,22 @@ mod tests {
                     req.extend_from_slice(&buf[..n]);
                     let text = String::from_utf8_lossy(&req).to_string();
                     if let Some(end) = text.find("\r\n\r\n") {
-                        let len = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                        let len = text
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
                         if req.len() >= end + 4 + len {
                             break req[end + 4..end + 4 + len].to_vec();
                         }
                     }
                 };
-                log.lock().unwrap().push(serde_json::from_slice(&body).unwrap());
+                log.lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&body).unwrap());
                 let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await;
                 for c in crate::sdcpp::sse_answer(&[answer], "stop") {
                     let _ = sock.write_all(c.as_bytes()).await;
@@ -2397,20 +3627,146 @@ mod tests {
             std::fs::write(p, b"").unwrap();
         }
         let e = Engine::new(cfg.clone(), dir.path()).unwrap();
-        let caps = Capabilities { text_generation: true, ..Default::default() };
-        let id = e.submit(GenerationRequest { prompt: "lei sul divano con il gatto".into(), enhance: true, ..Default::default() }, None).unwrap().id;
-        let (port, seen) = fake_text_server(vec!["person, female, long brown hair.\n", "cat, orange tabby", "A photograph of the woman from <image1> on a sofa."]).await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "lei sul divano con il gatto".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let (port, seen) = fake_text_server(vec![
+            "person, female, long brown hair.\n",
+            "cat, orange tabby",
+            "A photograph of the woman from <image1> on a sofa.",
+        ])
+        .await;
         let images = vec!["PNG1".to_string(), "PNG2".to_string()];
-        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, ResolvedMode::Compose, "lei sul divano con il gatto", &images, 9, None, false).await.unwrap();
+        let out = e.enhance_prompt(&id, &SdcppClient::new(port), &caps, &cfg, "kokon-turbo", ResolvedMode::Compose, "lei sul divano con il gatto", &images, None, 9, None, false).await.unwrap();
         assert_eq!(out.as_deref(), Some("A photograph of the woman from <image1> on a sofa."));
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 3);
         for (i, img) in ["PNG1", "PNG2"].iter().enumerate() {
-            assert_eq!((seen[i]["images"][0].as_str(), seen[i]["system_prompt"].as_str()), (Some(*img), Some(enhancer::COMPOSE_LABEL_PROMPT)), "one reference per label");
+            assert_eq!(
+                (
+                    seen[i]["images"][0].as_str(),
+                    seen[i]["system_prompt"].as_str()
+                ),
+                (Some(*img), Some(enhancer::COMPOSE_LABEL_PROMPT)),
+                "one reference per label"
+            );
         }
-        assert!(seen[2].get("images").is_none(), "the scene is written without the images");
+        assert!(
+            seen[2].get("images").is_none(),
+            "the scene is written without the images"
+        );
         assert_eq!(seen[2]["system_prompt"], enhancer::COMPOSE_SYSTEM_PROMPT);
-        assert_eq!(seen[2]["prompt"], "References:\n<image1>: person, female, long brown hair\n<image2>: cat, orange tabby\n\nRequest: lei sul divano con il gatto");
+        assert_eq!(
+            seen[2]["prompt"],
+            "References:\n<image1>: person, female, long brown hair\n<image2>: cat, orange tabby\n\nRequest: lei sul divano con il gatto"
+        );
+    }
+
+    #[tokio::test]
+    async fn degenerate_first_answer_is_retried_once_and_the_second_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-only env override, single-threaded setup.
+        unsafe { std::env::set_var("QLS_CONFIG_DIR", dir.path().join("cfg")) };
+        let mut cfg = AppConfig::default();
+        cfg.sdcpp_dir = dir.path().join("sdcpp");
+        cfg.normalize();
+        // BFL model: its prompts come from the committed bundle, named by a fake external
+        // pipeline (the gateway in the cfg is unused by this call).
+        cfg.external_engine = Some(crate::config::ExternalEngine {
+            gateway: "http://127.0.0.1:9".into(),
+            model: "kokon-klein".into(),
+            model_name: "flux3-image-klein-Q8_0.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: format!("{}/assets/pup", env!("CARGO_MANIFEST_DIR")),
+        });
+        std::fs::create_dir_all(cfg.engine_dir()).unwrap();
+        std::fs::write(cfg.server_exe(), b"").unwrap();
+        for (_, p, _) in cfg.profile().files() {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"").unwrap();
+        }
+        let e = Engine::new(cfg.clone(), dir.path()).unwrap();
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        // The cold first call echoes the request back (the 11:29 T4 shape); the warm retry
+        // writes a real caption citing the removal.
+        const ECHO: &str = "remove the lamp from the shelf [{\"id\":\"lamp\",\"from\":\"ref_image_0\",\"src_bbox\":[10,20,30,40],\"tgt_bbox\":null,\"desc\":\"a brass lamp\"}]";
+        const GOOD: &str = "The shelf stays lit; remove the brass lamp <lamp>. The books keep their places. [{\"id\":\"lamp\",\"from\":\"ref_image_0\",\"src_bbox\":[10,20,30,40],\"tgt_bbox\":null,\"desc\":\"a brass lamp\"}]";
+        let (port, seen) = fake_text_server(vec![ECHO, GOOD]).await;
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "x".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(port),
+                &caps,
+                &cfg,
+                "kokon-klein",
+                ResolvedMode::Edit,
+                ECHO,
+                &["PNG1".to_string()],
+                None,
+                9,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        let (cap, rows) = bbox::split(out.as_deref().unwrap());
+        assert_eq!(
+            cap,
+            "The shelf stays lit; remove the brass lamp <lamp>. The books keep their places."
+        );
+        assert_eq!(rows.as_ref().unwrap()[0]["id"].as_str(), Some("lamp"));
+        // Two upsampler calls: the cold echo, then the warm retry (with a nudged seed -
+        // greedy sampling would repeat the echo otherwise).
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        // The first call carries the i2i bbox prompt of the loaded bundle; compared by
+        // hash so the prompt text never reaches a failure message.
+        let bundle =
+            crate::pup::load(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/pup"))
+                .unwrap();
+        let bfl = bundle.bfl().unwrap();
+        let sha = |s: &str| -> String {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(s.as_bytes());
+            hex::encode(h.finalize())
+        };
+        assert_eq!(
+            sha(seen[0]["system_prompt"].as_str().unwrap()),
+            sha(&bfl.i2i_bbox),
+            "the first call carries the i2i bbox prompt"
+        );
+        assert_eq!(
+            seen[1]["sampling"]["seed"].as_i64(),
+            seen[0]["sampling"]["seed"].as_i64().map(|s| s + 1)
+        );
     }
 
     #[tokio::test]
@@ -2458,25 +3814,76 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-only env override, single-threaded setup.
         unsafe { std::env::set_var("QLS_CONFIG_DIR", dir.path().join("cfg")) };
-        let cfg = AppConfig { output_dir: dir.path().join("out"), ..AppConfig::default() };
+        let cfg = AppConfig {
+            output_dir: dir.path().join("out"),
+            ..AppConfig::default()
+        };
         let e = Engine::new(cfg, dir.path()).unwrap();
         let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([40, 90, 160, 255]));
-        let inputs = crate::planner::PlanInputs { vram_total_mib: Some(16303), ..Default::default() };
+        let inputs = crate::planner::PlanInputs {
+            vram_total_mib: Some(16303),
+            ..Default::default()
+        };
         let save = |req: &GenerationRequest, enhanced: Option<String>| {
-            let plan = crate::planner::plan(req, &inputs, &crate::config::RecommendedSettings::default()).unwrap();
-            e.save_result(&img, req, &plan, 1, &[], None, None, 10, None, 0, None, None, enhanced, Vec::new()).unwrap()
+            let plan =
+                crate::planner::plan(req, &inputs, &crate::config::RecommendedSettings::default())
+                    .unwrap();
+            e.save_result(
+                &img,
+                req,
+                &plan,
+                1,
+                &[],
+                None,
+                None,
+                10,
+                None,
+                0,
+                None,
+                None,
+                enhanced,
+                Vec::new(),
+            )
+            .unwrap()
         };
         // Prompt+ review: the user sends the text Prompt+ wrote (maybe changed), with their words.
         let long = "A ginger cat asleep on a sunlit windowsill, soft morning light from the left.";
-        let reviewed = GenerationRequest { prompt: long.into(), enhanced_from: Some("un gatto rosso".into()), ..Default::default() };
+        let reviewed = GenerationRequest {
+            prompt: long.into(),
+            enhanced_from: Some("un gatto rosso".into()),
+            ..Default::default()
+        };
         let rec = save(&reviewed, None);
-        assert_eq!((rec.prompt.as_str(), rec.original_prompt.as_deref()), (long, Some("un gatto rosso")));
+        assert_eq!(
+            (rec.prompt.as_str(), rec.original_prompt.as_deref()),
+            (long, Some("un gatto rosso"))
+        );
         // Written in the same job: as before.
-        let rec = save(&GenerationRequest { prompt: "un gatto rosso".into(), enhance: true, ..Default::default() }, Some(long.into()));
-        assert_eq!((rec.prompt.as_str(), rec.original_prompt.as_deref()), (long, Some("un gatto rosso")));
+        let rec = save(
+            &GenerationRequest {
+                prompt: "un gatto rosso".into(),
+                enhance: true,
+                ..Default::default()
+            },
+            Some(long.into()),
+        );
+        assert_eq!(
+            (rec.prompt.as_str(), rec.original_prompt.as_deref()),
+            (long, Some("un gatto rosso"))
+        );
         // The user's own prompt.
-        let rec = save(&GenerationRequest { prompt: "un gatto".into(), enhanced_from: Some(" ".into()), ..Default::default() }, None);
-        assert_eq!((rec.prompt.as_str(), rec.original_prompt), ("un gatto", None));
+        let rec = save(
+            &GenerationRequest {
+                prompt: "un gatto".into(),
+                enhanced_from: Some(" ".into()),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(
+            (rec.prompt.as_str(), rec.original_prompt),
+            ("un gatto", None)
+        );
     }
 
     #[test]
@@ -2484,23 +3891,47 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let e = Engine::new(AppConfig::default(), dir.path()).unwrap();
         // A tiny PNG imported in private mode lives in the private store only.
-        let png = imaging::encode_png(&image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 10, 10, 255])), &[], None, false).unwrap();
-        let input = e.private_store.put_input(&png, Some("secret.png"), None).unwrap();
+        let png = imaging::encode_png(
+            &image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 10, 10, 255])),
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+        let input = e
+            .private_store
+            .put_input(&png, Some("secret.png"), None)
+            .unwrap();
         assert!(e.store.get_input(&input.id).is_err());
         assert!(Arc::ptr_eq(e.input_store(&input.id), &e.private_store));
         assert!(Path::new(&input.path).starts_with(dir.path().join("private")));
-        let (_, rec) = e.resolve_source(&format!("input:{}", input.id), None, true).unwrap();
+        let (_, rec) = e
+            .resolve_source(&format!("input:{}", input.id), None, true)
+            .unwrap();
         assert_eq!(rec.id, input.id);
-        assert!(e.store.get_input(&input.id).is_err(), "a private job does not copy its input into the gallery");
+        assert!(
+            e.store.get_input(&input.id).is_err(),
+            "a private job does not copy its input into the gallery"
+        );
         // Ending private mode deletes records and files.
         assert_eq!(e.clear_private().unwrap(), 0);
         assert!(e.private_store.get_input(&input.id).is_err());
         assert!(!Path::new(&input.path).exists());
         // A new engine wipes leftovers of a previous run.
-        std::fs::write(dir.path().join("private").join("out").join("left.png"), b"x").unwrap();
+        std::fs::write(
+            dir.path().join("private").join("out").join("left.png"),
+            b"x",
+        )
+        .unwrap();
         drop(e);
         let _e = Engine::new(AppConfig::default(), dir.path()).unwrap();
-        assert!(!dir.path().join("private").join("out").join("left.png").exists());
+        assert!(
+            !dir.path()
+                .join("private")
+                .join("out")
+                .join("left.png")
+                .exists()
+        );
         let req: GenerationRequest = serde_json::from_str(r#"{"prompt":"x"}"#).unwrap();
         assert!(!req.private, "off unless asked");
     }
@@ -2527,22 +3958,38 @@ mod tests {
     #[test]
     fn lut_results_are_new_versions_of_their_source() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = AppConfig { output_dir: dir.path().join("out"), ..Default::default() };
+        let cfg = AppConfig {
+            output_dir: dir.path().join("out"),
+            ..Default::default()
+        };
         let e = Engine::new(cfg, dir.path()).unwrap();
         let cube = dir.path().join("Invert.cube");
-        let mut text = String::from("LUT_3D_SIZE 2
-");
+        let mut text = String::from(
+            "LUT_3D_SIZE 2
+",
+        );
         for b in 0..2 {
             for g in 0..2 {
                 for r in 0..2 {
-                    text.push_str(&format!("{} {} {}
-", 1 - r, 1 - g, 1 - b));
+                    text.push_str(&format!(
+                        "{} {} {}
+",
+                        1 - r,
+                        1 - g,
+                        1 - b
+                    ));
                 }
             }
         }
         std::fs::write(&cube, text).unwrap();
         let lut = e.luts().import(&cube).unwrap();
-        let png = imaging::encode_png(&image::RgbaImage::from_pixel(16, 8, image::Rgba([200, 10, 40, 255])), &[], None, false).unwrap();
+        let png = imaging::encode_png(
+            &image::RgbaImage::from_pixel(16, 8, image::Rgba([200, 10, 40, 255])),
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
         let input = e.store.put_input(&png, Some("photo.png"), None).unwrap();
         let src = format!("input:{}", input.id);
         let preview = e.lut_preview(&src, &lut.name, 1024).unwrap();
@@ -2564,19 +4011,47 @@ mod tests {
         assert_eq!(crate::provenance::declared_ai_type(&std::fs::read(&kept.file_path).unwrap()), Some("trainedAlgorithmicMedia"));
         assert_eq!(rec.request["images"][0], src.as_str(), "made from the source (timeline link)");
         assert_eq!(rec.request["lut"]["intensity"], 0.5);
-        assert!(Path::new(&rec.file_path).starts_with(dir.path().join("out")) && rec.file_path.ends_with(".png"));
-        let px = *imaging::load_image(Path::new(&rec.file_path)).unwrap().pixels.get_pixel(0, 0);
-        assert!(px[0].abs_diff(128) <= 1 && px[1].abs_diff(128) <= 1, "half way to the inverse: {px:?}");
-        assert!(imaging::read_png_text(&std::fs::read(&rec.file_path).unwrap()).iter().any(|(k, v)| k == "parameters" && v.starts_with("Colour LUT: Invert")));
+        assert!(
+            Path::new(&rec.file_path).starts_with(dir.path().join("out"))
+                && rec.file_path.ends_with(".png")
+        );
+        let px = *imaging::load_image(Path::new(&rec.file_path))
+            .unwrap()
+            .pixels
+            .get_pixel(0, 0);
+        assert!(
+            px[0].abs_diff(128) <= 1 && px[1].abs_diff(128) <= 1,
+            "half way to the inverse: {px:?}"
+        );
+        assert!(
+            imaging::read_png_text(&std::fs::read(&rec.file_path).unwrap())
+                .iter()
+                .any(|(k, v)| k == "parameters" && v.starts_with("Colour LUT: Invert"))
+        );
         assert!(e.store.get_generation(&rec.id).is_ok());
 
         // A result of a result keeps its format and parent; private sources stay private.
-        let again = e.apply_lut(&format!("gen:{}", rec.id), &lut.name, 1.0, false).unwrap();
+        let again = e
+            .apply_lut(&format!("gen:{}", rec.id), &lut.name, 1.0, false)
+            .unwrap();
         assert_eq!(again.parent_id.as_deref(), Some(rec.id.as_str()));
-        let other = imaging::encode_png(&image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 255])), &[], None, false).unwrap();
-        let secret = e.private_store.put_input(&other, Some("secret.png"), None).unwrap();
-        let p = e.apply_lut(&format!("input:{}", secret.id), &lut.name, 1.0, false).unwrap();
-        assert!(e.store.get_generation(&p.id).is_err() && e.private_store.get_generation(&p.id).is_ok());
+        let other = imaging::encode_png(
+            &image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 255])),
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+        let secret = e
+            .private_store
+            .put_input(&other, Some("secret.png"), None)
+            .unwrap();
+        let p = e
+            .apply_lut(&format!("input:{}", secret.id), &lut.name, 1.0, false)
+            .unwrap();
+        assert!(
+            e.store.get_generation(&p.id).is_err() && e.private_store.get_generation(&p.id).is_ok()
+        );
         assert!(Path::new(&p.file_path).starts_with(dir.path().join("private")));
         assert!(e.apply_lut("C:/x.png", &lut.name, 1.0, false).is_err());
         assert!(e.apply_lut(&src, "missing", 1.0, false).is_err());
@@ -2594,7 +4069,10 @@ mod tests {
         assert!(i.server_vae_tiling && i.sage_attention && !i.metal);
         assert_eq!(i.upscale_tile, 128, "the ESRGAN default's tile");
         std::fs::create_dir_all(cfg.upscalers_dir()).unwrap();
-        std::fs::File::create(crate::catalog::UPSCALER.path(dir.path())).unwrap().set_len(crate::catalog::UPSCALER.size).unwrap();
+        std::fs::File::create(crate::catalog::UPSCALER.path(dir.path()))
+            .unwrap()
+            .set_len(crate::catalog::UPSCALER.size)
+            .unwrap();
         cfg.vae_tile_size = 0;
         cfg.gpu_backend = crate::config::GpuBackend::Metal;
         let i = plan_inputs(&cfg, vec![], None, Some(12_000));
@@ -2620,10 +4098,18 @@ mod tests {
         assert_eq!(matched, 4001);
         assert_ne!(used, 4001);
         assert!((0..=MAX_SEED).contains(&used));
-        assert_eq!(avoid_reference_seeds(4001, 1, &[4001]), Some((4001, used)), "deterministic");
+        assert_eq!(
+            avoid_reference_seeds(4001, 1, &[4001]),
+            Some((4001, used)),
+            "deterministic"
+        );
         // Any other seed is kept.
         assert_eq!(avoid_reference_seeds(4002, 1, &[4001]), None);
-        assert_eq!(avoid_reference_seeds(4001, 1, &[]), None, "no known reference seed");
+        assert_eq!(
+            avoid_reference_seeds(4001, 1, &[]),
+            None,
+            "no known reference seed"
+        );
         // Several references: one matching is enough; the new seed hits none of them.
         let refs = [7, 4001, 1482093317];
         let (matched, used) = avoid_reference_seeds(1482093317, 1, &refs).unwrap();
@@ -2634,8 +4120,14 @@ mod tests {
         assert_eq!(matched, 4003);
         assert!(!(used..used + 4).contains(&4003) && used + 3 <= MAX_SEED);
         assert_eq!(avoid_reference_seeds(4004, 4, &[4003]), None);
-        assert!(avoid_reference_seeds(MAX_SEED, 1, &[MAX_SEED]).is_some_and(|(_, s)| s != MAX_SEED && (0..=MAX_SEED).contains(&s)));
-        assert_eq!(reused_seed_note(4001, 1234567, 1), "Seed 4001 made the source image; reusing it breaks edits, used 1234567 instead.");
+        assert!(
+            avoid_reference_seeds(MAX_SEED, 1, &[MAX_SEED])
+                .is_some_and(|(_, s)| s != MAX_SEED && (0..=MAX_SEED).contains(&s))
+        );
+        assert_eq!(
+            reused_seed_note(4001, 1234567, 1),
+            "Seed 4001 made the source image; reusing it breaks edits, used 1234567 instead."
+        );
         assert!(reused_seed_note(4001, 5, 2).contains("made a reference image"));
     }
 
@@ -2648,18 +4140,30 @@ mod tests {
         cfg.sdcpp_dir = dir.path().join("sdcpp");
         cfg.normalize();
         let e = Engine::new(cfg, dir.path()).unwrap();
-        let png = imaging::encode_png(&image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])), &[], None, true).unwrap();
+        let png = imaging::encode_png(
+            &image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])),
+            &[],
+            None,
+            true,
+        )
+        .unwrap();
         let input = e.store.put_input(&png, Some("a.png"), None).unwrap();
-        e.store.insert_generation(&test_record("g1", 1, "g1.png")).unwrap();
+        e.store
+            .insert_generation(&test_record("g1", 1, "g1.png"))
+            .unwrap();
         // Made in private mode: in the other store.
-        e.private_store.insert_generation(&test_record("p1", 2, "p1.png")).unwrap();
-        let item = |key: &str, kind: &str, gen_id: Option<&str>, input_id: Option<&str>| crate::projects::Item {
-            key: key.into(),
-            kind: kind.into(),
-            gen_id: gen_id.map(Into::into),
-            input_id: input_id.map(Into::into),
-            job_id: None,
-            extra: Default::default(),
+        e.private_store
+            .insert_generation(&test_record("p1", 2, "p1.png"))
+            .unwrap();
+        let item = |key: &str, kind: &str, gen_id: Option<&str>, input_id: Option<&str>| {
+            crate::projects::Item {
+                key: key.into(),
+                kind: kind.into(),
+                gen_id: gen_id.map(Into::into),
+                input_id: input_id.map(Into::into),
+                job_id: None,
+                extra: Default::default(),
+            }
         };
         let items = vec![
             item("i", "input", None, Some(&input.id)),
@@ -2668,8 +4172,22 @@ mod tests {
             item("gone", "gen", Some("deleted"), None),
             item("j", "job", None, None),
         ];
-        let meta = crate::projects::Meta { id: "p".into(), title: "t".into(), named: None, updated_at: 1.0, cover: None, count: 0 };
-        let project = crate::projects::Project { meta, items, selected: None, loras: None, rev: 0, extra: Default::default() };
+        let meta = crate::projects::Meta {
+            id: "p".into(),
+            title: "t".into(),
+            named: None,
+            updated_at: 1.0,
+            cover: None,
+            count: 0,
+        };
+        let project = crate::projects::Project {
+            meta,
+            items,
+            selected: None,
+            loras: None,
+            rev: 0,
+            extra: Default::default(),
+        };
         e.projects.put("p", project, &Default::default()).unwrap();
         let r = e.project_records("p").unwrap();
         let mut gens: Vec<_> = r.generations.keys().cloned().collect();
@@ -2697,12 +4215,24 @@ mod tests {
         };
         // A PNG with Kokon metadata, opened by path (MCP).
         let png = dir.path().join("made.png");
-        std::fs::write(&png, encode_output(&img, OutputFormat::Png, &test_record("a", 4001, "elsewhere.png"), None).unwrap()).unwrap();
+        std::fs::write(
+            &png,
+            encode_output(
+                &img,
+                OutputFormat::Png,
+                &test_record("a", 4001, "elsewhere.png"),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(seeds(png.to_str().unwrap()), vec![4001]);
         // A JPEG result has no metadata: its gallery record has the seed, by id or by path.
         let jpg = dir.path().join("made.jpg");
         std::fs::write(&jpg, imaging::encode_jpeg(&img, 95).unwrap()).unwrap();
-        e.store.insert_generation(&test_record("g1", 3001, jpg.to_str().unwrap())).unwrap();
+        e.store
+            .insert_generation(&test_record("g1", 3001, jpg.to_str().unwrap()))
+            .unwrap();
         assert_eq!(seeds("gen:g1"), vec![3001]);
         assert_eq!(seeds(jpg.to_str().unwrap()), vec![3001]);
         // An image from elsewhere: nothing known, the seed is left alone.
@@ -2711,7 +4241,11 @@ mod tests {
         assert!(seeds(plain.to_str().unwrap()).is_empty());
         // Broken metadata is ignored.
         let broken = dir.path().join("broken.png");
-        std::fs::write(&broken, imaging::encode_png(&img, &[("qls:generation", "{not json")], None, true).unwrap()).unwrap();
+        std::fs::write(
+            &broken,
+            imaging::encode_png(&img, &[("qls:generation", "{not json")], None, true).unwrap(),
+        )
+        .unwrap();
         assert!(seeds(broken.to_str().unwrap()).is_empty());
     }
 
@@ -2730,5 +4264,299 @@ mod tests {
         for f in [&jpg, &webp] {
             assert!(f.windows(17).any(|w| w == b"DigitalSourceType"));
         }
+    }
+
+    /// The shared harness of the VLM tests: a real `Engine` on a throwaway config dir.
+    async fn vlm_test_engine() -> (std::sync::Arc<Engine>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-only env override, single-threaded setup.
+        unsafe { std::env::set_var("QLS_CONFIG_DIR", dir.path().join("cfg")) };
+        let cfg = {
+            let mut cfg = AppConfig::default();
+            cfg.sdcpp_dir = dir.path().join("sdcpp");
+            cfg.normalize();
+            std::fs::create_dir_all(cfg.engine_dir()).unwrap();
+            std::fs::write(cfg.server_exe(), b"").unwrap();
+            for (_, p, _) in cfg.profile().files() {
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, b"").unwrap();
+            }
+            cfg
+        };
+        let e = Engine::new(cfg.clone(), dir.path()).unwrap();
+        (e, dir)
+    }
+
+    fn vlm_cfg(cfg: AppConfig, entrypoint: &str) -> AppConfig {
+        use crate::config::{ExternalEngine, VlmEndpoint};
+        let mut cfg = cfg;
+        cfg.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            model: "kokon-klein".into(),
+            model_name: "flux3-image-klein-Q8_0.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: Some(VlmEndpoint {
+                entrypoint: entrypoint.into(),
+                model: "q35".into(),
+                api_key: String::new(),
+            }),
+            // The committed BFL bundle: an absolute path, so the test needs no deployment
+            // data dir. (BFL contract text never appears in this file or its output.)
+            prompt_bundle: format!("{}/assets/pup", env!("CARGO_MANIFEST_DIR")),
+        });
+        cfg
+    }
+
+    #[tokio::test]
+    async fn a_configured_vlm_replaces_the_engine_llm() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let body = r#"{"choices":[{"message":{"content":"a black cat, studio light"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8}}"#;
+        let (port, seen) = crate::vlm::mock_chat(200, body).await;
+        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{port}/upstream/kokon-pup"));
+        let images = vec!["PNG1".to_string()];
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-klein",
+                ResolvedMode::Edit,
+                "rendi il gatto nero",
+                &images,
+                None,
+                42,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some("a black cat, studio light"));
+        // The upsampler turn went to the sidecar, not to the engine.
+        let raw = seen.await.unwrap();
+        assert!(raw.contains("POST /upstream/kokon-pup/v1/chat/completions"), "{raw}");
+        let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
+        assert_eq!(sent["model"], "q35");
+        assert_eq!(sent["max_tokens"], 3584, "the BFL output budget");
+        assert_eq!(sent["seed"], 42);
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert_eq!(
+            sent["messages"][1]["content"][0]["type"],
+            "image_url",
+            "the reference goes with the turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_down_vlm_hard_fails_the_job() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a red ceramic mug".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        // Port 9 never listens.
+        let cfg = vlm_cfg(AppConfig::default(), "http://127.0.0.1:9/upstream/kokon-pup");
+        let err = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-klein",
+                ResolvedMode::Generate,
+                "a red ceramic mug",
+                &[],
+                None,
+                7,
+                None,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Upsampler);
+        assert!(err.message.contains("127.0.0.1:9"), "{}", err.message);
+        assert!(err.suggestion.is_some(), "{}", err.message);
+        let v = e.job(&id).unwrap();
+        assert!(
+            v.enhanced_prompt.is_none(),
+            "no silent raw-prompt fallback (D-FB)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vlm_endpoint_only_serves_bfl_pipelines() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        // A Qwen pipeline (not BFL): the engine's own LLM answers the turn even though
+        // the config declares a VLM endpoint.
+        const QWEN_CAPTION: &str = "a cat, black, studio light";
+        let (port, _seen) = fake_text_server(vec![QWEN_CAPTION]).await;
+        let (vport, mut vseen) =
+            crate::vlm::mock_chat(200, r#"{"choices":[{"message":{"content":"SHOULD-NOT-APPEAR"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#).await;
+        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{vport}/upstream/kokon-pup"));
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(port),
+                &caps,
+                &cfg,
+                "kokon-full",
+                ResolvedMode::Edit,
+                "rendi il gatto nero",
+                &["PNG1".to_string()],
+                None,
+                42,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some(QWEN_CAPTION));
+        // The VLM endpoint never saw the turn.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            vseen.try_recv().is_err(),
+            "the VLM endpoint must not be called for a non-BFL pipeline"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_vlm_serves_a_non_bfl_pipeline() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "rendi il gatto nero".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        // The shared BFL endpoint (must stay idle) and the pipeline's own sidecar.
+        let (vport, mut vseen) =
+            crate::vlm::mock_chat(200, r#"{"choices":[{"message":{"content":"SHOULD-NOT-APPEAR"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#).await;
+        const PER_PIPELINE: &str = "a black cat, studio light";
+        let (pport, pseen) = crate::vlm::mock_chat(
+            200,
+            &format!(
+                r#"{{"choices":[{{"message":{{"content":"{PER_PIPELINE}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":10,"completion_tokens":8}}}}"#
+            ),
+        )
+        .await;
+        let mut cfg =
+            vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{vport}/upstream/kokon-pup"));
+        cfg.models.push(crate::config::ExternalModel {
+            label: "Full".into(),
+            sub: None,
+            model: "kokon-full".into(),
+            model_name: "model-Q8_0.gguf".into(),
+            sample: serde_json::json!({}),
+            gateway: None,
+            vlm: Some(crate::config::VlmEndpoint {
+                entrypoint: format!("http://127.0.0.1:{pport}/upstream/kokon-pup-qwen"),
+                model: "qwen3vl".into(),
+                api_key: String::new(),
+            }),
+            prompt_bundle: String::new(),
+        });
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-full",
+                ResolvedMode::Edit,
+                "rendi il gatto nero",
+                &["PNG1".to_string()],
+                None,
+                42,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some(PER_PIPELINE));
+        // The turn went to the pipeline's own sidecar: the qwen3vl model, the Qwen
+        // output budget, the built-in Qwen editing prompt (no BFL bundle), the
+        // reference image.
+        let raw = pseen.await.unwrap();
+        assert!(
+            raw.contains("POST /upstream/kokon-pup-qwen/v1/chat/completions"),
+            "{raw}"
+        );
+        let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
+        assert_eq!(sent["model"], "qwen3vl");
+        assert_eq!(
+            sent["max_tokens"],
+            crate::enhancer::MAX_TOKENS,
+            "the Qwen output budget"
+        );
+        assert_eq!(sent["seed"], 42);
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert!(
+            sent["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("editing model"),
+            "the built-in Qwen system prompt, not a bundle"
+        );
+        assert_eq!(
+            sent["messages"][1]["content"][0]["type"],
+            "image_url",
+            "the reference goes with the turn"
+        );
+        // The shared BFL endpoint never saw the turn.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            vseen.try_recv().is_err(),
+            "the shared endpoint must not be called when the pipeline has its own"
+        );
     }
 }

@@ -22,13 +22,21 @@ pub fn decode(bytes: &[u8]) -> Result<WicImage, String> {
     let _guard = init.is_ok().then_some(ComGuard);
 
     let codec = |e: windows::core::Error| {
-        format!("Windows could not decode the image ({e}). For HEIC photos install \"HEIF Image Extensions\" and \"HEVC Video Extensions\" from the Microsoft Store.")
+        format!(
+            "Windows could not decode the image ({e}). For HEIC photos install \"HEIF Image Extensions\" and \"HEVC Video Extensions\" from the Microsoft Store."
+        )
     };
     unsafe {
-        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+        let factory: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| e.to_string())?;
         let stream = factory.CreateStream().map_err(|e| e.to_string())?;
-        stream.InitializeFromMemory(bytes).map_err(|e| e.to_string())?;
-        let decoder = factory.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand).map_err(codec)?;
+        stream
+            .InitializeFromMemory(bytes)
+            .map_err(|e| e.to_string())?;
+        let decoder = factory
+            .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+            .map_err(codec)?;
         let frame = decoder.GetFrame(0).map_err(codec)?;
         let (mut w, mut h) = (0u32, 0u32);
         frame.GetSize(&mut w, &mut h).map_err(codec)?;
@@ -38,17 +46,34 @@ pub fn decode(bytes: &[u8]) -> Result<WicImage, String> {
 
         let converter = factory.CreateFormatConverter().map_err(|e| e.to_string())?;
         let rgba: GUID = GUID_WICPixelFormat32bppRGBA;
-        converter.Initialize(&frame, &rgba, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeCustom).map_err(codec)?;
+        converter
+            .Initialize(
+                &frame,
+                &rgba,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .map_err(codec)?;
         let mut buf = vec![0u8; w as usize * h as usize * 4];
-        converter.CopyPixels(std::ptr::null(), w * 4, &mut buf).map_err(codec)?;
+        converter
+            .CopyPixels(std::ptr::null(), w * 4, &mut buf)
+            .map_err(codec)?;
         let pixels = RgbaImage::from_raw(w, h, buf).ok_or("pixel buffer size mismatch")?;
 
-        Ok(WicImage { pixels, icc_profile: icc_profile(&factory, &frame) })
+        Ok(WicImage {
+            pixels,
+            icc_profile: icc_profile(&factory, &frame),
+        })
     }
 }
 
 #[cfg(windows)]
-unsafe fn icc_profile(factory: &windows::Win32::Graphics::Imaging::IWICImagingFactory, frame: &windows::Win32::Graphics::Imaging::IWICBitmapFrameDecode) -> Option<Vec<u8>> {
+unsafe fn icc_profile(
+    factory: &windows::Win32::Graphics::Imaging::IWICImagingFactory,
+    frame: &windows::Win32::Graphics::Imaging::IWICBitmapFrameDecode,
+) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Imaging::*;
     unsafe {
         let mut n = 0u32;
@@ -56,7 +81,9 @@ unsafe fn icc_profile(factory: &windows::Win32::Graphics::Imaging::IWICImagingFa
         if n == 0 {
             return None;
         }
-        let ctx: Vec<IWICColorContext> = (0..n).filter_map(|_| factory.CreateColorContext().ok()).collect();
+        let ctx: Vec<IWICColorContext> = (0..n)
+            .filter_map(|_| factory.CreateColorContext().ok())
+            .collect();
         let mut slots: Vec<Option<IWICColorContext>> = ctx.iter().cloned().map(Some).collect();
         frame.GetColorContexts(&mut slots, &mut n).ok()?;
         for c in ctx.iter().take(n as usize) {
@@ -104,12 +131,23 @@ pub fn decode(bytes: &[u8]) -> Result<WicImage, String> {
             .output()
             .map_err(|e| format!("Cannot run sips: {e}"))?;
         if !out.status.success() {
-            return Err(format!("macOS could not convert the image: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(format!(
+                "macOS could not convert the image: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
-        let mut dec = image::codecs::png::PngDecoder::new(std::io::BufReader::new(std::fs::File::open(&dst).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())?;
+        let mut dec = image::codecs::png::PngDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&dst).map_err(|e| e.to_string())?,
+        ))
+        .map_err(|e| e.to_string())?;
         let icc_profile = dec.icc_profile().ok().flatten();
-        let pixels = image::DynamicImage::from_decoder(dec).map_err(|e| e.to_string())?.to_rgba8();
-        Ok(WicImage { pixels, icc_profile })
+        let pixels = image::DynamicImage::from_decoder(dec)
+            .map_err(|e| e.to_string())?
+            .to_rgba8();
+        Ok(WicImage {
+            pixels,
+            icc_profile,
+        })
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result
@@ -125,9 +163,16 @@ mod tests {
     /// Run with QLS_TEST_HEIC=<path to a .HEIC> (needs the Store HEIF/HEVC extensions).
     #[test]
     fn decodes_real_heic() {
-        let Ok(p) = std::env::var("QLS_TEST_HEIC") else { return };
+        let Ok(p) = std::env::var("QLS_TEST_HEIC") else {
+            return;
+        };
         let img = super::decode(&std::fs::read(p).unwrap()).unwrap();
-        println!("WIC: {}x{}, icc {:?} bytes", img.pixels.width(), img.pixels.height(), img.icc_profile.as_ref().map(|v| v.len()));
+        println!(
+            "WIC: {}x{}, icc {:?} bytes",
+            img.pixels.width(),
+            img.pixels.height(),
+            img.icc_profile.as_ref().map(|v| v.len())
+        );
         assert!(img.pixels.width() > 0);
     }
 }

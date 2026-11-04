@@ -24,7 +24,9 @@ pub const DEFAULT_REMOTE_PORT: u16 = 39152;
 /// Schema 9 (2026-10-16, #14): profiles record their model and source; model paths edited by
 /// hand on the official profile move to a profile of the user's own files.
 /// Schema 10 (2026-10-19): the 8 GB preset's VRAM reserve 1 -> 1.5 GiB (unless set by hand).
-const SCHEMA_VERSION: u32 = 10;
+/// Schema 11: additive `externalEngine` (an externally managed inference engine); older files
+/// load with the field unset.
+const SCHEMA_VERSION: u32 = 13;
 /// `upscaler_model` value for a plain Lanczos resize (no model).
 pub const LANCZOS: &str = "lanczos";
 /// Upscalers offered in Settings: (file stem, label). Superscale-SP is a setup download, MoSR is
@@ -38,7 +40,11 @@ pub const UPSCALER_CHOICES: &[(&str, &str)] = &[
 /// Default model (user choice, 2026-10-12, after MoSR drew a grid on clean renders): Superscale-SP
 /// on PCs, Lanczos on Macs, where ESRGAN takes minutes (1024² to 2048² on an M2 Pro: Superscale-SP
 /// 5 min 45 s, Lanczos 1 s).
-pub const DEFAULT_UPSCALER: &str = if cfg!(target_os = "macos") { LANCZOS } else { UPSCALER_CHOICES[0].0 };
+pub const DEFAULT_UPSCALER: &str = if cfg!(target_os = "macos") {
+    LANCZOS
+} else {
+    UPSCALER_CHOICES[0].0
+};
 /// Extensions sd-server accepts for model-backed upscalers (common.cpp, commit 3f8527a).
 pub const UPSCALER_EXTENSIONS: &[&str] = &["pth", "safetensors", "gguf", "pt"];
 /// Profile id of the official Qwen-Image 2.1 weights (the default since schema 5).
@@ -89,7 +95,11 @@ pub enum GpuBackend {
 impl Default for GpuBackend {
     /// The engine of this platform when nothing is configured.
     fn default() -> Self {
-        if cfg!(target_os = "macos") { GpuBackend::Metal } else { GpuBackend::Cuda }
+        if cfg!(target_os = "macos") {
+            GpuBackend::Metal
+        } else {
+            GpuBackend::Cuda
+        }
     }
 }
 
@@ -158,7 +168,15 @@ impl Default for RecommendedSettings {
         // Official Qwen-Image 2.1 Turbo settings (Qwen/Qwen-Image-2.1-Turbo model card): its
         // saved 8-step schedule with flow-matching Euler, no CFG, native 2K buckets. The
         // presets differ only in size: ~1 MP, 1.5K and native 2K.
-        Self { sampler: "euler".into(), area_fast: 1024 * 1024, area_balanced: 1536 * 1536, area_quality: 2048 * 2048, align: 32, max_side: 4096, max_references: 10 }
+        Self {
+            sampler: "euler".into(),
+            area_fast: 1024 * 1024,
+            area_balanced: 1536 * 1536,
+            area_quality: 2048 * 2048,
+            align: 32,
+            max_side: 4096,
+            max_references: 10,
+        }
     }
 }
 
@@ -175,7 +193,14 @@ pub struct ProfileCapabilities {
 
 impl Default for ProfileCapabilities {
     fn default() -> Self {
-        Self { text_to_image: true, edit: true, multi_reference: true, inpaint: true, outpaint: true, alpha: true }
+        Self {
+            text_to_image: true,
+            edit: true,
+            multi_reference: true,
+            inpaint: true,
+            outpaint: true,
+            alpha: true,
+        }
     }
 }
 
@@ -211,7 +236,10 @@ pub struct ModelProfile {
 
 impl Default for ModelProfile {
     fn default() -> Self {
-        Self::official(&default_sdcpp_dir(), crate::catalog::preset(crate::catalog::DEFAULT_PRESET).unwrap())
+        Self::official(
+            &default_sdcpp_dir(),
+            crate::catalog::preset(crate::catalog::DEFAULT_PRESET).unwrap(),
+        )
     }
 }
 
@@ -219,9 +247,14 @@ impl ModelProfile {
     /// The official weights a hardware preset downloads (GGUF of Qwen/Qwen-Image-2.1-Turbo,
     /// Qwen's own Qwen3-VL GGUF, the 2.1 VAE).
     pub fn official(sdcpp_dir: &Path, preset: &crate::catalog::Preset) -> Self {
-        use crate::catalog::{official_dit, official_vae, VISION_PROJECTOR};
+        use crate::catalog::{VISION_PROJECTOR, official_dit, official_vae};
         let diffusion = official_dit(preset, sdcpp_dir);
-        let quant = diffusion.dest.rsplit('-').next().unwrap_or("").trim_end_matches(".gguf");
+        let quant = diffusion
+            .dest
+            .rsplit('-')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".gguf");
         Self {
             id: OFFICIAL_PROFILE_ID.into(),
             display_name: format!("Qwen-Image 2.1 Turbo {quant} (official)"),
@@ -252,7 +285,12 @@ impl ModelProfile {
     }
 
     /// Files the user already had.
-    pub fn user(diffusion_model: PathBuf, vae: PathBuf, text_encoder: PathBuf, vision_projector: Option<PathBuf>) -> Self {
+    pub fn user(
+        diffusion_model: PathBuf,
+        vae: PathBuf,
+        text_encoder: PathBuf,
+        vision_projector: Option<PathBuf>,
+    ) -> Self {
         Self {
             id: USER_PROFILE_ID.into(),
             display_name: "Qwen-Image 2.1 (your files)".into(),
@@ -271,12 +309,153 @@ impl ModelProfile {
     }
 
     fn same_files(&self, o: &ModelProfile) -> bool {
-        (&self.diffusion_model, &self.vae, &self.text_encoder, &self.vision_projector) == (&o.diffusion_model, &o.vae, &o.text_encoder, &o.vision_projector)
+        (
+            &self.diffusion_model,
+            &self.vae,
+            &self.text_encoder,
+            &self.vision_projector,
+        ) == (
+            &o.diffusion_model,
+            &o.vae,
+            &o.text_encoder,
+            &o.vision_projector,
+        )
     }
 
     pub fn model_name(&self) -> String {
-        self.diffusion_model.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| self.display_name.clone())
+        self.diffusion_model
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.display_name.clone())
     }
+}
+
+/// The VLM (prompt upsampler) a pipeline asks the service to call: an
+/// OpenAI-compatible chat endpoint. Where it lives and which model id it
+/// wants are deployment facts, so they are config (`vlm` sub-entry of a
+/// model), never constants in the service — the sidecar is loaded on
+/// demand through the gateway like the engine, and the service only ever
+/// talks to whatever endpoint the pipeline points at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VlmEndpoint {
+    /// Base URL of the OpenAI-compatible chat API, e.g.
+    /// `http://127.0.0.1:8081/upstream/kokon-pup`.
+    pub entrypoint: String,
+    /// The model id sent in each request body.
+    pub model: String,
+    /// Bearer token for a keyed server; empty for a keyless sidecar (the
+    /// header is sent only when non-empty).
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// An externally managed inference engine: Kokon never spawns, restarts, idle-unloads or kills
+/// it. Every engine HTTP call goes to `{gateway}/{model}/...` of a load-on-demand gateway (a
+/// model router that starts the engine when requested), and a running engine is accepted only
+/// when it reports `model_name`. The UI treats "no engine loaded" as a normal resting state
+/// (zero VRAM) and requests one explicitly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalEngine {
+    /// Base URL of the load-on-demand gateway, e.g. `http://127.0.0.1:8080/engine`.
+    pub gateway: String,
+    /// The model the gateway loads on demand for this UI (its id in the gateway's vocabulary).
+    pub model: String,
+    /// File name of the diffusion model the running engine must report (`/capabilities`).
+    pub model_name: String,
+    /// Per-request overrides merged into every job's sample params (e.g. `steps`, `cfg`);
+    /// `{}` = the engine's defaults for the loaded model.
+    #[serde(default)]
+    pub sample: serde_json::Value,
+    /// The VLM (prompt upsampler) of the active pipeline; None = no upsampler.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vlm: Option<VlmEndpoint>,
+    /// Prompt bundle of the active pipeline: a bundled id (a repo asset
+    /// directory, [`resolve_prompt_bundle`]) or a path to a folder of prompt
+    /// assets. "" = none.
+    #[serde(default)]
+    pub prompt_bundle: String,
+}
+
+/// One selectable model behind an externally managed engine (config `models`): what the UI
+/// lists in its model picker. Switching to a model sets it as the active `externalEngine`
+/// (the gateway loads it on demand). Empty = no picker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalModel {
+    /// Label in the UI, e.g. "Turbo".
+    pub label: String,
+    /// Short description of what this model trades off (UI sub-line).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sub: Option<String>,
+    /// The model the gateway loads on demand (its id in the gateway's vocabulary).
+    pub model: String,
+    /// File name of the diffusion model the running engine must report (`/capabilities`).
+    pub model_name: String,
+    /// Per-request overrides merged into every job's sample params (e.g. `steps`, `cfg`);
+    /// `{}` = the engine's defaults for the loaded model.
+    #[serde(default)]
+    pub sample: serde_json::Value,
+    /// This pipeline's engine gateway override; None = the service-wide one
+    /// (the active `externalEngine.gateway`). Per-pipeline pointability: a
+    /// fresh deployment may run its pipelines on different gateways.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gateway: Option<String>,
+    /// The VLM (prompt upsampler) of this pipeline; None = no upsampler.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vlm: Option<VlmEndpoint>,
+    /// Prompt bundle of this pipeline: a bundled id (a repo asset directory,
+    /// [`resolve_prompt_bundle`]) or a path to a folder of prompt assets.
+    /// "" = none.
+    #[serde(default)]
+    pub prompt_bundle: String,
+}
+
+impl ExternalEngine {
+    /// The folder this pipeline's prompt-bundle reference points at, resolved
+    /// against the deployment's data directory.
+    pub fn prompt_bundle_path(&self) -> Option<PathBuf> {
+        resolve_prompt_bundle(&self.prompt_bundle, &data_dir())
+    }
+}
+
+impl ExternalModel {
+    /// The engine gateway this pipeline talks to: its own override, else the
+    /// service-wide one.
+    pub fn engine_gateway(&self, service_gateway: &str) -> String {
+        self
+            .gateway
+            .clone()
+            .unwrap_or_else(|| service_gateway.to_string())
+    }
+
+    /// The folder this pipeline's prompt-bundle reference points at, resolved
+    /// against the deployment's data directory.
+    pub fn prompt_bundle_path(&self) -> Option<PathBuf> {
+        resolve_prompt_bundle(&self.prompt_bundle, &data_dir())
+    }
+}
+
+/// The folder a prompt-bundle reference points at, resolved against a base
+/// directory (the deployment's data dir in production). "" = no bundle;
+/// an absolute path is used as is; a relative path with separators is joined
+/// onto the base; a plain id names a repo asset directory under the base's
+/// `assets` folder (the bundled sets commit there; deployments may point at
+/// any other folder by path instead).
+pub fn resolve_prompt_bundle(bundle: &str, base: &Path) -> Option<PathBuf> {
+    let b = bundle.trim();
+    if b.is_empty() {
+        return None;
+    }
+    let p = Path::new(b);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+    if p.components().count() > 1 {
+        return Some(base.join(p));
+    }
+    Some(base.join("assets").join(p))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -366,6 +545,13 @@ pub struct AppConfig {
     pub loras: Vec<LoraEntry>,
     /// Opaque UI preferences (last quality, resolution mode, aspect...).
     pub ui: serde_json::Value,
+    /// Externally managed inference engine (see [`ExternalEngine`]); unset = Kokon runs its own.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub external_engine: Option<ExternalEngine>,
+    /// Selectable models of the external engine (see [`ExternalModel`]); empty = no picker.
+    /// Key renamed from `flavors` in schema 12; the old key is still read.
+    #[serde(alias = "flavors", skip_serializing_if = "Vec::is_empty", default)]
+    pub models: Vec<ExternalModel>,
 }
 
 impl Default for AppConfig {
@@ -373,7 +559,10 @@ impl Default for AppConfig {
         let sdcpp = default_sdcpp_dir();
         Self {
             schema_version: SCHEMA_VERSION,
-            profiles: vec![ModelProfile::official(&sdcpp, crate::catalog::preset(crate::catalog::DEFAULT_PRESET).unwrap())],
+            profiles: vec![ModelProfile::official(
+                &sdcpp,
+                crate::catalog::preset(crate::catalog::DEFAULT_PRESET).unwrap(),
+            )],
             active_profile: OFFICIAL_PROFILE_ID.into(),
             sdcpp_dir: sdcpp,
             gpu_backend: GpuBackend::default(),
@@ -407,6 +596,8 @@ impl Default for AppConfig {
             enhancer_compose_prompt: String::new(),
             loras: vec![],
             ui: serde_json::json!({}),
+            external_engine: None,
+            models: vec![],
         }
     }
 }
@@ -437,7 +628,18 @@ pub struct LoraEntry {
 
 impl Default for LoraEntry {
     fn default() -> Self {
-        Self { id: String::new(), name: String::new(), source: PathBuf::new(), weight: 1.0, trigger_words: String::new(), on_by_default: false, size: 0, warning: None, notes: vec![], added_at: String::new() }
+        Self {
+            id: String::new(),
+            name: String::new(),
+            source: PathBuf::new(),
+            weight: 1.0,
+            trigger_words: String::new(),
+            on_by_default: false,
+            size: 0,
+            warning: None,
+            notes: vec![],
+            added_at: String::new(),
+        }
     }
 }
 
@@ -469,7 +671,11 @@ pub fn config_dir() -> PathBuf {
     if let Ok(p) = std::env::var("QLS_CONFIG_DIR") {
         return PathBuf::from(p);
     }
-    migrate_dir(&dirs::config_dir().unwrap_or_else(std::env::temp_dir), LEGACY_CONFIG_DIR, APP_NAME)
+    migrate_dir(
+        &dirs::config_dir().unwrap_or_else(std::env::temp_dir),
+        LEGACY_CONFIG_DIR,
+        APP_NAME,
+    )
 }
 
 /// `%LOCALAPPDATA%\KokonData` — gallery database, inputs, thumbnails, logs, models
@@ -478,12 +684,18 @@ pub fn data_dir() -> PathBuf {
     if let Ok(p) = std::env::var("QLS_DATA_DIR") {
         return PathBuf::from(p);
     }
-    migrate_dir(&dirs::data_local_dir().unwrap_or_else(std::env::temp_dir), LEGACY_DATA_DIR, DATA_DIR_NAME)
+    migrate_dir(
+        &dirs::data_local_dir().unwrap_or_else(std::env::temp_dir),
+        LEGACY_DATA_DIR,
+        DATA_DIR_NAME,
+    )
 }
 
 /// The data folder of the app's previous name (for relocating stored paths).
 fn legacy_data_dir() -> PathBuf {
-    dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join(LEGACY_DATA_DIR)
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(LEGACY_DATA_DIR)
 }
 
 /// `base\new`, moving `base\old` there first if only the old folder exists (a rename on the
@@ -505,7 +717,11 @@ pub fn migrate_dir(base: &Path, old: &str, new: &str) -> PathBuf {
             new_path
         }
         Err(e) => {
-            tracing::warn!("could not move {} to {} ({e}); using the old folder", old_path.display(), new_path.display());
+            tracing::warn!(
+                "could not move {} to {} ({e}); using the old folder",
+                old_path.display(),
+                new_path.display()
+            );
             old_path
         }
     }
@@ -536,7 +752,8 @@ impl AppConfig {
             Ok(s) => match serde_json::from_str::<AppConfig>(s.trim_start_matches('\u{feff}')) {
                 Ok(mut c) => {
                     if c.profiles.is_empty() {
-                        c.profiles.push(ModelProfile::official(&c.sdcpp_dir, c.preset()));
+                        c.profiles
+                            .push(ModelProfile::official(&c.sdcpp_dir, c.preset()));
                         c.active_profile = OFFICIAL_PROFILE_ID.into();
                     }
                     if c.schema_version < 8 {
@@ -577,8 +794,24 @@ impl AppConfig {
                         }
                         c.keep_hand_edited_paths();
                     }
-                    if c.schema_version < 10 && c.hardware_preset == "8gb" && c.vram_reserve_gib == 1.0 {
+                    if c.schema_version < 10
+                        && c.hardware_preset == "8gb"
+                        && c.vram_reserve_gib == 1.0
+                    {
                         c.vram_reserve_gib = c.preset().vram_reserve_gib;
+                    }
+                    if c.schema_version < 12 {
+                        // The picker's key was renamed `flavors` to `models`: it lists whole
+                        // models, not just variants of one. Old files still read through the
+                        // serde alias; the first save writes the new key.
+                        tracing::debug!("config migrated to schema 12 (`flavors` -> `models`)");
+                    }
+                    if c.schema_version < 13 {
+                        // Additive: the per-model entries gained a gateway override, a `vlm`
+                        // sub-entry and a prompt-bundle reference; the active engine gained
+                        // `vlm`/`promptBundle`. Old files read with empty defaults; the
+                        // first save writes the new schema.
+                        tracing::debug!("config migrated to schema 13 (per-pipeline vlm + prompt bundle)");
                     }
                     // The official weights are always available as a profile, built for the
                     // configured folder and preset; the active one stays as it is.
@@ -587,7 +820,10 @@ impl AppConfig {
                     c
                 }
                 Err(e) => {
-                    tracing::warn!("config at {} is invalid ({e}); using defaults", path.display());
+                    tracing::warn!(
+                        "config at {} is invalid ({e}); using defaults",
+                        path.display()
+                    );
                     let _ = std::fs::copy(path, path.with_extension("json.invalid"));
                     Self::default()
                 }
@@ -603,7 +839,8 @@ impl AppConfig {
     /// Atomic write: temp file + rename.
     pub fn save_to(&self, path: &Path) -> Result<(), AppError> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| AppError::io("create the settings folder", dir, e))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| AppError::io("create the settings folder", dir, e))?;
         }
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self).map_err(AppError::internal)?;
@@ -613,7 +850,23 @@ impl AppConfig {
     }
 
     pub fn profile(&self) -> &ModelProfile {
-        self.profiles.iter().find(|p| p.id == self.active_profile).unwrap_or(&self.profiles[0])
+        self.profiles
+            .iter()
+            .find(|p| p.id == self.active_profile)
+            .unwrap_or(&self.profiles[0])
+    }
+
+    pub fn external_engine(&self) -> Option<&ExternalEngine> {
+        self.external_engine.as_ref()
+    }
+
+    /// Base URL of the inference engine's API: the external gateway when configured,
+    /// otherwise the local server on the configured port.
+    pub fn engine_base_url(&self) -> String {
+        match &self.external_engine {
+            Some(e) => format!("{}/{}", e.gateway.trim_end_matches('/'), e.model),
+            None => format!("http://127.0.0.1:{}", self.server_port),
+        }
     }
 
     pub fn user_profile(&self) -> Option<&ModelProfile> {
@@ -626,22 +879,39 @@ impl AppConfig {
     pub fn normalize(&mut self) {
         // A prompt equal to the built-in one is saved as "" so it follows future defaults.
         for (custom, default) in [
-            (&mut self.enhancer_t2i_prompt, crate::enhancer::T2I_SYSTEM_PROMPT),
-            (&mut self.enhancer_edit_prompt, crate::enhancer::EDIT_SYSTEM_PROMPT),
-            (&mut self.enhancer_compose_prompt, crate::enhancer::COMPOSE_SYSTEM_PROMPT),
+            (
+                &mut self.enhancer_t2i_prompt,
+                crate::enhancer::T2I_SYSTEM_PROMPT,
+            ),
+            (
+                &mut self.enhancer_edit_prompt,
+                crate::enhancer::EDIT_SYSTEM_PROMPT,
+            ),
+            (
+                &mut self.enhancer_compose_prompt,
+                crate::enhancer::COMPOSE_SYSTEM_PROMPT,
+            ),
         ] {
             if custom.trim().is_empty() || custom.trim() == default {
                 custom.clear();
             }
         }
         for p in &mut self.profiles {
-            p.source = if p.id == OFFICIAL_PROFILE_ID { ProfileSource::Official } else { ProfileSource::User };
+            p.source = if p.id == OFFICIAL_PROFILE_ID {
+                ProfileSource::Official
+            } else {
+                ProfileSource::User
+            };
             if p.model.trim().is_empty() {
                 p.model = QWEN_IMAGE_21.into();
             }
         }
         let mut official = ModelProfile::official(&self.sdcpp_dir, self.preset());
-        match self.profiles.iter_mut().find(|p| p.id == OFFICIAL_PROFILE_ID) {
+        match self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == OFFICIAL_PROFILE_ID)
+        {
             Some(p) => {
                 official.recommended_settings = p.recommended_settings.clone();
                 official.backend_args = p.backend_args.clone();
@@ -660,14 +930,26 @@ impl AppConfig {
     /// to the user profile (active if the official one was), so presets can't overwrite them.
     fn keep_hand_edited_paths(&mut self) {
         let canonical = ModelProfile::official(&self.sdcpp_dir, self.preset());
-        let Some(p) = self.profiles.iter().find(|p| p.id == OFFICIAL_PROFILE_ID) else { return };
-        if p.same_files(&canonical) || !p.files().iter().all(|(_, f, _)| f.is_file()) || self.user_profile().is_some() {
+        let Some(p) = self.profiles.iter().find(|p| p.id == OFFICIAL_PROFILE_ID) else {
+            return;
+        };
+        if p.same_files(&canonical)
+            || !p.files().iter().all(|(_, f, _)| f.is_file())
+            || self.user_profile().is_some()
+        {
             return;
         }
-        let mut user = ModelProfile::user(p.diffusion_model.clone(), p.vae.clone(), p.text_encoder.clone(), p.vision_projector.clone());
+        let mut user = ModelProfile::user(
+            p.diffusion_model.clone(),
+            p.vae.clone(),
+            p.text_encoder.clone(),
+            p.vision_projector.clone(),
+        );
         user.recommended_settings = p.recommended_settings.clone();
         user.backend_args = p.backend_args.clone();
-        tracing::info!("model paths edited on the official profile moved to the profile of your own files");
+        tracing::info!(
+            "model paths edited on the official profile moved to the profile of your own files"
+        );
         self.profiles.push(user);
         if self.active_profile == OFFICIAL_PROFILE_ID {
             self.active_profile = USER_PROFILE_ID.into();
@@ -690,7 +972,10 @@ impl AppConfig {
 
     /// The active model uses the texture-fix VAE (#21).
     pub fn uses_improved_vae(&self) -> bool {
-        self.profile().vae.file_name().is_some_and(|n| n.eq_ignore_ascii_case(crate::catalog::VAE.file_name()))
+        self.profile()
+            .vae
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case(crate::catalog::VAE.file_name()))
     }
 
     /// Makes the active model use the texture-fix VAE in the app's folder, once downloaded. The
@@ -699,7 +984,11 @@ impl AppConfig {
     pub fn use_improved_vae(&mut self) {
         let vae = crate::catalog::VAE.path(&self.sdcpp_dir);
         let active = self.active_profile.clone();
-        if let Some(p) = self.profiles.iter_mut().find(|p| p.id == active && !p.is_official()) {
+        if let Some(p) = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == active && !p.is_official())
+        {
             p.vae = vae;
         }
         self.normalize();
@@ -711,7 +1000,11 @@ impl AppConfig {
     pub fn use_new_dit(&mut self) {
         let dit = crate::catalog::TURBO_Q4_K_M.path(&self.sdcpp_dir);
         let active = self.active_profile.clone();
-        if let Some(p) = self.profiles.iter_mut().find(|p| p.id == active && !p.is_official()) {
+        if let Some(p) = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == active && !p.is_official())
+        {
             p.diffusion_model = dit;
         }
         self.normalize();
@@ -725,7 +1018,12 @@ impl AppConfig {
 
     /// Model files of the active profile that are not there (label, path).
     pub fn missing_files(&self) -> Vec<(&'static str, PathBuf)> {
-        self.profile().files().into_iter().filter(|(_, p, required)| *required && !p.is_file()).map(|(l, p, _)| (l, p.to_path_buf())).collect()
+        self.profile()
+            .files()
+            .into_iter()
+            .filter(|(_, p, required)| *required && !p.is_file())
+            .map(|(l, p, _)| (l, p.to_path_buf()))
+            .collect()
     }
 
     /// Why the inference server cannot start: the engine or a model file is missing.
@@ -781,7 +1079,8 @@ impl AppConfig {
     }
 
     pub fn preset(&self) -> &'static crate::catalog::Preset {
-        crate::catalog::preset(&self.hardware_preset).unwrap_or_else(|| crate::catalog::preset(crate::catalog::DEFAULT_PRESET).unwrap())
+        crate::catalog::preset(&self.hardware_preset)
+            .unwrap_or_else(|| crate::catalog::preset(crate::catalog::DEFAULT_PRESET).unwrap())
     }
 
     /// Uses `preset`'s runtime settings, and its files for the official profile (tuning kept).
@@ -796,7 +1095,11 @@ impl AppConfig {
 
     /// VRAM the planner should assume: the override when set, otherwise the detected size.
     pub fn planning_vram_mib(&self, detected: Option<u64>) -> Option<u64> {
-        if self.vram_override_mib > 0 { Some(self.vram_override_mib) } else { detected }
+        if self.vram_override_mib > 0 {
+            Some(self.vram_override_mib)
+        } else {
+            detected
+        }
     }
 
     /// Folder of the active stable-diffusion.cpp build.
@@ -811,13 +1114,19 @@ impl AppConfig {
         if self.uses_mac_engine() {
             return self.mac_engine_exe();
         }
-        self.engine_dir().join(if cfg!(windows) { "sd-server.exe" } else { "sd-server" })
+        self.engine_dir().join(if cfg!(windows) {
+            "sd-server.exe"
+        } else {
+            "sd-server"
+        })
     }
 
     /// Kokon's Mac engine, on or off: the copy inside the app (next to kokon-service; `tauri dev` puts one there too),
     /// else the one `engine-mac/tools/install-dev.sh` puts in the stable-diffusion.cpp folder.
     pub fn mac_engine_exe(&self) -> PathBuf {
-        let here = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+        let here = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(Path::to_path_buf));
         mac_engine_in(here.as_deref(), &self.sdcpp_dir)
     }
 
@@ -871,12 +1180,21 @@ impl AppConfig {
         }
         let dir = self.upscalers_dir();
         if !name.is_empty() && name != crate::catalog::UPSCALER_NAME {
-            if let Some(p) = UPSCALER_EXTENSIONS.iter().map(|e| dir.join(format!("{name}.{e}"))).find(|p| p.is_file()) {
+            if let Some(p) = UPSCALER_EXTENSIONS
+                .iter()
+                .map(|e| dir.join(format!("{name}.{e}")))
+                .find(|p| p.is_file())
+            {
                 return Some((name.to_string(), p));
             }
         }
         let d = crate::catalog::UPSCALER;
-        d.is_present(&self.sdcpp_dir).then(|| (crate::catalog::UPSCALER_NAME.to_string(), d.path(&self.sdcpp_dir)))
+        d.is_present(&self.sdcpp_dir).then(|| {
+            (
+                crate::catalog::UPSCALER_NAME.to_string(),
+                d.path(&self.sdcpp_dir),
+            )
+        })
     }
 
     /// The file of [`Self::upscaler`].
@@ -902,35 +1220,78 @@ impl AppConfig {
 
     pub fn validate(&self) -> Result<(), AppError> {
         if self.server_port == self.service_port {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "The inference server and the app service cannot use the same port."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "The inference server and the app service cannot use the same port.",
+            ));
         }
         if self.remote_port == self.server_port || self.remote_port == self.service_port {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "The port for other devices must differ from the app's own ports."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "The port for other devices must differ from the app's own ports.",
+            ));
         }
         if self.server_port < 1024 || self.service_port < 1024 || self.remote_port < 1024 {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "Ports must be 1024 or higher."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "Ports must be 1024 or higher.",
+            ));
         }
         if !(0.0..=64.0).contains(&self.vram_reserve_gib) {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "VRAM reserve must be between 0 and 64 GiB."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "VRAM reserve must be between 0 and 64 GiB.",
+            ));
         }
-        if self.device.trim().is_empty() || !self.device.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "Device must be a backend name such as cuda0."));
+        if self.device.trim().is_empty() || !self.device.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "Device must be a backend name such as cuda0.",
+            ));
         }
-        if self.prefix_cache_type.is_empty() || !self.prefix_cache_type.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "Prefix cache type must be auto, off, or a weight type such as q8_0 or f16."));
+        if self.prefix_cache_type.is_empty()
+            || !self
+                .prefix_cache_type
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "Prefix cache type must be auto, off, or a weight type such as q8_0 or f16.",
+            ));
         }
         if self.profiles.is_empty() {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "No model profile configured."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "No model profile configured.",
+            ));
         }
         if !(0.0..=1.0).contains(&self.upscale_blend) {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "Upscaler blend must be between 0 and 100 %."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "Upscaler blend must be between 0 and 100 %.",
+            ));
         }
         if self.vram_override_mib != 0 && !(4096..=196_608).contains(&self.vram_override_mib) {
-            return Err(AppError::new(ErrorCode::InvalidConfig, "Simulated VRAM must be between 4096 and 196608 MiB (or 0 to detect it)."));
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                "Simulated VRAM must be between 4096 and 196608 MiB (or 0 to detect it).",
+            ));
         }
         let max = crate::enhancer::MAX_SYSTEM_PROMPT_CHARS;
-        if [&self.enhancer_t2i_prompt, &self.enhancer_edit_prompt, &self.enhancer_compose_prompt].iter().any(|p| p.chars().count() > max) {
-            return Err(AppError::new(ErrorCode::InvalidConfig, format!("Prompt enhancer instructions can be at most {max} characters.")));
+        if [
+            &self.enhancer_t2i_prompt,
+            &self.enhancer_edit_prompt,
+            &self.enhancer_compose_prompt,
+        ]
+        .iter()
+        .any(|p| p.chars().count() > max)
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                format!("Prompt enhancer instructions can be at most {max} characters."),
+            ));
         }
         Ok(())
     }
@@ -950,7 +1311,10 @@ fn extra_weights_mib(diffusion: u64, text_encoder: u64, unified: bool) -> u64 {
 
 /// See [`AppConfig::mac_engine_exe`]: `app_dir` is kokon-service's folder.
 fn mac_engine_in(app_dir: Option<&Path>, sdcpp_dir: &Path) -> PathBuf {
-    app_dir.map(|d| d.join(MAC_ENGINE_EXE)).filter(|p| p.is_file()).unwrap_or_else(|| sdcpp_dir.join(MAC_ENGINE_DIR).join(MAC_ENGINE_EXE))
+    app_dir
+        .map(|d| d.join(MAC_ENGINE_EXE))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| sdcpp_dir.join(MAC_ENGINE_DIR).join(MAC_ENGINE_EXE))
 }
 
 #[cfg(test)]
@@ -965,7 +1329,10 @@ mod tests {
         assert_eq!(mac_engine_in(Some(app.path()), sdcpp.path()), dev);
         assert_eq!(mac_engine_in(None, sdcpp.path()), dev);
         std::fs::write(app.path().join(MAC_ENGINE_EXE), b"").unwrap();
-        assert_eq!(mac_engine_in(Some(app.path()), sdcpp.path()), app.path().join(MAC_ENGINE_EXE));
+        assert_eq!(
+            mac_engine_in(Some(app.path()), sdcpp.path()),
+            app.path().join(MAC_ENGINE_EXE)
+        );
     }
 
     /// Empty files at every path of `p`.
@@ -978,13 +1345,21 @@ mod tests {
 
     fn own_files(dir: &Path) -> ModelProfile {
         let m = dir.join("ComfyUI").join("models");
-        ModelProfile::user(m.join("diffusion_models").join("turbo_int8.safetensors"), m.join("vae").join("vae.safetensors"), m.join("text_encoders").join("qwen3vl_fused.safetensors"), None)
+        ModelProfile::user(
+            m.join("diffusion_models").join("turbo_int8.safetensors"),
+            m.join("vae").join("vae.safetensors"),
+            m.join("text_encoders").join("qwen3vl_fused.safetensors"),
+            None,
+        )
     }
 
     #[test]
     fn enhancer_prompts_default_blank_and_are_capped() {
         let mut c = AppConfig::default();
-        assert!(c.enhancer_t2i_prompt.is_empty() && c.enhancer_edit_prompt.is_empty(), "built-in by default");
+        assert!(
+            c.enhancer_t2i_prompt.is_empty() && c.enhancer_edit_prompt.is_empty(),
+            "built-in by default"
+        );
         // Older settings files have no such keys.
         let old: AppConfig = serde_json::from_str(r#"{"schemaVersion":9}"#).unwrap();
         assert!(old.enhancer_edit_prompt.is_empty() && old.enhancer_compose_prompt.is_empty());
@@ -992,7 +1367,13 @@ mod tests {
         c.enhancer_t2i_prompt = format!("{}\n", crate::enhancer::T2I_SYSTEM_PROMPT);
         c.enhancer_edit_prompt = "Retouch jewelry only.".into();
         c.normalize();
-        assert_eq!((c.enhancer_t2i_prompt.as_str(), c.enhancer_edit_prompt.as_str()), ("", "Retouch jewelry only."));
+        assert_eq!(
+            (
+                c.enhancer_t2i_prompt.as_str(),
+                c.enhancer_edit_prompt.as_str()
+            ),
+            ("", "Retouch jewelry only.")
+        );
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["enhancerEditPrompt"], "Retouch jewelry only.");
         assert!(c.validate().is_ok());
@@ -1013,57 +1394,118 @@ mod tests {
         let mine = own_files(dir.path());
         touch_files(&mine);
         // badraymen's config (#14): the official profile pointed at ComfyUI files by hand.
-        let mut old = AppConfig { sdcpp_dir: sd.clone(), schema_version: 8, ..AppConfig::default() };
+        let mut old = AppConfig {
+            sdcpp_dir: sd.clone(),
+            schema_version: 8,
+            ..AppConfig::default()
+        };
         old.normalize();
         let p = &mut old.profiles[0];
-        (p.diffusion_model, p.vae, p.text_encoder, p.vision_projector) = (mine.diffusion_model.clone(), mine.vae.clone(), mine.text_encoder.clone(), None);
+        (p.diffusion_model, p.vae, p.text_encoder, p.vision_projector) = (
+            mine.diffusion_model.clone(),
+            mine.vae.clone(),
+            mine.text_encoder.clone(),
+            None,
+        );
         p.backend_args = vec!["--x".into()];
         let path = dir.path().join("config.json");
         old.save_to(&path).unwrap();
         let c = AppConfig::load_from(&path);
-        assert_eq!(c.active_profile, USER_PROFILE_ID, "the edited files stay in use");
+        assert_eq!(
+            c.active_profile, USER_PROFILE_ID,
+            "the edited files stay in use"
+        );
         let user = c.profile();
-        assert_eq!((user.source, user.diffusion_model.clone(), user.vision_projector.clone()), (ProfileSource::User, mine.diffusion_model.clone(), None));
+        assert_eq!(
+            (
+                user.source,
+                user.diffusion_model.clone(),
+                user.vision_projector.clone()
+            ),
+            (ProfileSource::User, mine.diffusion_model.clone(), None)
+        );
         assert_eq!(user.backend_args, vec!["--x".to_string()]);
         assert_eq!(user.model, QWEN_IMAGE_21);
-        let off = c.profiles.iter().find(|p| p.id == OFFICIAL_PROFILE_ID).unwrap();
-        assert!(off.same_files(&ModelProfile::official(&sd, c.preset())) && off.is_official(), "the official profile is official again");
+        let off = c
+            .profiles
+            .iter()
+            .find(|p| p.id == OFFICIAL_PROFILE_ID)
+            .unwrap();
+        assert!(
+            off.same_files(&ModelProfile::official(&sd, c.preset())) && off.is_official(),
+            "the official profile is official again"
+        );
         c.save_to(&path).unwrap();
-        assert_eq!(AppConfig::load_from(&path), c, "nothing changes on the next load");
+        assert_eq!(
+            AppConfig::load_from(&path),
+            c,
+            "nothing changes on the next load"
+        );
 
         // Edited paths whose files are gone are not kept: back to the official files.
         std::fs::remove_file(&mine.vae).unwrap();
         old.save_to(&path).unwrap();
         let c = AppConfig::load_from(&path);
-        assert_eq!((c.active_profile.as_str(), c.profiles.len()), (OFFICIAL_PROFILE_ID, 1));
-        assert!(c.profile().same_files(&ModelProfile::official(&sd, c.preset())));
+        assert_eq!(
+            (c.active_profile.as_str(), c.profiles.len()),
+            (OFFICIAL_PROFILE_ID, 1)
+        );
+        assert!(
+            c.profile()
+                .same_files(&ModelProfile::official(&sd, c.preset()))
+        );
     }
 
     #[test]
     fn presets_never_replace_the_users_files() {
         let dir = tempfile::tempdir().unwrap();
-        let mut c = AppConfig { sdcpp_dir: dir.path().join("sd"), ..AppConfig::default() };
+        let mut c = AppConfig {
+            sdcpp_dir: dir.path().join("sd"),
+            ..AppConfig::default()
+        };
         c.normalize();
         let mut mine = own_files(dir.path());
         mine.scan_dir = Some(dir.path().join("ComfyUI"));
         c.set_user_files(mine.clone());
-        c.profiles.iter_mut().find(|p| p.id == USER_PROFILE_ID).unwrap().recommended_settings.area_fast = 768 * 768;
+        c.profiles
+            .iter_mut()
+            .find(|p| p.id == USER_PROFILE_ID)
+            .unwrap()
+            .recommended_settings
+            .area_fast = 768 * 768;
         c.apply_preset(crate::catalog::preset("32gb").unwrap());
         assert_eq!(c.active_profile, USER_PROFILE_ID);
-        assert_eq!((c.profile().text_encoder.clone(), c.hardware_preset.as_str()), (mine.text_encoder.clone(), "32gb"));
-        let off = c.profiles.iter().find(|p| p.id == OFFICIAL_PROFILE_ID).unwrap();
-        assert!(off.text_encoder.ends_with("Qwen3VL-8B-Instruct-Q8_0.gguf"), "the official profile follows the preset");
+        assert_eq!(
+            (c.profile().text_encoder.clone(), c.hardware_preset.as_str()),
+            (mine.text_encoder.clone(), "32gb")
+        );
+        let off = c
+            .profiles
+            .iter()
+            .find(|p| p.id == OFFICIAL_PROFILE_ID)
+            .unwrap();
+        assert!(
+            off.text_encoder.ends_with("Qwen3VL-8B-Instruct-Q8_0.gguf"),
+            "the official profile follows the preset"
+        );
         // Choosing files again keeps the tuning; switching to the official files keeps them.
         c.set_user_files(own_files(dir.path()));
         assert_eq!(c.profile().recommended_settings.area_fast, 768 * 768);
         assert_eq!(c.profiles.len(), 2);
         c.use_official();
         assert_eq!(c.active_profile, OFFICIAL_PROFILE_ID);
-        assert!(c.user_profile().is_some(), "the user's profile is never deleted");
+        assert!(
+            c.user_profile().is_some(),
+            "the user's profile is never deleted"
+        );
         // The official files follow the folder.
         c.sdcpp_dir = dir.path().join("elsewhere");
         c.normalize();
-        assert!(c.profile().diffusion_model.starts_with(dir.path().join("elsewhere")));
+        assert!(
+            c.profile()
+                .diffusion_model
+                .starts_with(dir.path().join("elsewhere"))
+        );
         // An active profile that is gone falls back to the official one.
         c.active_profile = "nope".into();
         c.normalize();
@@ -1073,9 +1515,18 @@ mod tests {
     #[test]
     fn missing_files_are_reported() {
         let dir = tempfile::tempdir().unwrap();
-        let mut c = AppConfig { sdcpp_dir: dir.path().join("sd"), ..AppConfig::default() };
+        let mut c = AppConfig {
+            sdcpp_dir: dir.path().join("sd"),
+            ..AppConfig::default()
+        };
         c.normalize();
-        assert!(c.missing_files_error().unwrap().message.contains("sd-server"), "the engine first");
+        assert!(
+            c.missing_files_error()
+                .unwrap()
+                .message
+                .contains("sd-server"),
+            "the engine first"
+        );
         std::fs::create_dir_all(c.engine_dir()).unwrap();
         std::fs::write(c.server_exe(), b"").unwrap();
         let mine = own_files(dir.path());
@@ -1083,7 +1534,12 @@ mod tests {
         assert_eq!(c.missing_files().len(), 3);
         let e = c.missing_files_error().unwrap();
         assert_eq!(e.code, ErrorCode::MissingModel);
-        assert!(e.message.starts_with("Diffusion model not found") && e.message.ends_with("(and 2 more)"), "{}", e.message);
+        assert!(
+            e.message.starts_with("Diffusion model not found")
+                && e.message.ends_with("(and 2 more)"),
+            "{}",
+            e.message
+        );
         touch_files(&mine);
         assert!(c.missing_files().is_empty() && c.missing_files_error().is_none());
     }
@@ -1092,10 +1548,24 @@ mod tests {
     fn larger_own_files_take_planning_memory() {
         use crate::catalog::{TEXT_ENCODER_Q8_0, TURBO_Q4_K};
         assert_eq!(extra_weights_mib(TURBO_Q4_K.size, 0, false), 0);
-        assert_eq!(extra_weights_mib(TURBO_Q4_K.size / 2, 0, false), 0, "smaller files give nothing back");
-        assert_eq!(extra_weights_mib(TURBO_Q4_K.size + (6 << 30), 0, false), 6 * 1024);
-        assert_eq!(extra_weights_mib(0, TEXT_ENCODER_Q8_0.size, false), 0, "the text encoder sits in system RAM");
-        assert!(extra_weights_mib(0, TEXT_ENCODER_Q8_0.size, true) > 2000, "unified memory: it shares the GPU's memory");
+        assert_eq!(
+            extra_weights_mib(TURBO_Q4_K.size / 2, 0, false),
+            0,
+            "smaller files give nothing back"
+        );
+        assert_eq!(
+            extra_weights_mib(TURBO_Q4_K.size + (6 << 30), 0, false),
+            6 * 1024
+        );
+        assert_eq!(
+            extra_weights_mib(0, TEXT_ENCODER_Q8_0.size, false),
+            0,
+            "the text encoder sits in system RAM"
+        );
+        assert!(
+            extra_weights_mib(0, TEXT_ENCODER_Q8_0.size, true) > 2000,
+            "unified memory: it shares the GPU's memory"
+        );
         // The official profile is what the budgets were measured with.
         assert_eq!(AppConfig::default().model_vram_extra_mib(true), 0);
     }
@@ -1108,10 +1578,21 @@ mod tests {
         assert!(p.diffusion_model.starts_with(default_sdcpp_dir()));
         // A new install (no earlier model file in the folder) gets the Q4_K_M.
         let dir = tempfile::tempdir().unwrap();
-        let mut fresh = AppConfig { sdcpp_dir: dir.path().to_path_buf(), ..AppConfig::default() };
+        let mut fresh = AppConfig {
+            sdcpp_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
         fresh.normalize();
-        assert_eq!(fresh.profile().display_name, "Qwen-Image 2.1 Turbo Q4_K_M (official)");
-        assert!(fresh.profile().diffusion_model.ends_with("qwen-image-2.1-turbo-Q4_K_M.gguf"));
+        assert_eq!(
+            fresh.profile().display_name,
+            "Qwen-Image 2.1 Turbo Q4_K_M (official)"
+        );
+        assert!(
+            fresh
+                .profile()
+                .diffusion_model
+                .ends_with("qwen-image-2.1-turbo-Q4_K_M.gguf")
+        );
         assert_eq!(c.hardware_preset, "16gb");
         assert_eq!(c.planning_vram_mib(Some(16303)), Some(16303));
         assert_eq!(c.device, "cuda0");
@@ -1121,9 +1602,23 @@ mod tests {
         assert!(c.validate().is_ok());
         assert_eq!(p.files().len(), 4);
         assert_eq!(c.upscale_tile_size, 0, "automatic");
-        let default_model = if cfg!(target_os = "macos") { "lanczos" } else { "4x_NMKD-Superscale-SP_178000_G" };
-        assert_eq!((c.upscaler_model.as_str(), c.upscale_blend, c.upscale_prescale), (default_model, 1.0, false));
-        assert_eq!(c.upscalers_dir(), default_sdcpp_dir().join("models").join("upscalers"));
+        let default_model = if cfg!(target_os = "macos") {
+            "lanczos"
+        } else {
+            "4x_NMKD-Superscale-SP_178000_G"
+        };
+        assert_eq!(
+            (
+                c.upscaler_model.as_str(),
+                c.upscale_blend,
+                c.upscale_prescale
+            ),
+            (default_model, 1.0, false)
+        );
+        assert_eq!(
+            c.upscalers_dir(),
+            default_sdcpp_dir().join("models").join("upscalers")
+        );
     }
 
     #[test]
@@ -1140,8 +1635,15 @@ mod tests {
         c.sage_unsupported = false;
         c.gpu_backend = GpuBackend::Vulkan;
         assert_eq!(c.engine_dir(), c.sdcpp_dir.join("engine-vulkan"));
-        assert!(c.server_exe().starts_with(c.sdcpp_dir.join("engine-vulkan")));
-        assert_eq!(c.effective_device(), "vulkan0", "a CUDA device name maps to the first Vulkan GPU");
+        assert!(
+            c.server_exe()
+                .starts_with(c.sdcpp_dir.join("engine-vulkan"))
+        );
+        assert_eq!(
+            c.effective_device(),
+            "vulkan0",
+            "a CUDA device name maps to the first Vulkan GPU"
+        );
         c.device = "Vulkan1".into();
         assert_eq!(c.effective_device(), "vulkan1");
         c.device = "vulkan".into();
@@ -1152,12 +1654,23 @@ mod tests {
         assert_eq!(GpuBackend::for_vendor("apple"), GpuBackend::Metal);
         c.gpu_backend = GpuBackend::Metal;
         c.device = "cuda0".into();
-        assert_eq!(c.effective_device(), "mtl0", "matches MTL0 in --list-devices");
+        assert_eq!(
+            c.effective_device(),
+            "mtl0",
+            "matches MTL0 in --list-devices"
+        );
         assert_eq!(c.engine_dir(), c.sdcpp_dir.join("engine-metal"));
         assert!(!c.uses_sage_attention());
         // Configs written before the field existed keep this platform's engine.
         let old: AppConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(old.gpu_backend, if cfg!(target_os = "macos") { GpuBackend::Metal } else { GpuBackend::Cuda });
+        assert_eq!(
+            old.gpu_backend,
+            if cfg!(target_os = "macos") {
+                GpuBackend::Metal
+            } else {
+                GpuBackend::Cuda
+            }
+        );
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains(r#""gpuBackend":"metal""#));
     }
@@ -1170,9 +1683,14 @@ mod tests {
         std::fs::write(&p, old).unwrap();
         let c = AppConfig::load_from(&p);
         assert_eq!(c.active_profile, "uc", "the user's choice stays active");
-        let off = c.profiles.iter().find(|p| p.id == OFFICIAL_PROFILE_ID).unwrap();
+        let off = c
+            .profiles
+            .iter()
+            .find(|p| p.id == OFFICIAL_PROFILE_ID)
+            .unwrap();
         // Catalog paths are joined per component, so the separator is the platform's own.
-        let sd = |f: &str| crate::catalog::join_rel(Path::new(r"D:\sd"), &format!("models/qwen21/{f}"));
+        let sd =
+            |f: &str| crate::catalog::join_rel(Path::new(r"D:\sd"), &format!("models/qwen21/{f}"));
         assert_eq!(off.diffusion_model, sd("qwen-image-2.1-turbo-Q4_K_M.gguf"));
         // Saved again, nothing is added twice.
         c.save_to(&p).unwrap();
@@ -1180,40 +1698,64 @@ mod tests {
         // A file without profiles uses its own folder and preset.
         std::fs::write(&p, r#"{"sdcppDir":"D:\\sd","hardwarePreset":"24gb"}"#).unwrap();
         let c = AppConfig::load_from(&p);
-        assert_eq!(c.profile().diffusion_model, sd("qwen-image-2.1-turbo-Q4_K_M.gguf"));
+        assert_eq!(
+            c.profile().diffusion_model,
+            sd("qwen-image-2.1-turbo-Q4_K_M.gguf")
+        );
     }
 
     #[test]
     fn old_folders_move_to_the_new_name() {
         let base = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(base.path().join("QwenLocalStudio").join("inputs")).unwrap();
-        std::fs::write(base.path().join("QwenLocalStudio").join("gallery.db"), b"db").unwrap();
+        std::fs::write(
+            base.path().join("QwenLocalStudio").join("gallery.db"),
+            b"db",
+        )
+        .unwrap();
         let d = migrate_dir(base.path(), "QwenLocalStudio", "KokonData");
         assert_eq!(d, base.path().join("KokonData"));
         assert!(d.join("gallery.db").is_file() && !base.path().join("QwenLocalStudio").exists());
         // Once moved, nothing happens again; a fresh install just gets the new name.
         assert_eq!(migrate_dir(base.path(), "QwenLocalStudio", "KokonData"), d);
-        assert_eq!(migrate_dir(base.path(), "Missing", "New"), base.path().join("New"));
+        assert_eq!(
+            migrate_dir(base.path(), "Missing", "New"),
+            base.path().join("New")
+        );
         // Model paths inside the moved folder follow it; others stay.
         let (old, new) = (base.path().join("QwenLocalStudio"), d.clone());
         let mut c = AppConfig::default();
         c.sdcpp_dir = old.join("sdcpp");
         c.apply_preset(crate::catalog::preset("16gb").unwrap());
-        c.profiles.push(ModelProfile { id: "mine".into(), diffusion_model: PathBuf::from(r"C:\AI\sdcpp\x.gguf"), ..ModelProfile::default() });
+        c.profiles.push(ModelProfile {
+            id: "mine".into(),
+            diffusion_model: PathBuf::from(r"C:\AI\sdcpp\x.gguf"),
+            ..ModelProfile::default()
+        });
         c.relocate_paths(&old, &new);
         assert_eq!(c.sdcpp_dir, new.join("sdcpp"));
         assert!(c.profile().diffusion_model.starts_with(new.join("sdcpp")));
-        assert_eq!(c.profiles[1].diffusion_model, PathBuf::from(r"C:\AI\sdcpp\x.gguf"));
+        assert_eq!(
+            c.profiles[1].diffusion_model,
+            PathBuf::from(r"C:\AI\sdcpp\x.gguf")
+        );
     }
 
     #[test]
     fn presets_switch_weights_and_keep_tuning() {
         let dir = tempfile::tempdir().unwrap();
-        let mut c = AppConfig { sdcpp_dir: dir.path().to_path_buf(), ..AppConfig::default() };
+        let mut c = AppConfig {
+            sdcpp_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
         c.profiles[0].recommended_settings.area_fast = 768 * 768;
         c.apply_preset(crate::catalog::preset("32gb").unwrap());
         let p = c.profile();
-        assert!(p.diffusion_model.ends_with("qwen-image-2.1-turbo-Q4_K_M.gguf"), "4-bit Turbo on every preset");
+        assert!(
+            p.diffusion_model
+                .ends_with("qwen-image-2.1-turbo-Q4_K_M.gguf"),
+            "4-bit Turbo on every preset"
+        );
         assert!(p.text_encoder.ends_with("Qwen3VL-8B-Instruct-Q8_0.gguf"));
         assert_eq!(p.display_name, "Qwen-Image 2.1 Turbo Q4_K_M (official)");
         assert_eq!(p.recommended_settings.area_fast, 768 * 768);
@@ -1233,15 +1775,181 @@ mod tests {
         std::fs::write(&p, old).unwrap();
         let c = AppConfig::load_from(&p);
         assert_eq!(c.schema_version, SCHEMA_VERSION);
-        assert_eq!(c.upscale_tile_size, 0, "ESRGAN tile sizes reset to automatic");
-        assert_eq!(c.upscalers_dir(), crate::catalog::join_rel(Path::new(r"D:\sd"), "models/upscalers"), "the custom folder is no longer used");
-        assert_eq!(c.upscaler_model, "4x_NMKD-Superscale-SP_178000_G", "the model choice is kept");
-        assert!(!serde_json::to_string(&c).unwrap().contains("upscalersDir"), "the folder key is dropped on save");
+        assert_eq!(
+            c.upscale_tile_size, 0,
+            "ESRGAN tile sizes reset to automatic"
+        );
+        assert_eq!(
+            c.upscalers_dir(),
+            crate::catalog::join_rel(Path::new(r"D:\sd"), "models/upscalers"),
+            "the custom folder is no longer used"
+        );
+        assert_eq!(
+            c.upscaler_model, "4x_NMKD-Superscale-SP_178000_G",
+            "the model choice is kept"
+        );
+        assert!(
+            !serde_json::to_string(&c).unwrap().contains("upscalersDir"),
+            "the folder key is dropped on save"
+        );
         std::fs::write(&p, r#"{"schemaVersion":7,"upscalerModel":"4x-UltraSharp"}"#).unwrap();
-        assert_eq!(AppConfig::load_from(&p).upscaler_model, DEFAULT_UPSCALER, "0.9.0's default moves to the new one");
+        assert_eq!(
+            AppConfig::load_from(&p).upscaler_model,
+            DEFAULT_UPSCALER,
+            "0.9.0's default moves to the new one"
+        );
         // A tile size chosen after the change is kept.
         std::fs::write(&p, r#"{"schemaVersion":8,"upscaleTileSize":512}"#).unwrap();
         assert_eq!(AppConfig::load_from(&p).upscale_tile_size, 512);
+    }
+
+    #[test]
+    fn schema_12_renames_flavors_to_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        let old = r#"{"schemaVersion":11,"externalEngine":{"gateway":"http://gw","model":"a","modelName":"a.gguf"},
+            "flavors":[{"label":"Fast","model":"a","modelName":"a.gguf"},{"label":"Quality","sub":"slower","model":"b","modelName":"b.gguf"}]}"#;
+        std::fs::write(&p, old).unwrap();
+        let c = AppConfig::load_from(&p);
+        assert_eq!(c.schema_version, SCHEMA_VERSION);
+        assert_eq!(c.models.len(), 2, "the old `flavors` key is still read");
+        assert_eq!(c.models[0].label, "Fast");
+        assert_eq!(c.models[1].sub.as_deref(), Some("slower"));
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(
+            saved.contains("\"models\"") && !saved.contains("\"flavors\""),
+            "the new key is written on save"
+        );
+    }
+
+    #[test]
+    fn schema_13_adds_vlm_and_prompt_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        // A schema-12 file with no new keys reads clean and gets the new
+        // schema; the new keys stay out of the saved JSON until set.
+        let old = r#"{"schemaVersion":12,"externalEngine":{"gateway":"http://gw","model":"a","modelName":"a.gguf"},
+            "models":[{"label":"Klein","model":"kokon-klein","modelName":"klein-Q8_0.gguf"}]}"#;
+        std::fs::write(&p, old).unwrap();
+        let c = AppConfig::load_from(&p);
+        assert_eq!(c.schema_version, 13);
+        assert_eq!(c.models[0].vlm, None);
+        assert_eq!(c.models[0].prompt_bundle, "");
+        assert_eq!(c.models[0].gateway, None);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains("\"vlm\""), "unset sub-entries stay out of the JSON");
+
+        // Set: the new surface round-trips (per-model and on the active engine).
+        let mut c = AppConfig::load_from(&p);
+        c.models[0].gateway = Some("http://other-gw".into());
+        c.models[0].vlm = Some(VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+            model: "q35".into(),
+            api_key: "key-1".into(),
+        });
+        c.models[0].prompt_bundle = "bfl-klein".into();
+        c.external_engine.as_mut().unwrap().vlm = c.models[0].vlm.clone();
+        c.external_engine.as_mut().unwrap().prompt_bundle = "bfl-klein".into();
+        std::fs::write(&p, serde_json::to_string(&c).unwrap()).unwrap();
+        let r = AppConfig::load_from(&p);
+        let m = &r.models[0];
+        assert_eq!(m.gateway.as_deref(), Some("http://other-gw"));
+        assert_eq!(m.vlm.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/kokon-pup");
+        assert_eq!(m.vlm.as_ref().unwrap().api_key, "key-1");
+        assert_eq!(m.prompt_bundle, "bfl-klein");
+        assert_eq!(r.external_engine.as_ref().unwrap().vlm, m.vlm);
+        assert_eq!(r.external_engine.as_ref().unwrap().prompt_bundle, "bfl-klein");
+    }
+
+    #[test]
+    fn pipelines_resolve_engine_and_vlm_from_config() {
+        // The three pipelines of a fresh deployment: klein (its own gateway
+        // + a keyed VLM + a bundled prompt set), qwen-full (the service-wide
+        // gateway, a keyless VLM, a path override), qwen-turbo (service-wide
+        // gateway, no upsampler, no bundle). Nothing about where any of
+        // them lives is a constant in the code.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = AppConfig::default();
+        let gw = "http://127.0.0.1:8081";
+        cfg.external_engine = Some(ExternalEngine {
+            gateway: gw.into(),
+            model: "kokon-turbo".into(),
+            model_name: "turbo.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: String::new(),
+        });
+        cfg.models = vec![
+            ExternalModel {
+                label: "klein".into(),
+                sub: None,
+                model: "kokon-klein".into(),
+                model_name: "klein.gguf".into(),
+                sample: serde_json::json!({"steps": 16}),
+                gateway: Some("http://10.0.0.2:8081".into()),
+                vlm: Some(VlmEndpoint {
+                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+                    model: "pup".into(),
+                    api_key: "pup-key".into(),
+                }),
+                prompt_bundle: "bfl-klein".into(),
+            },
+            ExternalModel {
+                label: "qwen-full".into(),
+                sub: None,
+                model: "kokon-full".into(),
+                model_name: "full.gguf".into(),
+                sample: serde_json::json!({"steps": 20}),
+                gateway: None,
+                vlm: Some(VlmEndpoint {
+                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+                    model: "pup".into(),
+                    api_key: String::new(),
+                }),
+                prompt_bundle: "prompts/qwen".into(),
+            },
+            ExternalModel {
+                label: "qwen-turbo".into(),
+                sub: None,
+                model: "kokon-turbo".into(),
+                model_name: "turbo.gguf".into(),
+                sample: serde_json::json!({}),
+                gateway: None,
+                vlm: None,
+                prompt_bundle: String::new(),
+            },
+        ];
+
+        // Engine entrypoints: override vs service-wide default.
+        assert_eq!(cfg.models[0].engine_gateway(gw), "http://10.0.0.2:8081");
+        assert_eq!(cfg.models[1].engine_gateway(gw), gw);
+        assert_eq!(cfg.models[2].engine_gateway(gw), gw);
+
+        // VLM endpoints: present (keyed / keyless) or absent.
+        let (e, m, k) = match &cfg.models[0].vlm {
+            Some(v) => (v.entrypoint.as_str(), v.model.as_str(), v.api_key.as_str()),
+            None => panic!("klein pipeline has no VLM"),
+        };
+        assert_eq!((e, m, k), ("http://127.0.0.1:8081/upstream/kokon-pup", "pup", "pup-key"));
+        assert_eq!(cfg.models[1].vlm.as_ref().unwrap().api_key, "", "keyless sidecar");
+        assert_eq!(cfg.models[2].vlm, None);
+
+        // Prompt bundles: bundled id, path override, none.
+        let base = dir.path();
+        assert_eq!(
+            resolve_prompt_bundle("bfl-klein", base),
+            Some(base.join("assets").join("bfl-klein"))
+        );
+        assert_eq!(
+            resolve_prompt_bundle("prompts/qwen", base),
+            Some(base.join("prompts").join("qwen"))
+        );
+        assert_eq!(
+            resolve_prompt_bundle("/abs/prompts", base),
+            Some(PathBuf::from("/abs/prompts"))
+        );
+        assert_eq!(resolve_prompt_bundle("", base), None);
+        assert_eq!(resolve_prompt_bundle("  ", base), None);
     }
 
     #[test]
@@ -1255,12 +1963,26 @@ mod tests {
         std::fs::write(&p, old).unwrap();
         let c = AppConfig::load_from(&p);
         let off = c.profile();
-        assert_eq!(off.diffusion_model, crate::catalog::join_rel(Path::new(r"D:\sd"), "models/qwen21/qwen-image-2.1-turbo-Q4_K_M.gguf"));
+        assert_eq!(
+            off.diffusion_model,
+            crate::catalog::join_rel(
+                Path::new(r"D:\sd"),
+                "models/qwen21/qwen-image-2.1-turbo-Q4_K_M.gguf"
+            )
+        );
         assert_eq!(off.display_name, "Qwen-Image 2.1 Turbo Q4_K_M (official)");
-        assert_eq!(off.backend_args, vec!["--x".to_string()], "launch flags stay");
+        assert_eq!(
+            off.backend_args,
+            vec!["--x".to_string()],
+            "launch flags stay"
+        );
         assert_eq!(off.recommended_settings, RecommendedSettings::default());
         let mine = c.profiles.iter().find(|p| p.id == "mine").unwrap();
-        assert_eq!(mine.diffusion_model, PathBuf::from(r"D:\sd\mine.gguf"), "other profiles keep their model");
+        assert_eq!(
+            mine.diffusion_model,
+            PathBuf::from(r"D:\sd\mine.gguf"),
+            "other profiles keep their model"
+        );
         assert_eq!(mine.recommended_settings, RecommendedSettings::default());
         assert_eq!(c.schema_version, SCHEMA_VERSION);
     }
@@ -1275,20 +1997,38 @@ mod tests {
         std::fs::create_dir_all(c.upscalers_dir()).unwrap();
         let f = c.upscalers_dir().join("4xNomos2_hq_mosr.pth");
         std::fs::write(&f, b"partial").unwrap();
-        assert!(c.upscaler_file().is_none(), "a partial file is not installed");
-        std::fs::File::create(&f).unwrap().set_len(crate::catalog::UPSCALER.size).unwrap();
-        assert_eq!(c.upscaler().unwrap(), ("4xNomos2_hq_mosr".to_string(), f.clone()), "the chosen model is missing: the bundled MoSR runs");
+        assert!(
+            c.upscaler_file().is_none(),
+            "a partial file is not installed"
+        );
+        std::fs::File::create(&f)
+            .unwrap()
+            .set_len(crate::catalog::UPSCALER.size)
+            .unwrap();
+        assert_eq!(
+            c.upscaler().unwrap(),
+            ("4xNomos2_hq_mosr".to_string(), f.clone()),
+            "the chosen model is missing: the bundled MoSR runs"
+        );
         let ss = c.upscalers_dir().join("4x_NMKD-Superscale-SP_178000_G.pth");
         std::fs::write(&ss, b"x").unwrap();
-        assert_eq!(c.upscaler().unwrap(), ("4x_NMKD-Superscale-SP_178000_G".to_string(), ss));
+        assert_eq!(
+            c.upscaler().unwrap(),
+            ("4x_NMKD-Superscale-SP_178000_G".to_string(), ss)
+        );
         c.upscaler_model = "4xNomos2_hq_mosr".into();
         assert_eq!(c.upscaler_file().unwrap(), f);
         c.upscaler_model = LANCZOS.into();
-        assert_eq!(c.upscaler(), None, "a plain resize, even with models installed");
+        assert_eq!(
+            c.upscaler(),
+            None,
+            "a plain resize, even with models installed"
+        );
         c.upscale_blend = 1.5;
         assert!(c.validate().is_err());
         // Older config files without the new fields keep loading with defaults.
-        let old: AppConfig = serde_json::from_str(r#"{"serverPort": 41000, "vaeTileSize": 512}"#).unwrap();
+        let old: AppConfig =
+            serde_json::from_str(r#"{"serverPort": 41000, "vaeTileSize": 512}"#).unwrap();
         assert_eq!(old.profile().recommended_settings.area_quality, 2048 * 2048);
     }
 
@@ -1300,10 +2040,24 @@ mod tests {
             std::fs::write(&path, json).unwrap();
             AppConfig::load_from(&path).vram_reserve_gib
         };
-        assert_eq!(load(r#"{"schemaVersion": 9, "hardwarePreset": "8gb", "vramReserveGib": 1.0}"#), 1.5);
-        assert_eq!(load(r#"{"schemaVersion": 9, "hardwarePreset": "8gb", "vramReserveGib": 2.0}"#), 2.0, "set by hand");
-        assert_eq!(load(r#"{"schemaVersion": 9, "hardwarePreset": "16gb", "vramReserveGib": 1.0}"#), 1.0);
-        assert_eq!(load(r#"{"schemaVersion": 10, "hardwarePreset": "8gb", "vramReserveGib": 1.0}"#), 1.0, "chosen after the migration");
+        assert_eq!(
+            load(r#"{"schemaVersion": 9, "hardwarePreset": "8gb", "vramReserveGib": 1.0}"#),
+            1.5
+        );
+        assert_eq!(
+            load(r#"{"schemaVersion": 9, "hardwarePreset": "8gb", "vramReserveGib": 2.0}"#),
+            2.0,
+            "set by hand"
+        );
+        assert_eq!(
+            load(r#"{"schemaVersion": 9, "hardwarePreset": "16gb", "vramReserveGib": 1.0}"#),
+            1.0
+        );
+        assert_eq!(
+            load(r#"{"schemaVersion": 10, "hardwarePreset": "8gb", "vramReserveGib": 1.0}"#),
+            1.0,
+            "chosen after the migration"
+        );
         let mut c = AppConfig::default();
         c.apply_preset(crate::catalog::preset("8gb").unwrap());
         assert_eq!(c.vram_reserve_gib, 1.5);
@@ -1325,7 +2079,11 @@ mod tests {
         assert_eq!(p.server_port, 41000);
         assert_eq!(p.profiles.len(), 1);
         std::fs::write(&path, "\u{feff}{\"serverPort\": 42000}").unwrap();
-        assert_eq!(AppConfig::load_from(&path).server_port, 42000, "UTF-8 BOM accepted");
+        assert_eq!(
+            AppConfig::load_from(&path).server_port,
+            42000,
+            "UTF-8 BOM accepted"
+        );
         std::fs::write(&path, "{ broken").unwrap();
         assert_eq!(AppConfig::load_from(&path), AppConfig::default());
         assert!(path.with_extension("json.invalid").exists());
@@ -1363,7 +2121,11 @@ mod tests {
 
     #[test]
     fn browser_saves_keep_the_computers_settings() {
-        let current = AppConfig { remote_access: true, extra_server_args: vec!["--x".into()], ..AppConfig::default() };
+        let current = AppConfig {
+            remote_access: true,
+            extra_server_args: vec!["--x".into()],
+            ..AppConfig::default()
+        };
         let mut sent = current.clone();
         sent.sdcpp_dir = PathBuf::from("/tmp/evil");
         sent.output_dir = PathBuf::from("/etc");

@@ -37,7 +37,12 @@ pub struct Rect {
 
 impl Rect {
     pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
     pub fn size(&self) -> Size {
         Size::new(self.width, self.height)
@@ -89,11 +94,27 @@ pub fn aspect_label(size: Size) -> String {
             return format!("≈{cw}:{ch}");
         }
     }
-    if a >= 1.0 { format!("{:.2}:1", a) } else { format!("1:{:.2}", 1.0 / a) }
+    if a >= 1.0 {
+        format!("{:.2}:1", a)
+    } else {
+        format!("1:{:.2}", 1.0 / a)
+    }
 }
 
 const COMMON_RATIOS: &[(u32, u32)] = &[
-    (1, 1), (4, 3), (3, 4), (3, 2), (2, 3), (16, 9), (9, 16), (5, 4), (4, 5), (21, 9), (9, 21), (2, 1), (1, 2),
+    (1, 1),
+    (4, 3),
+    (3, 4),
+    (3, 2),
+    (2, 3),
+    (16, 9),
+    (9, 16),
+    (5, 4),
+    (4, 5),
+    (21, 9),
+    (9, 21),
+    (2, 1),
+    (1, 2),
 ];
 
 /// Aligned dimensions closest to `aspect` with area close to `area`, clamped to `max_side`.
@@ -110,8 +131,10 @@ pub fn dims_for_area(aspect: f64, area: f64, align: u32, min_side: u32, max_side
         h = max_side_f;
         w = h * aspect;
     }
-    let w = align_nearest(w.round() as u32, align).clamp(align_up(min_side, align), align_down(max_side, align));
-    let h = align_nearest(h.round() as u32, align).clamp(align_up(min_side, align), align_down(max_side, align));
+    let w = align_nearest(w.round() as u32, align)
+        .clamp(align_up(min_side, align), align_down(max_side, align));
+    let h = align_nearest(h.round() as u32, align)
+        .clamp(align_up(min_side, align), align_down(max_side, align));
     Size::new(w, h)
 }
 
@@ -131,13 +154,21 @@ pub struct WorkingCanvas {
 
 impl WorkingCanvas {
     pub fn content_rect(&self) -> Rect {
-        Rect::new(self.content_offset.0, self.content_offset.1, self.content.width, self.content.height)
+        Rect::new(
+            self.content_offset.0,
+            self.content_offset.1,
+            self.content.width,
+            self.content.height,
+        )
     }
     pub fn is_identity(&self) -> bool {
         self.source == self.canvas && self.content == self.source
     }
     pub fn padding(&self) -> (u32, u32) {
-        (self.canvas.width - self.content.width, self.canvas.height - self.content.height)
+        (
+            self.canvas.width - self.content.width,
+            self.canvas.height - self.content.height,
+        )
     }
 }
 
@@ -156,7 +187,14 @@ pub struct CanvasLimits {
 
 impl Default for CanvasLimits {
     fn default() -> Self {
-        Self { max_area: 1024 * 1024, upscale_to_area: None, max_upscale: 1.0, min_side: 256, max_side: 4096, align: MODEL_ALIGN }
+        Self {
+            max_area: 1024 * 1024,
+            upscale_to_area: None,
+            max_upscale: 1.0,
+            min_side: 256,
+            max_side: 4096,
+            align: MODEL_ALIGN,
+        }
     }
 }
 
@@ -184,7 +222,9 @@ pub fn plan_working_canvas(source: Size, limits: &CanvasLimits) -> WorkingCanvas
     }
     // Small images: the shortest side must reach min_side once aligned.
     let shortest = source.width.min(source.height) as f64;
-    if shortest * scale < limits.min_side as f64 && longest * (limits.min_side as f64 / shortest) <= max_content {
+    if shortest * scale < limits.min_side as f64
+        && longest * (limits.min_side as f64 / shortest) <= max_content
+    {
         scale = limits.min_side as f64 / shortest;
     }
     let cw = ((source.width as f64 * scale).round() as u32).max(1);
@@ -194,7 +234,13 @@ pub fn plan_working_canvas(source: Size, limits: &CanvasLimits) -> WorkingCanvas
         align_up(ch, limits.align).max(align_up(limits.min_side.min(ch), limits.align)),
     );
     let offset = ((canvas.width - cw) / 2, (canvas.height - ch) / 2);
-    WorkingCanvas { source, content: Size::new(cw, ch), canvas, content_offset: offset, scale }
+    WorkingCanvas {
+        source,
+        content: Size::new(cw, ch),
+        canvas,
+        content_offset: offset,
+        scale,
+    }
 }
 
 /// Scale `src` to fit entirely within `bounds` (letterbox). Returns scaled size and the
@@ -203,7 +249,10 @@ pub fn contain(src: Size, bounds: Size) -> (Size, (u32, u32)) {
     let s = (bounds.width as f64 / src.width as f64).min(bounds.height as f64 / src.height as f64);
     let w = ((src.width as f64 * s).round() as u32).clamp(1, bounds.width);
     let h = ((src.height as f64 * s).round() as u32).clamp(1, bounds.height);
-    (Size::new(w, h), ((bounds.width - w) / 2, (bounds.height - h) / 2))
+    (
+        Size::new(w, h),
+        ((bounds.width - w) / 2, (bounds.height - h) / 2),
+    )
 }
 
 /// Scale `src` to fully cover `bounds`. Returns the scaled size and the centered crop
@@ -212,7 +261,15 @@ pub fn cover(src: Size, bounds: Size) -> (Size, Rect) {
     let s = (bounds.width as f64 / src.width as f64).max(bounds.height as f64 / src.height as f64);
     let w = ((src.width as f64 * s).round() as u32).max(bounds.width);
     let h = ((src.height as f64 * s).round() as u32).max(bounds.height);
-    (Size::new(w, h), Rect::new((w - bounds.width) / 2, (h - bounds.height) / 2, bounds.width, bounds.height))
+    (
+        Size::new(w, h),
+        Rect::new(
+            (w - bounds.width) / 2,
+            (h - bounds.height) / 2,
+            bounds.width,
+            bounds.height,
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------------------
@@ -243,7 +300,14 @@ pub enum ExpansionUnits {
 
 /// Converts user-facing expansion values to source pixels. Percentages are relative to
 /// the source width (left/right) or height (top/bottom).
-pub fn expansion_to_pixels(source: Size, left: f64, right: f64, top: f64, bottom: f64, units: ExpansionUnits) -> Expansion {
+pub fn expansion_to_pixels(
+    source: Size,
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+    units: ExpansionUnits,
+) -> Expansion {
     let conv = |v: f64, base: u32| -> u32 {
         let v = if v.is_finite() { v.max(0.0) } else { 0.0 };
         match units {
@@ -269,11 +333,21 @@ pub fn expansion_for_aspect(source: Size, target_aspect: f64) -> Expansion {
     if target_aspect > a {
         let new_w = (source.height as f64 * target_aspect).round() as u32;
         let extra = new_w.saturating_sub(source.width);
-        Expansion { left: extra / 2, right: extra - extra / 2, top: 0, bottom: 0 }
+        Expansion {
+            left: extra / 2,
+            right: extra - extra / 2,
+            top: 0,
+            bottom: 0,
+        }
     } else {
         let new_h = (source.width as f64 / target_aspect).round() as u32;
         let extra = new_h.saturating_sub(source.height);
-        Expansion { left: 0, right: 0, top: extra / 2, bottom: extra - extra / 2 }
+        Expansion {
+            left: 0,
+            right: 0,
+            top: extra / 2,
+            bottom: extra - extra / 2,
+        }
     }
 }
 
@@ -296,13 +370,24 @@ pub struct OutpaintPlan {
 
 pub const MAX_FINAL_SIDE: u32 = 16384;
 
-pub fn plan_outpaint(source: Size, expansion: Expansion, limits: &CanvasLimits, overlap_px: u32) -> Result<OutpaintPlan, String> {
+pub fn plan_outpaint(
+    source: Size,
+    expansion: Expansion,
+    limits: &CanvasLimits,
+    overlap_px: u32,
+) -> Result<OutpaintPlan, String> {
     if expansion.is_zero() {
         return Err("Choose at least one side to expand.".into());
     }
-    let final_size = Size::new(source.width + expansion.left + expansion.right, source.height + expansion.top + expansion.bottom);
+    let final_size = Size::new(
+        source.width + expansion.left + expansion.right,
+        source.height + expansion.top + expansion.bottom,
+    );
     if final_size.width > MAX_FINAL_SIDE || final_size.height > MAX_FINAL_SIDE {
-        return Err(format!("The expanded image would be {}×{}, larger than the {} px limit.", final_size.width, final_size.height, MAX_FINAL_SIDE));
+        return Err(format!(
+            "The expanded image would be {}×{}, larger than the {} px limit.",
+            final_size.width, final_size.height, MAX_FINAL_SIDE
+        ));
     }
     let working = plan_working_canvas(final_size, limits);
     let s = working.scale;
@@ -316,7 +401,13 @@ pub fn plan_outpaint(source: Size, expansion: Expansion, limits: &CanvasLimits, 
     let x1 = x1.min(working.content.width).max(x0 + 1);
     let y1 = y1.min(working.content.height).max(y0 + 1);
     let source_rect_working = Rect::new(ox + x0, oy + y0, x1 - x0, y1 - y0);
-    let ov = |expanded: u32, room: u32| if expanded > 0 { overlap_px.min(room / 4) } else { 0 };
+    let ov = |expanded: u32, room: u32| {
+        if expanded > 0 {
+            overlap_px.min(room / 4)
+        } else {
+            0
+        }
+    };
     let overlap_working = Expansion {
         left: ov(expansion.left, source_rect_working.width),
         right: ov(expansion.right, source_rect_working.width),
@@ -340,7 +431,12 @@ pub fn plan_outpaint(source: Size, expansion: Expansion, limits: &CanvasLimits, 
 
 /// Region of the source to send to the model for an inpaint. Small masks on large images
 /// get a context crop (higher detail, faster); large masks use the whole image.
-pub fn inpaint_region(source: Size, mask_bbox: Rect, min_context: u32, whole_image_threshold: f64) -> Rect {
+pub fn inpaint_region(
+    source: Size,
+    mask_bbox: Rect,
+    min_context: u32,
+    whole_image_threshold: f64,
+) -> Rect {
     let whole = Rect::new(0, 0, source.width, source.height);
     if mask_bbox.width == 0 || mask_bbox.height == 0 {
         return whole;
@@ -381,7 +477,10 @@ mod tests {
     use super::*;
 
     fn limits(max_area: u64) -> CanvasLimits {
-        CanvasLimits { max_area, ..Default::default() }
+        CanvasLimits {
+            max_area,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -444,7 +543,10 @@ mod tests {
         assert!(w.canvas.is_aligned(32));
         let src_aspect = 4032.0 / 3024.0;
         let content_aspect = w.content.width as f64 / w.content.height as f64;
-        assert!((content_aspect / src_aspect - 1.0).abs() < 0.002, "aspect drift {content_aspect}");
+        assert!(
+            (content_aspect / src_aspect - 1.0).abs() < 0.002,
+            "aspect drift {content_aspect}"
+        );
         assert!(w.padding().0 < 32 && w.padding().1 < 32);
     }
 
@@ -458,12 +560,26 @@ mod tests {
 
     #[test]
     fn aspect_always_preserved_property() {
-        let sizes = [(1920, 1080), (1080, 1920), (1024, 1024), (4032, 3024), (1537, 1025), (333, 777), (6000, 400), (64, 64), (8000, 8000)];
+        let sizes = [
+            (1920, 1080),
+            (1080, 1920),
+            (1024, 1024),
+            (4032, 3024),
+            (1537, 1025),
+            (333, 777),
+            (6000, 400),
+            (64, 64),
+            (8000, 8000),
+        ];
         for (w, h) in sizes {
             for area in [1_048_576u64, 2_359_296, 4_194_304] {
                 let p = plan_working_canvas(Size::new(w, h), &limits(area));
                 assert!(p.canvas.is_aligned(32), "{w}x{h}");
-                assert!(p.canvas.width <= 4096 && p.canvas.height <= 4096, "{w}x{h} -> {:?}", p.canvas);
+                assert!(
+                    p.canvas.width <= 4096 && p.canvas.height <= 4096,
+                    "{w}x{h} -> {:?}",
+                    p.canvas
+                );
                 assert!(p.content.width <= p.canvas.width && p.content.height <= p.canvas.height);
                 let drift = (p.content.aspect() / Size::new(w, h).aspect() - 1.0).abs();
                 // Rounding a side to an integer can only shift aspect by < 1px.
@@ -482,10 +598,18 @@ mod tests {
 
     #[test]
     fn upscale_for_inpaint_crops() {
-        let l = CanvasLimits { max_area: 2_000_000, upscale_to_area: Some(1_048_576), max_upscale: 4.0, ..Default::default() };
+        let l = CanvasLimits {
+            max_area: 2_000_000,
+            upscale_to_area: Some(1_048_576),
+            max_upscale: 4.0,
+            ..Default::default()
+        };
         let p = plan_working_canvas(Size::new(300, 200), &l);
         assert!(p.scale > 3.0 && p.scale <= 4.0);
-        let l2 = CanvasLimits { max_upscale: 2.0, ..l };
+        let l2 = CanvasLimits {
+            max_upscale: 2.0,
+            ..l
+        };
         assert_eq!(plan_working_canvas(Size::new(300, 200), &l2).scale, 2.0);
     }
 
@@ -512,10 +636,40 @@ mod tests {
 
     #[test]
     fn expansion_units() {
-        let e = expansion_to_pixels(Size::new(1000, 500), 25.0, 0.0, 10.0, 0.0, ExpansionUnits::Percent);
-        assert_eq!(e, Expansion { left: 250, right: 0, top: 50, bottom: 0 });
-        let e = expansion_to_pixels(Size::new(1000, 500), 256.0, 256.0, -5.0, f64::NAN, ExpansionUnits::Pixels);
-        assert_eq!(e, Expansion { left: 256, right: 256, top: 0, bottom: 0 });
+        let e = expansion_to_pixels(
+            Size::new(1000, 500),
+            25.0,
+            0.0,
+            10.0,
+            0.0,
+            ExpansionUnits::Percent,
+        );
+        assert_eq!(
+            e,
+            Expansion {
+                left: 250,
+                right: 0,
+                top: 50,
+                bottom: 0
+            }
+        );
+        let e = expansion_to_pixels(
+            Size::new(1000, 500),
+            256.0,
+            256.0,
+            -5.0,
+            f64::NAN,
+            ExpansionUnits::Pixels,
+        );
+        assert_eq!(
+            e,
+            Expansion {
+                left: 256,
+                right: 256,
+                top: 0,
+                bottom: 0
+            }
+        );
     }
 
     #[test]
@@ -532,18 +686,42 @@ mod tests {
     #[test]
     fn outpaint_geometry_right_256() {
         let src = Size::new(1024, 1024);
-        let p = plan_outpaint(src, Expansion { left: 0, right: 256, top: 0, bottom: 0 }, &limits(4_200_000), 32).unwrap();
+        let p = plan_outpaint(
+            src,
+            Expansion {
+                left: 0,
+                right: 256,
+                top: 0,
+                bottom: 0,
+            },
+            &limits(4_200_000),
+            32,
+        )
+        .unwrap();
         assert_eq!(p.final_size, Size::new(1280, 1024));
         assert_eq!(p.working.canvas, Size::new(1280, 1024));
         assert_eq!(p.source_rect_working, Rect::new(0, 0, 1024, 1024));
         assert_eq!(p.source_rect_final, Rect::new(0, 0, 1024, 1024));
-        assert_eq!(p.overlap_working, Expansion { left: 0, right: 32, top: 0, bottom: 0 });
+        assert_eq!(
+            p.overlap_working,
+            Expansion {
+                left: 0,
+                right: 32,
+                top: 0,
+                bottom: 0
+            }
+        );
     }
 
     #[test]
     fn outpaint_geometry_scaled_and_all_sides() {
         let src = Size::new(1920, 1080);
-        let e = Expansion { left: 256, right: 256, top: 128, bottom: 128 };
+        let e = Expansion {
+            left: 256,
+            right: 256,
+            top: 128,
+            bottom: 128,
+        };
         let p = plan_outpaint(src, e, &limits(1_048_576), 24).unwrap();
         assert_eq!(p.final_size, Size::new(2432, 1336));
         assert!(p.working.canvas.is_aligned(32));
@@ -559,8 +737,27 @@ mod tests {
 
     #[test]
     fn outpaint_rejects_zero_and_huge() {
-        assert!(plan_outpaint(Size::new(100, 100), Expansion::default(), &limits(1 << 20), 16).is_err());
-        assert!(plan_outpaint(Size::new(100, 100), Expansion { left: 20000, ..Default::default() }, &limits(1 << 20), 16).is_err());
+        assert!(
+            plan_outpaint(
+                Size::new(100, 100),
+                Expansion::default(),
+                &limits(1 << 20),
+                16
+            )
+            .is_err()
+        );
+        assert!(
+            plan_outpaint(
+                Size::new(100, 100),
+                Expansion {
+                    left: 20000,
+                    ..Default::default()
+                },
+                &limits(1 << 20),
+                16
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -571,7 +768,12 @@ mod tests {
         assert!(r.width >= 768 && r.height >= 768);
         assert!(r.right() <= 4032 && r.bottom() <= 3024);
         // A large mask uses the whole image.
-        let r = inpaint_region(Size::new(1024, 1024), Rect::new(100, 100, 800, 800), 768, 0.6);
+        let r = inpaint_region(
+            Size::new(1024, 1024),
+            Rect::new(100, 100, 800, 800),
+            768,
+            0.6,
+        );
         assert_eq!(r, Rect::new(0, 0, 1024, 1024));
         // Near the corner, crop stays inside.
         let r = inpaint_region(src, Rect::new(0, 0, 50, 50), 768, 0.6);

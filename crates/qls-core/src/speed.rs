@@ -35,13 +35,22 @@ impl SpeedBook {
     /// Loads `<data_dir>/speed.json` (missing or unreadable: starts empty).
     pub fn open(data_dir: &Path) -> Self {
         let path = data_dir.join("speed.json");
-        let entries = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        Self { path: Some(path), entries: Mutex::new(entries) }
+        let entries = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        Self {
+            path: Some(path),
+            entries: Mutex::new(entries),
+        }
     }
 
     /// Not persisted (tests, private use).
     pub fn in_memory() -> Self {
-        Self { path: None, entries: Mutex::new(HashMap::new()) }
+        Self {
+            path: None,
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<Calibration> {
@@ -50,12 +59,18 @@ impl SpeedBook {
 
     /// Records one finished job; returns the updated factor. Ignores nonsense values.
     pub fn record(&self, key: &str, measured_s: f32, predicted_s: f32) -> Option<f32> {
-        if !(measured_s.is_finite() && predicted_s.is_finite()) || measured_s <= 0.5 || predicted_s <= 0.0 {
+        if !(measured_s.is_finite() && predicted_s.is_finite())
+            || measured_s <= 0.5
+            || predicted_s <= 0.0
+        {
             return None;
         }
         let ratio = (measured_s / predicted_s).clamp(0.05, 200.0);
         let mut map = self.entries.lock().unwrap();
-        let e = map.entry(key.to_string()).or_insert(Calibration { factor: ratio, samples: 0 });
+        let e = map.entry(key.to_string()).or_insert(Calibration {
+            factor: ratio,
+            samples: 0,
+        });
         if e.samples > 0 {
             e.factor = (e.factor.ln() * (1.0 - NEW_WEIGHT) + ratio.ln() * NEW_WEIGHT).exp();
         }
@@ -74,8 +89,18 @@ impl SpeedBook {
 pub fn machine_key(cfg: &AppConfig, gpu: Option<&GpuInfo>) -> String {
     let gpu = gpu.map(|g| g.name.as_str()).unwrap_or("unknown GPU");
     // Kokon's Mac engine has its own speed: its calibration is kept apart from sd.cpp's on the same Mac.
-    let engine = if cfg.uses_mac_engine() { "mac-engine" } else { cfg.gpu_backend.device_prefix() };
-    format!("{}|{}|{:?}|sage={}", engine, gpu, cfg.text_encoder_placement, cfg.uses_sage_attention())
+    let engine = if cfg.uses_mac_engine() {
+        "mac-engine"
+    } else {
+        cfg.gpu_backend.device_prefix()
+    };
+    format!(
+        "{}|{}|{:?}|sage={}",
+        engine,
+        gpu,
+        cfg.text_encoder_placement,
+        cfg.uses_sage_attention()
+    )
 }
 
 /// Whether the uncalibrated model is close enough to show before the first measurement:
@@ -94,7 +119,10 @@ mod tests {
         assert_eq!(b.get("m"), None);
         // M2 Pro case: ~120 s measured against a 9 s prediction.
         let f = b.record("m", 120.0, 9.0).unwrap();
-        assert!((f - 13.33).abs() < 0.1, "the first image sets the factor: {f}");
+        assert!(
+            (f - 13.33).abs() < 0.1,
+            "the first image sets the factor: {f}"
+        );
         // An outlier only moves it halfway (geometrically).
         let f2 = b.record("m", 240.0, 9.0).unwrap();
         assert!(f2 > 13.4 && f2 < 26.0, "{f2}");
@@ -107,17 +135,31 @@ mod tests {
     fn persists_and_keys_by_machine() {
         let dir = tempfile::tempdir().unwrap();
         SpeedBook::open(dir.path()).record("k", 30.0, 10.0);
-        assert_eq!(SpeedBook::open(dir.path()).get("k").map(|c| c.factor), Some(3.0));
+        assert_eq!(
+            SpeedBook::open(dir.path()).get("k").map(|c| c.factor),
+            Some(3.0)
+        );
         let mut cfg = AppConfig::default();
         cfg.gpu_backend = GpuBackend::Cuda;
-        let gpu = GpuInfo { name: "NVIDIA GeForce RTX 5070".into(), ..Default::default() };
+        let gpu = GpuInfo {
+            name: "NVIDIA GeForce RTX 5070".into(),
+            ..Default::default()
+        };
         let a = machine_key(&cfg, Some(&gpu));
         cfg.gpu_backend = GpuBackend::Vulkan;
-        assert_ne!(a, machine_key(&cfg, Some(&gpu)), "engines are calibrated separately");
+        assert_ne!(
+            a,
+            machine_key(&cfg, Some(&gpu)),
+            "engines are calibrated separately"
+        );
         cfg.gpu_backend = GpuBackend::Metal;
         let metal = machine_key(&cfg, Some(&gpu));
         cfg.mac_engine = true;
-        assert_ne!(metal, machine_key(&cfg, Some(&gpu)), "Kokon's Mac engine apart from sd.cpp's Metal build");
+        assert_ne!(
+            metal,
+            machine_key(&cfg, Some(&gpu)),
+            "Kokon's Mac engine apart from sd.cpp's Metal build"
+        );
         cfg.gpu_backend = GpuBackend::Vulkan;
         assert!(!trust_uncalibrated(&cfg));
     }

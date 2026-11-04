@@ -67,23 +67,42 @@ pub fn decode_image(bytes: &[u8]) -> Result<LoadedImage, AppError> {
     }
     let reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|e| AppError::new(ErrorCode::ImageDecode, "This file could not be read as an image.").detail(e.to_string()))?;
+        .map_err(|e| {
+            AppError::new(
+                ErrorCode::ImageDecode,
+                "This file could not be read as an image.",
+            )
+            .detail(e.to_string())
+        })?;
     let format = reader.format().ok_or_else(|| {
-        AppError::new(ErrorCode::ImageDecode, "Unsupported image format. Use PNG, JPEG, WebP, BMP, GIF, TIFF or HEIC.")
+        AppError::new(
+            ErrorCode::ImageDecode,
+            "Unsupported image format. Use PNG, JPEG, WebP, BMP, GIF, TIFF or HEIC.",
+        )
     })?;
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|e| AppError::new(ErrorCode::ImageDecode, "This image could not be decoded.").detail(e.to_string()))?;
+    let mut decoder = reader.into_decoder().map_err(|e| {
+        AppError::new(ErrorCode::ImageDecode, "This image could not be decoded.")
+            .detail(e.to_string())
+    })?;
     let (w, h) = decoder.dimensions();
     if w == 0 || h == 0 || (w as u64 * h as u64) > MAX_INPUT_PIXELS {
-        return Err(AppError::new(ErrorCode::ImageDecode, format!("Image is too large ({w}×{h}). The limit is 64 megapixels.")));
+        return Err(AppError::new(
+            ErrorCode::ImageDecode,
+            format!("Image is too large ({w}×{h}). The limit is 64 megapixels."),
+        ));
     }
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let icc_profile = decoder.icc_profile().ok().flatten();
-    let mut dynimg = DynamicImage::from_decoder(decoder)
-        .map_err(|e| AppError::new(ErrorCode::ImageDecode, "This image could not be decoded.").detail(e.to_string()))?;
+    let mut dynimg = DynamicImage::from_decoder(decoder).map_err(|e| {
+        AppError::new(ErrorCode::ImageDecode, "This image could not be decoded.")
+            .detail(e.to_string())
+    })?;
     dynimg.apply_orientation(orientation);
-    let text = if format == ImageFormat::Png { read_png_text(bytes) } else { Vec::new() };
+    let text = if format == ImageFormat::Png {
+        read_png_text(bytes)
+    } else {
+        Vec::new()
+    };
     let pixels = dynimg.into_rgba8();
     let has_transparency = pixels.pixels().any(|p| p[3] != 255);
     Ok(LoadedImage {
@@ -99,7 +118,13 @@ pub fn decode_image(bytes: &[u8]) -> Result<LoadedImage, AppError> {
 /// HEIC/HEIF through Windows' HEIF codec, which already applies the file's rotation/mirror.
 /// The SDR base image only; an HDR gain map is read separately (see `crate::hdr`).
 fn decode_heic(bytes: &[u8]) -> Result<LoadedImage, AppError> {
-    let img = crate::wic::decode(bytes).map_err(|e| AppError::new(ErrorCode::ImageDecode, "This HEIC image could not be decoded.").detail(e))?;
+    let img = crate::wic::decode(bytes).map_err(|e| {
+        AppError::new(
+            ErrorCode::ImageDecode,
+            "This HEIC image could not be decoded.",
+        )
+        .detail(e)
+    })?;
     let pixels = img.pixels;
     let has_transparency = pixels.pixels().any(|p| p[3] != 255);
     Ok(LoadedImage {
@@ -118,11 +143,30 @@ fn decode_heic(bytes: &[u8]) -> Result<LoadedImage, AppError> {
 pub fn decode_engine_image(bytes: &[u8], max_side: u32) -> Result<RgbaImage, AppError> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|e| AppError::new(ErrorCode::ImageDecode, "The engine returned an unreadable image.").detail(e.to_string()))?;
+        .map_err(|e| {
+            AppError::new(
+                ErrorCode::ImageDecode,
+                "The engine returned an unreadable image.",
+            )
+            .detail(e.to_string())
+        })?;
     reader.no_limits();
-    let img = reader.decode().map_err(|e| AppError::new(ErrorCode::ImageDecode, "The engine returned an unreadable image.").detail(e.to_string()))?;
+    let img = reader.decode().map_err(|e| {
+        AppError::new(
+            ErrorCode::ImageDecode,
+            "The engine returned an unreadable image.",
+        )
+        .detail(e.to_string())
+    })?;
     if img.width() == 0 || img.height() == 0 || img.width() > max_side || img.height() > max_side {
-        return Err(AppError::new(ErrorCode::ImageDecode, format!("The engine returned an unexpected size ({}×{}).", img.width(), img.height())));
+        return Err(AppError::new(
+            ErrorCode::ImageDecode,
+            format!(
+                "The engine returned an unexpected size ({}×{}).",
+                img.width(),
+                img.height()
+            ),
+        ));
     }
     Ok(img.into_rgba8())
 }
@@ -135,10 +179,15 @@ pub fn load_image(path: &std::path::Path) -> Result<LoadedImage, AppError> {
 /// Reads tEXt / zTXt / iTXt chunks from PNG bytes. Never fails; returns what it can.
 pub fn read_png_text(bytes: &[u8]) -> Vec<(String, String)> {
     let decoder = png::Decoder::new(Cursor::new(bytes));
-    let Ok(reader) = decoder.read_info() else { return Vec::new() };
+    let Ok(reader) = decoder.read_info() else {
+        return Vec::new();
+    };
     let info = reader.info();
-    let mut out: Vec<(String, String)> =
-        info.uncompressed_latin1_text.iter().map(|c| (c.keyword.clone(), c.text.clone())).collect();
+    let mut out: Vec<(String, String)> = info
+        .uncompressed_latin1_text
+        .iter()
+        .map(|c| (c.keyword.clone(), c.text.clone()))
+        .collect();
     for c in &info.compressed_latin1_text {
         if let Ok(t) = c.get_text() {
             out.push((c.keyword.clone(), t));
@@ -154,10 +203,19 @@ pub fn read_png_text(bytes: &[u8]) -> Vec<(String, String)> {
 
 /// Encodes PNG with optional UTF-8 text chunks and ICC profile. Writes RGB when the image
 /// is fully opaque (smaller files), RGBA otherwise.
-pub fn encode_png(img: &RgbaImage, text: &[(&str, &str)], icc: Option<&[u8]>, fast: bool) -> Result<Vec<u8>, AppError> {
+pub fn encode_png(
+    img: &RgbaImage,
+    text: &[(&str, &str)],
+    icc: Option<&[u8]>,
+    fast: bool,
+) -> Result<Vec<u8>, AppError> {
     let opaque = img.pixels().all(|p| p[3] == 255);
     let mut info = png::Info::with_size(img.width(), img.height());
-    info.color_type = if opaque { png::ColorType::Rgb } else { png::ColorType::Rgba };
+    info.color_type = if opaque {
+        png::ColorType::Rgb
+    } else {
+        png::ColorType::Rgba
+    };
     info.bit_depth = png::BitDepth::Eight;
     if let Some(icc) = icc {
         info.icc_profile = Some(std::borrow::Cow::Owned(icc.to_vec()));
@@ -165,13 +223,22 @@ pub fn encode_png(img: &RgbaImage, text: &[(&str, &str)], icc: Option<&[u8]>, fa
     let mut out = Vec::with_capacity(img.as_raw().len() / 2);
     {
         let mut enc = png::Encoder::with_info(&mut out, info).map_err(png_err)?;
-        enc.set_compression(if fast { png::Compression::Fastest } else { png::Compression::Balanced });
+        enc.set_compression(if fast {
+            png::Compression::Fastest
+        } else {
+            png::Compression::Balanced
+        });
         for (k, v) in text {
-            enc.add_itxt_chunk((*k).to_string(), (*v).to_string()).map_err(png_err)?;
+            enc.add_itxt_chunk((*k).to_string(), (*v).to_string())
+                .map_err(png_err)?;
         }
         let mut writer = enc.write_header().map_err(png_err)?;
         if opaque {
-            let rgb: Vec<u8> = img.as_raw().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let rgb: Vec<u8> = img
+                .as_raw()
+                .chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect();
             writer.write_image_data(&rgb).map_err(png_err)?;
         } else {
             writer.write_image_data(img.as_raw()).map_err(png_err)?;
@@ -195,14 +262,18 @@ pub fn encode_jpeg(img: &RgbaImage, quality: u8) -> Result<Vec<u8>, AppError> {
     });
     let mut out = Vec::new();
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
-    rgb.write_with_encoder(enc).map_err(|e| AppError::new(ErrorCode::Internal, "Failed to encode JPEG.").detail(e.to_string()))?;
+    rgb.write_with_encoder(enc).map_err(|e| {
+        AppError::new(ErrorCode::Internal, "Failed to encode JPEG.").detail(e.to_string())
+    })?;
     Ok(out)
 }
 
 pub fn encode_webp_lossless(img: &RgbaImage) -> Result<Vec<u8>, AppError> {
     let mut out = Vec::new();
     let enc = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
-    img.write_with_encoder(enc).map_err(|e| AppError::new(ErrorCode::Internal, "Failed to encode WebP.").detail(e.to_string()))?;
+    img.write_with_encoder(enc).map_err(|e| {
+        AppError::new(ErrorCode::Internal, "Failed to encode WebP.").detail(e.to_string())
+    })?;
     Ok(out)
 }
 
@@ -314,11 +385,19 @@ pub fn mask_rect(size: Size, inside: Rect, inside_value: u8, outside_value: u8) 
 }
 
 pub fn invert_mask(mask: &GrayImage) -> GrayImage {
-    GrayImage::from_fn(mask.width(), mask.height(), |x, y| Luma([255 - mask.get_pixel(x, y)[0]]))
+    GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        Luma([255 - mask.get_pixel(x, y)[0]])
+    })
 }
 
 pub fn binarize(mask: &GrayImage, threshold: u8) -> GrayImage {
-    GrayImage::from_fn(mask.width(), mask.height(), |x, y| Luma([if mask.get_pixel(x, y)[0] > threshold { 255 } else { 0 }]))
+    GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        Luma([if mask.get_pixel(x, y)[0] > threshold {
+            255
+        } else {
+            0
+        }])
+    })
 }
 
 /// Bounding box of pixels above `threshold`, or None for an empty mask.
@@ -385,7 +464,9 @@ pub fn feather(mask: &GrayImage, radius: u32) -> GrayImage {
         return mask.clone();
     }
     let r = (radius / 3).max(1);
-    let mean = |s: &[u8]| -> u8 { (s.iter().map(|&v| v as u32).sum::<u32>() as f32 / s.len() as f32).round() as u8 };
+    let mean = |s: &[u8]| -> u8 {
+        (s.iter().map(|&v| v as u32).sum::<u32>() as f32 / s.len() as f32).round() as u8
+    };
     let mut m = separable(mask, r, mean);
     m = separable(&m, r, mean);
     separable(&m, r, mean)
@@ -428,8 +509,12 @@ pub fn outpaint_mask(size: Size, keep: Rect, overlap: crate::geometry::Expansion
     let inner = Rect::new(
         keep.x + overlap.left,
         keep.y + overlap.top,
-        keep.width.saturating_sub(overlap.left + overlap.right).max(1),
-        keep.height.saturating_sub(overlap.top + overlap.bottom).max(1),
+        keep.width
+            .saturating_sub(overlap.left + overlap.right)
+            .max(1),
+        keep.height
+            .saturating_sub(overlap.top + overlap.bottom)
+            .max(1),
     );
     mask_rect(size, inner, 0, 255)
 }
@@ -548,7 +633,9 @@ fn push_pull<const N: usize>(w: usize, h: usize, color: Vec<[f32; N]>, weight: V
             let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
             let p = |x: usize, y: usize| c.color[y * c.w + x];
             let (a, b, d, e) = (p(x0, y0), p(x1, y0), p(x0, y1), p(x1, y1));
-            std::array::from_fn(|k| (a[k] * (1.0 - tx) + b[k] * tx) * (1.0 - ty) + (d[k] * (1.0 - tx) + e[k] * tx) * ty)
+            std::array::from_fn(|k| {
+                (a[k] * (1.0 - tx) + b[k] * tx) * (1.0 - ty) + (d[k] * (1.0 - tx) + e[k] * tx) * ty
+            })
         };
         for y in 0..f.h {
             for x in 0..f.w {
@@ -663,7 +750,12 @@ impl ColorShift {
 }
 
 /// Colors for marking an area on a guide image, as named in the prompt.
-const HIGHLIGHTS: [(&str, [u8; 3]); 4] = [("red", [255, 0, 0]), ("green", [0, 230, 0]), ("blue", [0, 80, 255]), ("magenta", [255, 0, 255])];
+const HIGHLIGHTS: [(&str, [u8; 3]); 4] = [
+    ("red", [255, 0, 0]),
+    ("green", [0, 230, 0]),
+    ("blue", [0, 80, 255]),
+    ("magenta", [255, 0, 255]),
+];
 
 /// Highlight color for marking the area where `mask` > 127 on `img`: red (the usual choice)
 /// unless the area itself is largely reddish, else the color least present there.
@@ -762,7 +854,13 @@ mod fill_tests {
     #[test]
     fn fill_masked_keeps_known_pixels_and_continues_colors() {
         // Left half blue, right half green, a red square across the boundary.
-        let mut img = RgbaImage::from_fn(64, 32, |x, _| if x < 32 { Rgba([0, 0, 200, 255]) } else { Rgba([0, 200, 0, 255]) });
+        let mut img = RgbaImage::from_fn(64, 32, |x, _| {
+            if x < 32 {
+                Rgba([0, 0, 200, 255])
+            } else {
+                Rgba([0, 200, 0, 255])
+            }
+        });
         let mut m = GrayImage::new(64, 32);
         for y in 8..24 {
             for x in 20..44 {
@@ -778,8 +876,14 @@ mod fill_tests {
                 assert!(p[0] < 40, "no red left at {x},{y}: {p:?}");
             }
         }
-        assert!(out.get_pixel(21, 16)[2] > out.get_pixel(21, 16)[1], "left side continues blue");
-        assert!(out.get_pixel(42, 16)[1] > out.get_pixel(42, 16)[2], "right side continues green");
+        assert!(
+            out.get_pixel(21, 16)[2] > out.get_pixel(21, 16)[1],
+            "left side continues blue"
+        );
+        assert!(
+            out.get_pixel(42, 16)[1] > out.get_pixel(42, 16)[2],
+            "right side continues green"
+        );
     }
 
     #[test]
@@ -798,7 +902,10 @@ pub fn thumbnail(img: &RgbaImage, max_side: u32) -> RgbaImage {
         return img.clone();
     }
     let s = max_side as f64 / w.max(h) as f64;
-    let (tw, th) = (((w as f64 * s).round() as u32).max(1), ((h as f64 * s).round() as u32).max(1));
+    let (tw, th) = (
+        ((w as f64 * s).round() as u32).max(1),
+        ((h as f64 * s).round() as u32).max(1),
+    );
     imageops::thumbnail(img, tw, th)
 }
 
@@ -808,7 +915,14 @@ mod tests {
     use crate::geometry::Expansion;
 
     fn gradient(w: u32, h: u32) -> RgbaImage {
-        RgbaImage::from_fn(w, h, |x, y| Rgba([(x * 255 / w.max(1)) as u8, (y * 255 / h.max(1)) as u8, 77, 255]))
+        RgbaImage::from_fn(w, h, |x, y| {
+            Rgba([
+                (x * 255 / w.max(1)) as u8,
+                (y * 255 / h.max(1)) as u8,
+                77,
+                255,
+            ])
+        })
     }
 
     #[test]
@@ -816,10 +930,22 @@ mod tests {
         // An x4 tile of a 2048² image is 8192² (67 MP): over the import limit, but ours.
         let (w, h) = (8192, 8192);
         assert!(w as u64 * h as u64 > MAX_INPUT_PIXELS);
-        let png = encode_png(&RgbaImage::from_pixel(w, h, Rgba([10, 20, 30, 255])), &[], None, true).unwrap();
+        let png = encode_png(
+            &RgbaImage::from_pixel(w, h, Rgba([10, 20, 30, 255])),
+            &[],
+            None,
+            true,
+        )
+        .unwrap();
         assert!(decode_image(&png).is_err(), "imports keep the limit");
-        assert_eq!(decode_engine_image(&png, 8192).unwrap().dimensions(), (w, h));
-        assert!(decode_engine_image(&png, 4096).is_err(), "larger than the plan allows");
+        assert_eq!(
+            decode_engine_image(&png, 8192).unwrap().dimensions(),
+            (w, h)
+        );
+        assert!(
+            decode_engine_image(&png, 4096).is_err(),
+            "larger than the plan allows"
+        );
     }
 
     #[test]
@@ -872,12 +998,22 @@ mod tests {
         img.put_pixel(3, 3, Rgba([10, 20, 30, 0]));
         img.put_pixel(4, 3, Rgba([10, 20, 30, 128]));
         let icc = vec![1u8, 2, 3, 4, 5];
-        let bytes = encode_png(&img, &[("parameters", "a cat, Steps: 30"), ("qls", "{\"seed\":1}")], Some(&icc), false).unwrap();
+        let bytes = encode_png(
+            &img,
+            &[("parameters", "a cat, Steps: 30"), ("qls", "{\"seed\":1}")],
+            Some(&icc),
+            false,
+        )
+        .unwrap();
         let back = decode_image(&bytes).unwrap();
         assert_eq!(back.pixels, img);
         assert!(back.has_transparency);
         assert_eq!(back.icc_profile.as_deref(), Some(&icc[..]));
-        assert!(back.text.iter().any(|(k, v)| k == "parameters" && v == "a cat, Steps: 30"));
+        assert!(
+            back.text
+                .iter()
+                .any(|(k, v)| k == "parameters" && v == "a cat, Steps: 30")
+        );
         assert!(back.text.iter().any(|(k, _)| k == "qls"));
     }
 
@@ -911,7 +1047,13 @@ mod tests {
     #[test]
     fn pad_then_crop_back_is_lossless() {
         let img = gradient(1537 / 4, 1025 / 4);
-        let w = crate::geometry::plan_working_canvas(Size::new(img.width(), img.height()), &crate::geometry::CanvasLimits { min_side: 32, ..Default::default() });
+        let w = crate::geometry::plan_working_canvas(
+            Size::new(img.width(), img.height()),
+            &crate::geometry::CanvasLimits {
+                min_side: 32,
+                ..Default::default()
+            },
+        );
         let padded = pad_edge(&img, w.canvas, w.content_offset);
         assert!(w.canvas.is_aligned(32));
         assert_eq!(crop(&padded, w.content_rect()), img);
@@ -922,7 +1064,11 @@ mod tests {
         // Opaque white square on fully transparent *red* background: premultiplied resize
         // must not produce reddish fringe pixels.
         let img = RgbaImage::from_fn(64, 64, |x, y| {
-            if (16..48).contains(&x) && (16..48).contains(&y) { Rgba([255, 255, 255, 255]) } else { Rgba([255, 0, 0, 0]) }
+            if (16..48).contains(&x) && (16..48).contains(&y) {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([255, 0, 0, 0])
+            }
         });
         let out = resize(&img, 37, 37);
         for p in out.pixels() {
@@ -978,12 +1124,32 @@ mod tests {
     fn mask_from_alpha_layer_and_from_luma() {
         let mut layer = RgbaImage::from_pixel(10, 10, Rgba([0, 0, 0, 0]));
         layer.put_pixel(2, 2, Rgba([0, 0, 0, 255]));
-        let li = LoadedImage { pixels: layer, format: "png", exif_orientation: 1, icc_profile: None, has_transparency: true, text: vec![] };
+        let li = LoadedImage {
+            pixels: layer,
+            format: "png",
+            exif_orientation: 1,
+            icc_profile: None,
+            has_transparency: true,
+            text: vec![],
+        };
         let m = mask_from_image(&li);
         assert_eq!(m.get_pixel(2, 2)[0], 255);
         assert_eq!(m.get_pixel(3, 3)[0], 0);
-        let bw = RgbaImage::from_fn(10, 10, |x, _| if x < 5 { Rgba([255, 255, 255, 255]) } else { Rgba([0, 0, 0, 255]) });
-        let li = LoadedImage { pixels: bw, format: "png", exif_orientation: 1, icc_profile: None, has_transparency: false, text: vec![] };
+        let bw = RgbaImage::from_fn(10, 10, |x, _| {
+            if x < 5 {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            }
+        });
+        let li = LoadedImage {
+            pixels: bw,
+            format: "png",
+            exif_orientation: 1,
+            icc_profile: None,
+            has_transparency: false,
+            text: vec![],
+        };
         let m = mask_from_image(&li);
         assert_eq!((m.get_pixel(1, 1)[0], m.get_pixel(8, 1)[0]), (255, 0));
         // White on black whose edge came out partly transparent (a canvas blur): still luminance.
@@ -998,10 +1164,14 @@ mod tests {
 
     #[test]
     fn composite_keeps_unmasked_pixels_exactly_including_alpha() {
-        let mut base = RgbaImage::from_fn(50, 50, |x, y| Rgba([x as u8, y as u8, 9, (x * 5) as u8]));
+        let mut base =
+            RgbaImage::from_fn(50, 50, |x, y| Rgba([x as u8, y as u8, 9, (x * 5) as u8]));
         let orig = base.clone();
         let top = RgbaImage::from_pixel(20, 20, Rgba([200, 200, 200, 255]));
-        let mask = feather(&mask_rect(Size::new(20, 20), Rect::new(5, 5, 10, 10), 255, 0), 3);
+        let mask = feather(
+            &mask_rect(Size::new(20, 20), Rect::new(5, 5, 10, 10), 255, 0),
+            3,
+        );
         composite(&mut base, &top, &mask, (10, 10));
         for (x, y, p) in base.enumerate_pixels() {
             let inside_top = (10..30).contains(&x) && (10..30).contains(&y);
@@ -1016,11 +1186,25 @@ mod tests {
     fn outpaint_masks() {
         let size = Size::new(128, 64);
         let keep = Rect::new(0, 0, 96, 64);
-        let m = outpaint_mask(size, keep, Expansion { right: 8, ..Default::default() });
+        let m = outpaint_mask(
+            size,
+            keep,
+            Expansion {
+                right: 8,
+                ..Default::default()
+            },
+        );
         assert_eq!(m.get_pixel(10, 10)[0], 0);
         assert_eq!(m.get_pixel(90, 10)[0], 255); // overlap band regenerated
         assert_eq!(m.get_pixel(120, 10)[0], 255);
-        let p = paste_back_mask(Size::new(96, 64), Expansion { right: 32, ..Default::default() }, 8);
+        let p = paste_back_mask(
+            Size::new(96, 64),
+            Expansion {
+                right: 32,
+                ..Default::default()
+            },
+            8,
+        );
         assert_eq!(p.get_pixel(0, 10)[0], 255); // left edge not expanded: no ramp
         assert_eq!(p.get_pixel(50, 10)[0], 255);
         assert!(p.get_pixel(95, 10)[0] < 40);

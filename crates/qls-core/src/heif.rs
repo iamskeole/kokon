@@ -14,7 +14,12 @@ pub fn is_heif(b: &[u8]) -> bool {
     let size = (u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize).clamp(16, b.len().min(256));
     let (compatible, _) = b[16..size].as_chunks::<4>();
     let mut brands = std::iter::once(&b[8..12]).chain(compatible.iter().map(|c| c.as_slice()));
-    brands.any(|br| matches!(br, b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1" | b"mif2"))
+    brands.any(|br| {
+        matches!(
+            br,
+            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1" | b"mif2"
+        )
+    })
 }
 
 /// ISO 21496-1 gain map metadata. Values are in log2 space (as stored), single channel
@@ -89,7 +94,13 @@ impl GainMapMetadata {
             }
         }
         if !multichannel {
-            for a in [&mut m.gain_map_min, &mut m.gain_map_max, &mut m.gamma, &mut m.base_offset, &mut m.alternate_offset] {
+            for a in [
+                &mut m.gain_map_min,
+                &mut m.gain_map_max,
+                &mut m.gamma,
+                &mut m.base_offset,
+                &mut m.alternate_offset,
+            ] {
                 a[1] = a[0];
                 a[2] = a[0];
             }
@@ -115,7 +126,9 @@ impl GainMapMetadata {
         }
         o.push(flags);
         let u = |v: f64| ((v * DEN).round().clamp(0.0, u32::MAX as f64) as u32).to_be_bytes();
-        let s = |v: f64| ((v * DEN).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32).to_be_bytes();
+        let s = |v: f64| {
+            ((v * DEN).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32).to_be_bytes()
+        };
         o.extend_from_slice(&(DEN as u32).to_be_bytes());
         o.extend_from_slice(&u(self.base_hdr_headroom));
         o.extend_from_slice(&u(self.alternate_hdr_headroom));
@@ -156,7 +169,11 @@ struct Item {
 pub fn gain_map(b: &[u8]) -> Option<HeifGainMap> {
     let (items, primary, idat) = parse(b)?;
     for it in items.values().filter(|i| &i.typ == b"tmap") {
-        let dimg = it.refs.iter().find(|(t, _)| t == b"dimg").map(|(_, to)| to)?;
+        let dimg = it
+            .refs
+            .iter()
+            .find(|(t, _)| t == b"dimg")
+            .map(|(_, to)| to)?;
         if dimg.len() != 2 || dimg[0] != primary {
             continue;
         }
@@ -164,7 +181,11 @@ pub fn gain_map(b: &[u8]) -> Option<HeifGainMap> {
         let data = read_extents(b, idat, *cm, ext)?;
         let metadata = GainMapMetadata::parse_tmap(&data)?;
         let gm = items.get(&dimg[1])?;
-        return Some(HeifGainMap { item_id: dimg[1], is_grid: &gm.typ == b"grid", metadata });
+        return Some(HeifGainMap {
+            item_id: dimg[1],
+            is_grid: &gm.typ == b"grid",
+            metadata,
+        });
     }
     None
 }
@@ -176,7 +197,11 @@ pub fn primary_icc(b: &[u8]) -> Option<Vec<u8>> {
     let it = items.get(&primary)?;
     // A grid usually carries the profile itself; otherwise take its first tile's.
     let range = it.icc.or_else(|| {
-        let tiles = it.refs.iter().find(|(t, _)| t == b"dimg").map(|(_, to)| to)?;
+        let tiles = it
+            .refs
+            .iter()
+            .find(|(t, _)| t == b"dimg")
+            .map(|(_, to)| to)?;
         items.get(tiles.first()?)?.icc
     })?;
     Some(b[range.0..range.1].to_vec())
@@ -184,13 +209,23 @@ pub fn primary_icc(b: &[u8]) -> Option<Vec<u8>> {
 
 /// Item type and `auxC` type of every item, for diagnostics and tests.
 pub fn describe(b: &[u8]) -> Vec<(u32, String, Option<String>)> {
-    let Some((items, _, _)) = parse(b) else { return vec![] };
-    let mut v: Vec<_> = items.into_iter().map(|(id, i)| (id, String::from_utf8_lossy(&i.typ).into_owned(), i.aux)).collect();
+    let Some((items, _, _)) = parse(b) else {
+        return vec![];
+    };
+    let mut v: Vec<_> = items
+        .into_iter()
+        .map(|(id, i)| (id, String::from_utf8_lossy(&i.typ).into_owned(), i.aux))
+        .collect();
     v.sort_by_key(|x| x.0);
     v
 }
 
-fn read_extents(b: &[u8], idat: Option<(usize, usize)>, cm: u8, ext: &[(u64, u64)]) -> Option<Vec<u8>> {
+fn read_extents(
+    b: &[u8],
+    idat: Option<(usize, usize)>,
+    cm: u8,
+    ext: &[(u64, u64)],
+) -> Option<Vec<u8>> {
     let base = match cm {
         0 => (0usize, b.len()),
         1 => idat?,
@@ -214,8 +249,11 @@ fn parse(b: &[u8]) -> Option<Parsed> {
     if !is_heif(b) {
         return None;
     }
-    let (ms, me) = boxes(b, 0, b.len()).find(|x| &x.0 == b"meta").map(|x| (x.1 + 4, x.2))?;
-    let meta: HashMap<[u8; 4], (usize, usize)> = boxes(b, ms, me).map(|(t, s, e)| (t, (s, e))).collect();
+    let (ms, me) = boxes(b, 0, b.len())
+        .find(|x| &x.0 == b"meta")
+        .map(|x| (x.1 + 4, x.2))?;
+    let meta: HashMap<[u8; 4], (usize, usize)> =
+        boxes(b, ms, me).map(|(t, s, e)| (t, (s, e))).collect();
     let mut items: HashMap<u32, Item> = HashMap::new();
 
     // iinf: item ids and types (infe version 2/3).
@@ -223,7 +261,11 @@ fn parse(b: &[u8]) -> Option<Parsed> {
     let mut r = Reader { b: &b[..e], p: s };
     let ver = r.u8()?;
     r.skip(3)?;
-    if ver == 0 { r.u16()? as u32 } else { r.u32()? };
+    if ver == 0 {
+        r.u16()? as u32
+    } else {
+        r.u32()?
+    };
     for (t, cs, ce) in boxes(b, r.p, e) {
         if &t != b"infe" {
             continue;
@@ -251,7 +293,11 @@ fn parse(b: &[u8]) -> Option<Parsed> {
     let count = if ver < 2 { r.u16()? as u32 } else { r.u32()? };
     for _ in 0..count.min(1 << 16) {
         let id = if ver < 2 { r.u16()? as u32 } else { r.u32()? };
-        let cm = if ver == 1 || ver == 2 { (r.u16()? & 15) as u8 } else { 0 };
+        let cm = if ver == 1 || ver == 2 {
+            (r.u16()? & 15) as u8
+        } else {
+            0
+        };
         r.skip(2)?;
         let base = r.uint(bsz)?;
         let n = r.u16()?;
@@ -274,14 +320,23 @@ fn parse(b: &[u8]) -> Option<Parsed> {
             let mut r = Reader { b: &b[..ce], p: cs };
             let from = if ver == 0 { r.u16()? as u32 } else { r.u32()? };
             let n = r.u16()?;
-            let to = (0..n).map(|_| if ver == 0 { r.u16().map(u32::from) } else { r.u32() }).collect::<Option<Vec<_>>>()?;
+            let to = (0..n)
+                .map(|_| {
+                    if ver == 0 {
+                        r.u16().map(u32::from)
+                    } else {
+                        r.u32()
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
             items.entry(from).or_default().refs.push((t, to));
         }
     }
 
     // iprp/ipco + ipma: the auxC type of each item.
     if let Some(&(s, e)) = meta.get(b"iprp") {
-        let iprp: HashMap<[u8; 4], (usize, usize)> = boxes(b, s, e).map(|(t, s, e)| (t, (s, e))).collect();
+        let iprp: HashMap<[u8; 4], (usize, usize)> =
+            boxes(b, s, e).map(|(t, s, e)| (t, (s, e))).collect();
         if let (Some(&(cs, ce)), Some(&(ms, me))) = (iprp.get(b"ipco"), iprp.get(b"ipma")) {
             let props: Vec<_> = boxes(b, cs, ce).collect();
             let mut r = Reader { b: &b[..me], p: ms };
@@ -292,7 +347,11 @@ fn parse(b: &[u8]) -> Option<Parsed> {
                 let id = if ver < 1 { r.u16()? as u32 } else { r.u32()? };
                 let k = r.u8()?;
                 for _ in 0..k {
-                    let idx = if flags & 1 != 0 { (r.u16()? & 0x7fff) as usize } else { (r.u8()? & 0x7f) as usize };
+                    let idx = if flags & 1 != 0 {
+                        (r.u16()? & 0x7fff) as usize
+                    } else {
+                        (r.u8()? & 0x7f) as usize
+                    };
                     if idx == 0 {
                         continue;
                     }
@@ -303,7 +362,8 @@ fn parse(b: &[u8]) -> Option<Parsed> {
                         if &t == b"auxC" && pe > ps + 4 {
                             let urn = &b[ps + 4..pe];
                             let urn = urn.split(|&x| x == 0).next().unwrap_or_default();
-                            items.entry(id).or_default().aux = Some(String::from_utf8_lossy(urn).into_owned());
+                            items.entry(id).or_default().aux =
+                                Some(String::from_utf8_lossy(urn).into_owned());
                         }
                     }
                 }
@@ -336,7 +396,10 @@ fn boxes(b: &[u8], start: usize, end: usize) -> impl Iterator<Item = ([u8; 4], u
         let typ: [u8; 4] = b[off + 4..off + 8].try_into().ok()?;
         let (size, hdr) = match size {
             0 => ((end - off) as u64, 8),
-            1 if off + 16 <= end => (u64::from_be_bytes(b[off + 8..off + 16].try_into().ok()?), 16),
+            1 if off + 16 <= end => (
+                u64::from_be_bytes(b[off + 8..off + 16].try_into().ok()?),
+                16,
+            ),
             1 => return None,
             s => (s, 8),
         };
@@ -370,7 +433,8 @@ impl Reader<'_> {
         self.take(2).map(|s| u16::from_be_bytes([s[0], s[1]]))
     }
     fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+        self.take(4)
+            .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
     }
     fn i32(&mut self) -> Option<i32> {
         self.u32().map(|v| v as i32)
@@ -379,7 +443,9 @@ impl Reader<'_> {
         match size {
             0 => Some(0),
             4 => self.u32().map(u64::from),
-            8 => self.take(8).map(|s| u64::from_be_bytes(s.try_into().unwrap())),
+            8 => self
+                .take(8)
+                .map(|s| u64::from_be_bytes(s.try_into().unwrap())),
             _ => None,
         }
     }
@@ -398,7 +464,10 @@ mod tests {
         assert!(!m.multichannel && m.use_base_colour_space);
         assert_eq!(m.base_hdr_headroom, 0.0);
         assert!((m.alternate_hdr_headroom - 1.857155).abs() < 1e-6);
-        assert!((m.gain_map_min[0] + 0.056396).abs() < 1e-6 && (m.gain_map_max[2] - 1.857155).abs() < 1e-6);
+        assert!(
+            (m.gain_map_min[0] + 0.056396).abs() < 1e-6
+                && (m.gain_map_max[2] - 1.857155).abs() < 1e-6
+        );
         assert!((m.gamma[0] - 0.664551).abs() < 1e-6);
     }
 
@@ -407,7 +476,10 @@ mod tests {
         let m = GainMapMetadata::parse_tmap(&hex::decode(IPHONE_TMAP).unwrap()).unwrap();
         let back = GainMapMetadata::parse_iso(&m.to_iso()).unwrap();
         assert!((back.alternate_hdr_headroom - m.alternate_hdr_headroom).abs() < 1e-6);
-        assert!((back.gain_map_min[0] - m.gain_map_min[0]).abs() < 1e-6 && (back.gamma[1] - m.gamma[1]).abs() < 1e-6);
+        assert!(
+            (back.gain_map_min[0] - m.gain_map_min[0]).abs() < 1e-6
+                && (back.gamma[1] - m.gamma[1]).abs() < 1e-6
+        );
     }
 
     #[test]
@@ -424,13 +496,19 @@ mod tests {
     /// Run with QLS_TEST_HEIC=<iPhone .HEIC with HDR> to check a real file.
     #[test]
     fn real_file_gain_map() {
-        let Ok(p) = std::env::var("QLS_TEST_HEIC") else { return };
+        let Ok(p) = std::env::var("QLS_TEST_HEIC") else {
+            return;
+        };
         let b = std::fs::read(p).unwrap();
         let g = gain_map(&b).expect("gain map");
         assert!(g.metadata.alternate_hdr_headroom > 0.5);
         let icc = primary_icc(&b).expect("iPhone photos carry an ICC profile");
         assert_eq!(&icc[36..40], b"acsp", "valid ICC header");
         let d = describe(&b);
-        assert!(d.iter().any(|(id, _, aux)| *id == g.item_id && aux.as_deref().is_some_and(|a| a.contains("hdrgainmap"))), "{d:?}");
+        assert!(
+            d.iter().any(|(id, _, aux)| *id == g.item_id
+                && aux.as_deref().is_some_and(|a| a.contains("hdrgainmap"))),
+            "{d:?}"
+        );
     }
 }

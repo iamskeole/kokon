@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{Download, Preset, TEXT_ENCODER_Q4_K_M, TEXT_ENCODER_Q8_0, TURBO_Q4_K, TURBO_Q4_K_M, VAE, VAE_ORIGINAL, VISION_PROJECTOR};
+use crate::catalog::{
+    Download, Preset, TEXT_ENCODER_Q4_K_M, TEXT_ENCODER_Q8_0, TURBO_Q4_K, TURBO_Q4_K_M, VAE,
+    VAE_ORIGINAL, VISION_PROJECTOR,
+};
 use crate::config::ModelProfile;
 use crate::error::AppError;
 
@@ -31,7 +34,18 @@ const SCAN_MAX_DEPTH: usize = 8;
 const SCAN_MAX_ENTRIES: usize = 50_000;
 const SCAN_MAX_FILES: usize = 2_000;
 /// Folders a scan never enters (ComfyUI's own code, environments, outputs).
-const SCAN_SKIP: &[&str] = &["custom_nodes", "node_modules", "venv", ".venv", "__pycache__", "output", "input", "temp", ".git", ".cache"];
+const SCAN_SKIP: &[&str] = &[
+    "custom_nodes",
+    "node_modules",
+    "venv",
+    ".venv",
+    "__pycache__",
+    "output",
+    "input",
+    "temp",
+    ".git",
+    ".cache",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,7 +57,12 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 4] = [Role::Diffusion, Role::Vae, Role::TextEncoder, Role::VisionProjector];
+    pub const ALL: [Role; 4] = [
+        Role::Diffusion,
+        Role::Vae,
+        Role::TextEncoder,
+        Role::VisionProjector,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -148,7 +167,8 @@ fn fingerprint(path: &Path, size: u64) -> std::io::Result<String> {
 
 /// A known base 2.1 file (`table`: size, fingerprint). Only files of a listed size are read.
 fn is_known_base(path: &Path, size: u64, table: &[(u64, &str)]) -> bool {
-    table.iter().any(|(s, _)| *s == size) && fingerprint(path, size).is_ok_and(|fp| table.iter().any(|(s, f)| *s == size && *f == fp))
+    table.iter().any(|(s, _)| *s == size)
+        && fingerprint(path, size).is_ok_and(|fp| table.iter().any(|(s, f)| *s == size && *f == fp))
 }
 
 struct Tensor {
@@ -169,15 +189,30 @@ pub fn is_old_turbo_q4k(path: &Path) -> bool {
 
 /// `path` has this size and fingerprint (only a file of that size is read).
 fn is_known_file(path: &Path, size: u64, fp: &str) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size) && fingerprint(path, size).is_ok_and(|f| f == fp)
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
+        && fingerprint(path, size).is_ok_and(|f| f == fp)
 }
 
 /// The catalog download a file with this name and size is (any folder).
 pub fn official_download(path: &Path, size: u64) -> Option<Download> {
     let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-    [TURBO_Q4_K_M, TURBO_Q4_K, VAE, VAE_ORIGINAL, TEXT_ENCODER_Q4_K_M, TEXT_ENCODER_Q8_0, VISION_PROJECTOR]
-        .into_iter()
-        .find(|d| d.size == size && d.dest.rsplit('/').next().is_some_and(|f| f.eq_ignore_ascii_case(&name)))
+    [
+        TURBO_Q4_K_M,
+        TURBO_Q4_K,
+        VAE,
+        VAE_ORIGINAL,
+        TEXT_ENCODER_Q4_K_M,
+        TEXT_ENCODER_Q8_0,
+        VISION_PROJECTOR,
+    ]
+    .into_iter()
+    .find(|d| {
+        d.size == size
+            && d.dest
+                .rsplit('/')
+                .next()
+                .is_some_and(|f| f.eq_ignore_ascii_case(&name))
+    })
 }
 
 /// Reads the header of `path` and says what it is. Errors only for files that cannot be read.
@@ -188,11 +223,27 @@ pub fn inspect(path: &Path) -> std::io::Result<FileInfo> {
 fn inspect_with(path: &Path, base_files: &[(u64, &str)]) -> std::io::Result<FileInfo> {
     let meta = std::fs::metadata(path)?;
     if !meta.is_file() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a file",
+        ));
     }
     let size = meta.len();
-    let mut info = FileInfo { path: path.to_path_buf(), size, role: None, compatible: false, has_vision: false, weights: String::new(), official: false, problem: None, warning: None };
-    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let mut info = FileInfo {
+        path: path.to_path_buf(),
+        size,
+        role: None,
+        compatible: false,
+        has_vision: false,
+        weights: String::new(),
+        official: false,
+        problem: None,
+        warning: None,
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     let parsed = match ext {
         "gguf" => read_gguf(path),
@@ -215,14 +266,20 @@ fn inspect_with(path: &Path, base_files: &[(u64, &str)]) -> std::io::Result<File
     let (tensors, meta) = match parsed {
         Ok(t) => t,
         Err(e) => {
-            info.problem = Some(format!("Could not read the file's header ({e}). It may be incomplete or damaged."));
+            info.problem = Some(format!(
+                "Could not read the file's header ({e}). It may be incomplete or damaged."
+            ));
             return Ok(info);
         }
     };
     info.weights = main_weight_type(&tensors);
     classify(&tensors, &meta, &name, &mut info);
     info.official = info.compatible && official_download(path, size).is_some();
-    if info.compatible && info.role == Some(Role::Diffusion) && !info.official && is_known_base(path, size, base_files) {
+    if info.compatible
+        && info.role == Some(Role::Diffusion)
+        && !info.official
+        && is_known_base(path, size, base_files)
+    {
         info.warning = Some(BASE_MODEL_WARNING.into());
     }
     Ok(info)
@@ -231,12 +288,24 @@ fn inspect_with(path: &Path, base_files: &[(u64, &str)]) -> std::io::Result<File
 /// Name -> shape (PyTorch order) of every tensor in a diffusion model file (.gguf or
 /// .safetensors), without the `model.diffusion_model.` / `diffusion_model.` prefix.
 pub fn diffusion_tensor_shapes(path: &Path) -> std::io::Result<HashMap<String, Vec<u64>>> {
-    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    let (tensors, _) = if ext == "gguf" { read_gguf(path)? } else { read_safetensors(path)? };
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let (tensors, _) = if ext == "gguf" {
+        read_gguf(path)?
+    } else {
+        read_safetensors(path)?
+    };
     Ok(tensors
         .into_iter()
         .map(|t| {
-            let name = t.name.strip_prefix("model.diffusion_model.").or_else(|| t.name.strip_prefix("diffusion_model.")).unwrap_or(&t.name).to_string();
+            let name = t
+                .name
+                .strip_prefix("model.diffusion_model.")
+                .or_else(|| t.name.strip_prefix("diffusion_model."))
+                .unwrap_or(&t.name)
+                .to_string();
             (name, t.shape)
         })
         .collect())
@@ -246,7 +315,11 @@ pub fn diffusion_tensor_shapes(path: &Path) -> std::io::Result<HashMap<String, V
 fn is_shard(name: &str) -> bool {
     let stem = name.trim_end_matches(".safetensors");
     let parts: Vec<&str> = stem.rsplitn(4, '-').collect();
-    parts.len() == 4 && parts[1] == "of" && [parts[0], parts[2]].iter().all(|p| p.len() >= 3 && p.chars().all(|c| c.is_ascii_digit()))
+    parts.len() == 4
+        && parts[1] == "of"
+        && [parts[0], parts[2]]
+            .iter()
+            .all(|p| p.len() >= 3 && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn classify(t: &[Tensor], meta: &HashMap<String, String>, file_name: &str, info: &mut FileInfo) {
@@ -265,7 +338,17 @@ fn classify(t: &[Tensor], meta: &HashMap<String, String>, file_name: &str, info:
         info.problem = Some("This is an older Qwen-Image model, not Qwen-Image 2.1. Kokon needs Qwen-Image 2.1 (Turbo).".into());
         return;
     }
-    if ["double_blocks.", "single_blocks.", "joint_blocks.", "input_blocks.", "transformer_blocks.", "single_transformer_blocks."].iter().any(|s| contains(s)) {
+    if [
+        "double_blocks.",
+        "single_blocks.",
+        "joint_blocks.",
+        "input_blocks.",
+        "transformer_blocks.",
+        "single_transformer_blocks.",
+    ]
+    .iter()
+    .any(|s| contains(s))
+    {
         info.role = Some(Role::Diffusion);
         info.problem = Some("This image model is not Qwen-Image 2.1.".into());
         return;
@@ -275,37 +358,66 @@ fn classify(t: &[Tensor], meta: &HashMap<String, String>, file_name: &str, info:
     if contains("decoder.") && contains("encoder.") {
         info.role = Some(Role::Vae);
         let post = t.iter().find(|x| {
-            let n = x.name.trim_start_matches("first_stage_model.").trim_start_matches("vae.");
+            let n = x
+                .name
+                .trim_start_matches("first_stage_model.")
+                .trim_start_matches("vae.");
             n == "conv2.weight" || n == "post_quant_conv.weight"
         });
         match post.and_then(|x| x.shape.first().copied()) {
             Some(VAE_LATENT) => info.compatible = true,
-            Some(z) => info.problem = Some(format!("This VAE belongs to another model (latent size {z}). Kokon needs the Qwen-Image 2.1 VAE.")),
+            Some(z) => {
+                info.problem = Some(format!(
+                    "This VAE belongs to another model (latent size {z}). Kokon needs the Qwen-Image 2.1 VAE."
+                ))
+            }
             None => info.problem = Some("Not recognized as the Qwen-Image 2.1 VAE.".into()),
         }
         return;
     }
 
-    let vision = contains("visual.") || t.iter().any(|x| x.name.starts_with("v.blk.") || x.name.starts_with("v.patch_embd"));
+    let vision = contains("visual.")
+        || t.iter()
+            .any(|x| x.name.starts_with("v.blk.") || x.name.starts_with("v.patch_embd"));
     // Text encoder: a language model with layers.
-    let layers = t.iter().any(|x| (x.name.contains("layers.") && x.name.contains("self_attn.")) || (x.name.starts_with("blk.") && x.name.contains(".attn_")));
+    let layers = t.iter().any(|x| {
+        (x.name.contains("layers.") && x.name.contains("self_attn."))
+            || (x.name.starts_with("blk.") && x.name.contains(".attn_"))
+    });
     if layers {
         info.role = Some(Role::TextEncoder);
         info.has_vision = vision;
         let qk_norm = ends("self_attn.q_norm.weight") || ends("attn_q_norm.weight");
-        let hidden = find("embed_tokens.weight").or_else(|| find("token_embd.weight")).and_then(|x| x.shape.get(1).copied());
-        let hidden = hidden.or_else(|| meta.iter().find(|(k, _)| k.ends_with(".embedding_length")).and_then(|(_, v)| v.parse().ok()));
+        let hidden = find("embed_tokens.weight")
+            .or_else(|| find("token_embd.weight"))
+            .and_then(|x| x.shape.get(1).copied());
+        let hidden = hidden.or_else(|| {
+            meta.iter()
+                .find(|(k, _)| k.ends_with(".embedding_length"))
+                .and_then(|(_, v)| v.parse().ok())
+        });
         // Qwen3 8B (text only: Flux.2 Klein's text encoder, prompt enhancers) has exactly the
         // shapes of Qwen3-VL 8B's language model, so only what the file says about itself tells
         // them apart: the GGUF architecture, the vision weights, HF's `language_model.` names,
         // or "VL" in the file name.
-        let arch = meta.get("general.architecture").map(|a| a.to_ascii_lowercase());
-        let says_vl = vision || arch.as_deref().is_some_and(|a| a.starts_with("qwen3vl")) || contains("language_model.") || file_name.contains("vl");
+        let arch = meta
+            .get("general.architecture")
+            .map(|a| a.to_ascii_lowercase());
+        let says_vl = vision
+            || arch.as_deref().is_some_and(|a| a.starts_with("qwen3vl"))
+            || contains("language_model.")
+            || file_name.contains("vl");
         if qk_norm && hidden == Some(TEXT_HIDDEN) {
             match arch.as_deref() {
                 Some(a) if !a.starts_with("qwen3vl") => {
-                    let what = if a == "qwen3" { "Qwen3 8B, a text-only language model (used by Flux.2 Klein and by prompt enhancers)".to_string() } else { format!("a {a} language model") };
-                    info.problem = Some(format!("This is {what}, not the Qwen3-VL 8B text encoder that Qwen-Image 2.1 needs."));
+                    let what = if a == "qwen3" {
+                        "Qwen3 8B, a text-only language model (used by Flux.2 Klein and by prompt enhancers)".to_string()
+                    } else {
+                        format!("a {a} language model")
+                    };
+                    info.problem = Some(format!(
+                        "This is {what}, not the Qwen3-VL 8B text encoder that Qwen-Image 2.1 needs."
+                    ));
                 }
                 _ if !says_vl => {
                     info.problem = Some("Kokon can't tell this file from Qwen3 8B, the text-only model used by Flux.2 Klein and by prompt enhancers, which looks the same inside. Qwen-Image 2.1 needs Qwen3-VL 8B: choose a file with \"VL\" in its name, or download the official one.".into());
@@ -315,21 +427,34 @@ fn classify(t: &[Tensor], meta: &HashMap<String, String>, file_name: &str, info:
         } else if hidden == Some(3584) {
             info.problem = Some("This is the Qwen2.5-VL text encoder of older Qwen-Image models. Qwen-Image 2.1 needs Qwen3-VL 8B.".into());
         } else {
-            info.problem = Some("Not the Qwen3-VL 8B text encoder that Qwen-Image 2.1 needs.".into());
+            info.problem =
+                Some("Not the Qwen3-VL 8B text encoder that Qwen-Image 2.1 needs.".into());
         }
         return;
     }
 
     // Vision projector (mmproj): vision weights only.
-    if vision || meta.get("general.architecture").is_some_and(|a| a == "clip") {
+    if vision
+        || meta
+            .get("general.architecture")
+            .is_some_and(|a| a == "clip")
+    {
         info.role = Some(Role::VisionProjector);
         let out = meta
             .get("clip.vision.projection_dim")
             .and_then(|v| v.parse::<u64>().ok())
-            .or_else(|| find("visual.merger.linear_fc2.weight").or_else(|| find("visual.merger.mlp.2.weight")).and_then(|x| x.shape.first().copied()));
+            .or_else(|| {
+                find("visual.merger.linear_fc2.weight")
+                    .or_else(|| find("visual.merger.mlp.2.weight"))
+                    .and_then(|x| x.shape.first().copied())
+            });
         match out {
             Some(TEXT_HIDDEN) | None => info.compatible = true,
-            Some(d) => info.problem = Some(format!("These vision weights belong to a different Qwen-VL model (output size {d}). Qwen-Image 2.1 needs the Qwen3-VL 8B ones.")),
+            Some(d) => {
+                info.problem = Some(format!(
+                    "These vision weights belong to a different Qwen-VL model (output size {d}). Qwen-Image 2.1 needs the Qwen3-VL 8B ones."
+                ))
+            }
         }
         return;
     }
@@ -342,7 +467,10 @@ fn main_weight_type(t: &[Tensor]) -> String {
     for x in t.iter().filter(|x| x.shape.len() >= 2) {
         *by.entry(x.dtype.as_str()).or_default() += x.shape.iter().product::<u64>();
     }
-    by.into_iter().max_by_key(|(_, n)| *n).map(|(d, _)| d.to_string()).unwrap_or_default()
+    by.into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_default()
 }
 
 fn safetensors_dtype(d: &str) -> String {
@@ -364,19 +492,35 @@ fn read_safetensors(path: &Path) -> std::io::Result<(Vec<Tensor>, HashMap<String
     }
     let mut buf = vec![0u8; n as usize];
     f.read_exact(&mut buf)?;
-    let v: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&buf).map_err(|_| bad("header is not valid JSON"))?;
+    let v: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&buf).map_err(|_| bad("header is not valid JSON"))?;
     let mut meta = HashMap::new();
     let mut tensors = Vec::new();
     for (name, val) in v {
         if name == "__metadata__" {
             if let Some(m) = val.as_object() {
-                meta.extend(m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))));
+                meta.extend(
+                    m.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))),
+                );
             }
             continue;
         }
-        let dtype = val.get("dtype").and_then(|d| d.as_str()).unwrap_or("").to_string();
-        let shape = val.get("shape").and_then(|s| s.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64()).collect()).unwrap_or_default();
-        tensors.push(Tensor { name, shape, dtype: safetensors_dtype(&dtype) });
+        let dtype = val
+            .get("dtype")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string();
+        let shape = val
+            .get("shape")
+            .and_then(|s| s.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_u64()).collect())
+            .unwrap_or_default();
+        tensors.push(Tensor {
+            name,
+            shape,
+            dtype: safetensors_dtype(&dtype),
+        });
     }
     Ok((tensors, meta))
 }
@@ -413,7 +557,11 @@ fn ggml_type(t: u32) -> String {
         (29, "IQ1_M"),
         (30, "BF16"),
     ];
-    NAMES.iter().find(|(n, _)| *n == t).map(|(_, s)| s.to_string()).unwrap_or_else(|| format!("type {t}"))
+    NAMES
+        .iter()
+        .find(|(n, _)| *n == t)
+        .map(|(_, s)| s.to_string())
+        .unwrap_or_else(|| format!("type {t}"))
 }
 
 struct Gguf<R> {
@@ -444,7 +592,9 @@ impl<R: Read + Seek> Gguf<R> {
     }
 
     fn skip(&mut self, n: u64) -> std::io::Result<()> {
-        self.r.seek(SeekFrom::Current(i64::try_from(n).map_err(|_| bad("bad length"))?))?;
+        self.r.seek(SeekFrom::Current(
+            i64::try_from(n).map_err(|_| bad("bad length"))?,
+        ))?;
         Ok(())
     }
 
@@ -491,7 +641,9 @@ impl<R: Read + Seek> Gguf<R> {
 }
 
 fn read_gguf(path: &Path) -> std::io::Result<(Vec<Tensor>, HashMap<String, String>)> {
-    let mut g = Gguf { r: BufReader::with_capacity(1 << 20, std::fs::File::open(path)?) };
+    let mut g = Gguf {
+        r: BufReader::with_capacity(1 << 20, std::fs::File::open(path)?),
+    };
     let mut magic = [0u8; 4];
     g.r.read_exact(&mut magic)?;
     if &magic != b"GGUF" {
@@ -519,11 +671,17 @@ fn read_gguf(path: &Path) -> std::io::Result<(Vec<Tensor>, HashMap<String, Strin
         if nd > 8 {
             return Err(bad("bad tensor dimensions"));
         }
-        let mut shape = (0..nd).map(|_| g.u64()).collect::<std::io::Result<Vec<u64>>>()?;
+        let mut shape = (0..nd)
+            .map(|_| g.u64())
+            .collect::<std::io::Result<Vec<u64>>>()?;
         shape.reverse();
         let ty = g.u32()?;
         g.u64()?; // offset
-        tensors.push(Tensor { name, shape, dtype: ggml_type(ty) });
+        tensors.push(Tensor {
+            name,
+            shape,
+            dtype: ggml_type(ty),
+        });
     }
     Ok((tensors, meta))
 }
@@ -539,7 +697,9 @@ fn scan_with(dir: &Path, min_bytes: u64) -> Vec<FileInfo> {
     let mut entries = 0usize;
     let mut candidates = 0usize;
     while let Some((d, depth)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             entries += 1;
             if entries > SCAN_MAX_ENTRIES || candidates > SCAN_MAX_FILES {
@@ -549,7 +709,10 @@ fn scan_with(dir: &Path, min_bytes: u64) -> Vec<FileInfo> {
             let name = e.file_name().to_string_lossy().to_ascii_lowercase();
             if ft.is_dir() {
                 // Symlinked folders are not followed (no loops, no surprises).
-                if depth < SCAN_MAX_DEPTH && !name.starts_with('.') && !SCAN_SKIP.contains(&name.as_str()) {
+                if depth < SCAN_MAX_DEPTH
+                    && !name.starts_with('.')
+                    && !SCAN_SKIP.contains(&name.as_str())
+                {
                     stack.push((e.path(), depth + 1));
                 }
                 continue;
@@ -558,7 +721,10 @@ fn scan_with(dir: &Path, min_bytes: u64) -> Vec<FileInfo> {
                 continue;
             }
             let p = e.path();
-            if std::fs::metadata(&p).map(|m| m.len() < min_bytes).unwrap_or(true) {
+            if std::fs::metadata(&p)
+                .map(|m| m.len() < min_bytes)
+                .unwrap_or(true)
+            {
                 continue;
             }
             candidates += 1;
@@ -586,21 +752,38 @@ pub struct Picks {
 }
 
 pub fn best(files: &[FileInfo], vram_mib: Option<u64>) -> Picks {
-    let usable = |r: Role| files.iter().filter(move |f| f.role == Some(r) && f.compatible);
+    let usable = |r: Role| {
+        files
+            .iter()
+            .filter(move |f| f.role == Some(r) && f.compatible)
+    };
     let diffusion = usable(Role::Diffusion)
         .min_by_key(|f| {
             let fits = vram_mib.is_none_or(|v| f.size / (1 << 20) + 6 * 1024 <= v);
             // Official first; then the largest that fits; then the smallest.
-            (!f.official, !fits, if fits { u64::MAX - f.size } else { f.size })
+            (
+                !f.official,
+                !fits,
+                if fits { u64::MAX - f.size } else { f.size },
+            )
         })
         .map(|f| f.path.clone());
-    let vae = usable(Role::Vae).min_by_key(|f| (!f.official, f.size)).map(|f| f.path.clone());
+    let vae = usable(Role::Vae)
+        .min_by_key(|f| (!f.official, f.size))
+        .map(|f| f.path.clone());
     let te = usable(Role::TextEncoder).min_by_key(|f| (!f.official, !f.has_vision, f.size));
     let vision_projector = match te {
         Some(t) if t.has_vision => None,
-        _ => usable(Role::VisionProjector).min_by_key(|f| (!f.official, f.size)).map(|f| f.path.clone()),
+        _ => usable(Role::VisionProjector)
+            .min_by_key(|f| (!f.official, f.size))
+            .map(|f| f.path.clone()),
     };
-    Picks { diffusion, vae, text_encoder: te.map(|f| f.path.clone()), vision_projector }
+    Picks {
+        diffusion,
+        vae,
+        text_encoder: te.map(|f| f.path.clone()),
+        vision_projector,
+    }
 }
 
 /// What the user chose for a role in Setup: a file of theirs, or the official file downloaded
@@ -635,10 +818,19 @@ fn resolve(slot: &Slot, role: Role, preset: &Preset) -> Result<(PathBuf, bool), 
                     (None, Some(problem)) => problem,
                     (None, None) => "not recognized".into(),
                 };
-                return Err(AppError::invalid(format!("{}: {what} ({}).", role.label(), p.display())));
+                return Err(AppError::invalid(format!(
+                    "{}: {what} ({}).",
+                    role.label(),
+                    p.display()
+                )));
             }
             if !info.compatible {
-                return Err(AppError::invalid(format!("{}: {}", role.label(), info.problem.unwrap_or_else(|| "not usable with Qwen-Image 2.1.".into()))));
+                return Err(AppError::invalid(format!(
+                    "{}: {}",
+                    role.label(),
+                    info.problem
+                        .unwrap_or_else(|| "not usable with Qwen-Image 2.1.".into())
+                )));
             }
             Ok((p.clone(), info.has_vision))
         }
@@ -648,7 +840,11 @@ fn resolve(slot: &Slot, role: Role, preset: &Preset) -> Result<(PathBuf, bool), 
             if let Ok(m) = std::fs::metadata(&path)
                 && m.len() != d.size
             {
-                return Err(AppError::invalid(format!("{}: {} already exists and is not the official file. Choose another folder, or choose that file instead.", role.label(), path.display())));
+                return Err(AppError::invalid(format!(
+                    "{}: {} already exists and is not the official file. Choose another folder, or choose that file instead.",
+                    role.label(),
+                    path.display()
+                )));
             }
             Ok((path, false))
         }
@@ -658,14 +854,25 @@ fn resolve(slot: &Slot, role: Role, preset: &Preset) -> Result<(PathBuf, bool), 
 /// The user profile for the files chosen in Setup, every one checked. The vision projector is
 /// left out when the text encoder carries the vision weights, and required otherwise
 /// (editing needs it).
-pub fn user_profile(diffusion: &Slot, vae: &Slot, text_encoder: &Slot, vision: Option<&Slot>, scan_dir: Option<PathBuf>, preset: &Preset) -> Result<ModelProfile, AppError> {
+pub fn user_profile(
+    diffusion: &Slot,
+    vae: &Slot,
+    text_encoder: &Slot,
+    vision: Option<&Slot>,
+    scan_dir: Option<PathBuf>,
+    preset: &Preset,
+) -> Result<ModelProfile, AppError> {
     let (diffusion, _) = resolve(diffusion, Role::Diffusion, preset)?;
     let (vae, _) = resolve(vae, Role::Vae, preset)?;
     let (te, te_vision) = resolve(text_encoder, Role::TextEncoder, preset)?;
     let vision = match (vision, te_vision) {
         (_, true) => None,
         (Some(v), false) => Some(resolve(v, Role::VisionProjector, preset)?.0),
-        (None, false) => return Err(AppError::invalid("This text encoder has no vision weights, which editing needs: choose the vision projector (mmproj), or download it.")),
+        (None, false) => {
+            return Err(AppError::invalid(
+                "This text encoder has no vision weights, which editing needs: choose the vision projector (mmproj), or download it.",
+            ));
+        }
     };
     let mut p = ModelProfile::user(diffusion, vae, te, vision);
     p.scan_dir = scan_dir;
@@ -681,7 +888,10 @@ pub(crate) mod tests {
         let mut m = serde_json::Map::new();
         m.insert("__metadata__".into(), serde_json::json!({ "format": "pt" }));
         for (n, d, s) in tensors {
-            m.insert(n.to_string(), serde_json::json!({ "dtype": d, "shape": s, "data_offsets": [0, 0] }));
+            m.insert(
+                n.to_string(),
+                serde_json::json!({ "dtype": d, "shape": s, "data_offsets": [0, 0] }),
+            );
         }
         let h = serde_json::to_vec(&m).unwrap();
         let mut b = (h.len() as u64).to_le_bytes().to_vec();
@@ -690,7 +900,12 @@ pub(crate) mod tests {
     }
 
     /// A GGUF file with string/u32 metadata and these tensors (dims in GGUF order).
-    pub(crate) fn write_gguf(path: &Path, kv: &[(&str, &str)], kv_u32: &[(&str, u32)], tensors: &[(&str, u32, &[u64])]) {
+    pub(crate) fn write_gguf(
+        path: &Path,
+        kv: &[(&str, &str)],
+        kv_u32: &[(&str, u32)],
+        tensors: &[(&str, u32, &[u64])],
+    ) {
         let s = |b: &mut Vec<u8>, x: &str| {
             b.extend((x.len() as u64).to_le_bytes());
             b.extend(x.as_bytes());
@@ -737,25 +952,76 @@ pub(crate) mod tests {
         for sub in ["diffusion_models", "vae", "text_encoders", "custom_nodes"] {
             std::fs::create_dir_all(m.join(sub)).unwrap();
         }
-        let dit = m.join("diffusion_models").join("qwen_image_2.1_turbo_int8_convrot.safetensors");
-        write_st(&dit, &[("model.diffusion_model.txt_in.text_norm.weight", "BF16", &[4096]), ("model.diffusion_model.transformer_blocks.0.img_mod.1.weight", "I8", &[24576, 4096]), ("model.diffusion_model.img_in.weight", "BF16", &[4096, 64])]);
+        let dit = m
+            .join("diffusion_models")
+            .join("qwen_image_2.1_turbo_int8_convrot.safetensors");
+        write_st(
+            &dit,
+            &[
+                (
+                    "model.diffusion_model.txt_in.text_norm.weight",
+                    "BF16",
+                    &[4096],
+                ),
+                (
+                    "model.diffusion_model.transformer_blocks.0.img_mod.1.weight",
+                    "I8",
+                    &[24576, 4096],
+                ),
+                ("model.diffusion_model.img_in.weight", "BF16", &[4096, 64]),
+            ],
+        );
         let vae = m.join("vae").join("qwen_image_2.1_vae_bf16.safetensors");
-        write_st(&vae, &[("conv2.weight", "BF16", &[64, 64, 1, 1, 1]), ("decoder.conv1.weight", "BF16", &[1152, 64, 1, 3, 3]), ("encoder.conv1.weight", "BF16", &[96, 3, 3, 3, 3])]);
-        let te = m.join("text_encoders").join("qwen3vl_8b_int8_convrot.safetensors");
+        write_st(
+            &vae,
+            &[
+                ("conv2.weight", "BF16", &[64, 64, 1, 1, 1]),
+                ("decoder.conv1.weight", "BF16", &[1152, 64, 1, 3, 3]),
+                ("encoder.conv1.weight", "BF16", &[96, 3, 3, 3, 3]),
+            ],
+        );
+        let te = m
+            .join("text_encoders")
+            .join("qwen3vl_8b_int8_convrot.safetensors");
         write_st(
             &te,
             &[
                 ("model.embed_tokens.weight", "BF16", &[151936, 4096]),
-                ("model.layers.0.self_attn.q_proj.weight", "I8", &[4096, 4096]),
+                (
+                    "model.layers.0.self_attn.q_proj.weight",
+                    "I8",
+                    &[4096, 4096],
+                ),
                 ("model.layers.0.self_attn.q_norm.weight", "BF16", &[128]),
                 ("visual.blocks.0.attn.qkv.weight", "BF16", &[3456, 1152]),
                 ("visual.merger.linear_fc2.weight", "BF16", &[4096, 4608]),
             ],
         );
         // Another model's files, and one inside a folder a scan skips.
-        write_st(&m.join("diffusion_models").join("qwen_image_2512.safetensors"), &[("transformer_blocks.0.img_mod.1.weight", "BF16", &[18432, 3072]), ("img_in.weight", "BF16", &[3072, 64])]);
-        write_st(&m.join("vae").join("qwen_image_vae.safetensors"), &[("conv2.weight", "BF16", &[16, 16, 1, 1, 1]), ("decoder.conv1.weight", "BF16", &[384, 16, 1, 3, 3]), ("encoder.conv1.weight", "BF16", &[96, 3, 3, 3, 3])]);
-        write_st(&m.join("custom_nodes").join("hidden.safetensors"), &[("txt_in.text_norm.weight", "BF16", &[4096])]);
+        write_st(
+            &m.join("diffusion_models")
+                .join("qwen_image_2512.safetensors"),
+            &[
+                (
+                    "transformer_blocks.0.img_mod.1.weight",
+                    "BF16",
+                    &[18432, 3072],
+                ),
+                ("img_in.weight", "BF16", &[3072, 64]),
+            ],
+        );
+        write_st(
+            &m.join("vae").join("qwen_image_vae.safetensors"),
+            &[
+                ("conv2.weight", "BF16", &[16, 16, 1, 1, 1]),
+                ("decoder.conv1.weight", "BF16", &[384, 16, 1, 3, 3]),
+                ("encoder.conv1.weight", "BF16", &[96, 3, 3, 3, 3]),
+            ],
+        );
+        write_st(
+            &m.join("custom_nodes").join("hidden.safetensors"),
+            &[("txt_in.text_norm.weight", "BF16", &[4096])],
+        );
         (dit, vae, te)
     }
 
@@ -764,13 +1030,23 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (dit, vae, te) = comfy_folder(dir.path());
         let d = inspect(&dit).unwrap();
-        assert_eq!((d.role, d.compatible, d.weights.as_str(), d.official), (Some(Role::Diffusion), true, "INT8", false));
+        assert_eq!(
+            (d.role, d.compatible, d.weights.as_str(), d.official),
+            (Some(Role::Diffusion), true, "INT8", false)
+        );
         let v = inspect(&vae).unwrap();
         assert_eq!((v.role, v.compatible), (Some(Role::Vae), true));
         assert!(!v.official, "the official name, but not its size");
         let t = inspect(&te).unwrap();
-        assert_eq!((t.role, t.compatible, t.has_vision), (Some(Role::TextEncoder), true, true));
-        let old = inspect(&dir.path().join("models/diffusion_models/qwen_image_2512.safetensors")).unwrap();
+        assert_eq!(
+            (t.role, t.compatible, t.has_vision),
+            (Some(Role::TextEncoder), true, true)
+        );
+        let old = inspect(
+            &dir.path()
+                .join("models/diffusion_models/qwen_image_2512.safetensors"),
+        )
+        .unwrap();
         assert_eq!((old.role, old.compatible), (Some(Role::Diffusion), false));
         assert!(old.problem.unwrap().contains("not Qwen-Image 2.1"));
         let old_vae = inspect(&dir.path().join("models/vae/qwen_image_vae.safetensors")).unwrap();
@@ -781,22 +1057,73 @@ pub(crate) mod tests {
     fn recognizes_gguf_files() {
         let dir = tempfile::tempdir().unwrap();
         let dit = dir.path().join("turbo.gguf");
-        write_gguf(&dit, &[], &[], &[("model.diffusion_model.txt_in.text_norm.weight", 30, &[4096]), ("model.diffusion_model.img_in.weight", 12, &[64, 4096]), ("model.diffusion_model.proj_out.weight", 12, &[4096, 64])]);
+        write_gguf(
+            &dit,
+            &[],
+            &[],
+            &[
+                ("model.diffusion_model.txt_in.text_norm.weight", 30, &[4096]),
+                ("model.diffusion_model.img_in.weight", 12, &[64, 4096]),
+                ("model.diffusion_model.proj_out.weight", 12, &[4096, 64]),
+            ],
+        );
         let d = inspect(&dit).unwrap();
-        assert_eq!((d.role, d.compatible, d.weights.as_str()), (Some(Role::Diffusion), true, "Q4_K"));
+        assert_eq!(
+            (d.role, d.compatible, d.weights.as_str()),
+            (Some(Role::Diffusion), true, "Q4_K")
+        );
         let te = dir.path().join("te.gguf");
-        write_gguf(&te, &[("general.architecture", "qwen3vl")], &[("qwen3vl.embedding_length", 4096)], &[("token_embd.weight", 12, &[4096, 151936]), ("blk.0.attn_q.weight", 12, &[4096, 4096]), ("blk.0.attn_q_norm.weight", 0, &[128])]);
+        write_gguf(
+            &te,
+            &[("general.architecture", "qwen3vl")],
+            &[("qwen3vl.embedding_length", 4096)],
+            &[
+                ("token_embd.weight", 12, &[4096, 151936]),
+                ("blk.0.attn_q.weight", 12, &[4096, 4096]),
+                ("blk.0.attn_q_norm.weight", 0, &[128]),
+            ],
+        );
         let t = inspect(&te).unwrap();
-        assert_eq!((t.role, t.compatible, t.has_vision), (Some(Role::TextEncoder), true, false));
+        assert_eq!(
+            (t.role, t.compatible, t.has_vision),
+            (Some(Role::TextEncoder), true, false)
+        );
         let old_te = dir.path().join("qwen25.gguf");
-        write_gguf(&old_te, &[("general.architecture", "qwen2vl")], &[], &[("token_embd.weight", 12, &[3584, 152064]), ("blk.0.attn_q.weight", 12, &[3584, 3584])]);
-        assert!(inspect(&old_te).unwrap().problem.unwrap().contains("Qwen2.5-VL"));
+        write_gguf(
+            &old_te,
+            &[("general.architecture", "qwen2vl")],
+            &[],
+            &[
+                ("token_embd.weight", 12, &[3584, 152064]),
+                ("blk.0.attn_q.weight", 12, &[3584, 3584]),
+            ],
+        );
+        assert!(
+            inspect(&old_te)
+                .unwrap()
+                .problem
+                .unwrap()
+                .contains("Qwen2.5-VL")
+        );
         let mm = dir.path().join("mmproj.gguf");
-        write_gguf(&mm, &[("general.architecture", "clip")], &[("clip.vision.projection_dim", 4096)], &[("v.blk.0.attn_qkv.weight", 1, &[1152, 3456]), ("mm.2.weight", 1, &[4608, 4096])]);
+        write_gguf(
+            &mm,
+            &[("general.architecture", "clip")],
+            &[("clip.vision.projection_dim", 4096)],
+            &[
+                ("v.blk.0.attn_qkv.weight", 1, &[1152, 3456]),
+                ("mm.2.weight", 1, &[4608, 4096]),
+            ],
+        );
         let p = inspect(&mm).unwrap();
         assert_eq!((p.role, p.compatible), (Some(Role::VisionProjector), true));
         let mm4b = dir.path().join("mmproj-4b.gguf");
-        write_gguf(&mm4b, &[("general.architecture", "clip")], &[("clip.vision.projection_dim", 2560)], &[("v.blk.0.attn_qkv.weight", 1, &[1024, 3072])]);
+        write_gguf(
+            &mm4b,
+            &[("general.architecture", "clip")],
+            &[("clip.vision.projection_dim", 2560)],
+            &[("v.blk.0.attn_qkv.weight", 1, &[1024, 3072])],
+        );
         assert!(!inspect(&mm4b).unwrap().compatible);
     }
 
@@ -804,9 +1131,26 @@ pub(crate) mod tests {
     fn text_only_qwen3_is_not_the_text_encoder() {
         // chillahc (Reddit, 10-21): setup picked a prompt enhancer's Qwen3 8B as the text encoder.
         let dir = tempfile::tempdir().unwrap();
-        let te_tensors: &[(&str, &str, &[u64])] = &[("model.embed_tokens.weight", "BF16", &[151936, 4096]), ("model.layers.0.self_attn.q_proj.weight", "F8_E4M3", &[4096, 4096]), ("model.layers.0.self_attn.q_norm.weight", "BF16", &[128])];
+        let te_tensors: &[(&str, &str, &[u64])] = &[
+            ("model.embed_tokens.weight", "BF16", &[151936, 4096]),
+            (
+                "model.layers.0.self_attn.q_proj.weight",
+                "F8_E4M3",
+                &[4096, 4096],
+            ),
+            ("model.layers.0.self_attn.q_norm.weight", "BF16", &[128]),
+        ];
         let gguf = dir.path().join("Qwen3-8B-Q4_K_M.gguf");
-        write_gguf(&gguf, &[("general.architecture", "qwen3")], &[("qwen3.embedding_length", 4096)], &[("token_embd.weight", 12, &[4096, 151936]), ("blk.0.attn_q.weight", 12, &[4096, 4096]), ("blk.0.attn_q_norm.weight", 0, &[128])]);
+        write_gguf(
+            &gguf,
+            &[("general.architecture", "qwen3")],
+            &[("qwen3.embedding_length", 4096)],
+            &[
+                ("token_embd.weight", 12, &[4096, 151936]),
+                ("blk.0.attn_q.weight", 12, &[4096, 4096]),
+                ("blk.0.attn_q_norm.weight", 0, &[128]),
+            ],
+        );
         let g = inspect(&gguf).unwrap();
         assert_eq!((g.role, g.compatible), (Some(Role::TextEncoder), false));
         assert!(g.problem.unwrap().contains("Qwen3 8B, a text-only"));
@@ -832,8 +1176,14 @@ pub(crate) mod tests {
         std::fs::write(&f, vec![7u8; 200_000]).unwrap();
         let fp = fingerprint(&f, 200_000).unwrap();
         assert!(is_known_file(&f, 200_000, &fp));
-        assert!(!is_known_file(&f, 200_001, &fp), "another size is never read");
-        assert!(!is_known_file(&f, 200_000, OLD_TURBO_Q4_K_FINGERPRINT), "same size, other content");
+        assert!(
+            !is_known_file(&f, 200_001, &fp),
+            "another size is never read"
+        );
+        assert!(
+            !is_known_file(&f, 200_000, OLD_TURBO_Q4_K_FINGERPRINT),
+            "same size, other content"
+        );
         assert!(!is_known_file(&dir.path().join("gone.gguf"), 200_000, &fp));
         assert!(!is_old_turbo_q4k(&f));
     }
@@ -842,14 +1192,21 @@ pub(crate) mod tests {
     fn warns_about_known_base_files_only() {
         // Useful_Disaster_7606 (Reddit, 10-24): the base 2.1 GGUF at 8 steps, no warning.
         let dir = tempfile::tempdir().unwrap();
-        let dit: &[(&str, u32, &[u64])] = &[("txt_in.text_norm.weight", 30, &[4096]), ("img_in.weight", 12, &[64, 4096])];
+        let dit: &[(&str, u32, &[u64])] = &[
+            ("txt_in.text_norm.weight", 30, &[4096]),
+            ("img_in.weight", 12, &[64, 4096]),
+        ];
         let base = dir.path().join("qwen_image_2.1-Q4_K.gguf");
         write_gguf(&base, &[("general.architecture", "qwen_image")], &[], dit);
         let size = std::fs::metadata(&base).unwrap().len();
         let fp = fingerprint(&base, size).unwrap();
         let table = [(size, fp.as_str())];
         let b = inspect_with(&base, &table).unwrap();
-        assert_eq!((b.compatible, b.problem.as_deref()), (true, None), "a warning, not a block");
+        assert_eq!(
+            (b.compatible, b.problem.as_deref()),
+            (true, None),
+            "a warning, not a block"
+        );
         assert!(b.warning.unwrap().contains("not Turbo"));
         // Renamed, it is still the base model.
         let renamed = dir.path().join("my-turbo.gguf");
@@ -857,27 +1214,53 @@ pub(crate) mod tests {
         assert!(inspect_with(&renamed, &table).unwrap().warning.is_some());
         // A Turbo file of the same size (other weights): nothing.
         let turbo = dir.path().join("qwen_image_2.1_turbo-Q4_K.gguf");
-        write_gguf(&turbo, &[("general.architecture", "qwen_image")], &[], &[dit[0], ("img_in.weight", 13, &[64, 4096])]);
+        write_gguf(
+            &turbo,
+            &[("general.architecture", "qwen_image")],
+            &[],
+            &[dit[0], ("img_in.weight", 13, &[64, 4096])],
+        );
         assert_eq!(std::fs::metadata(&turbo).unwrap().len(), size);
         assert_eq!(inspect_with(&turbo, &table).unwrap().warning, None);
         // Unknown files and the real table: nothing.
         assert_eq!(inspect(&base).unwrap().warning, None);
         // Only diffusion models are checked.
         let vae = dir.path().join("vae.safetensors");
-        write_st(&vae, &[("conv2.weight", "BF16", &[64, 64, 1, 1, 1]), ("decoder.conv1.weight", "BF16", &[1152, 64, 1, 3, 3]), ("encoder.conv1.weight", "BF16", &[96, 3, 3, 3, 3])]);
+        write_st(
+            &vae,
+            &[
+                ("conv2.weight", "BF16", &[64, 64, 1, 1, 1]),
+                ("decoder.conv1.weight", "BF16", &[1152, 64, 1, 3, 3]),
+                ("encoder.conv1.weight", "BF16", &[96, 3, 3, 3, 3]),
+            ],
+        );
         let vsize = std::fs::metadata(&vae).unwrap().len();
         let vfp = fingerprint(&vae, vsize).unwrap();
-        assert_eq!(inspect_with(&vae, &[(vsize, vfp.as_str())]).unwrap().warning, None);
+        assert_eq!(
+            inspect_with(&vae, &[(vsize, vfp.as_str())])
+                .unwrap()
+                .warning,
+            None
+        );
     }
 
     #[test]
     fn rejects_unsafe_split_and_broken_files() {
         let dir = tempfile::tempdir().unwrap();
-        for (name, needle) in [("model.ckpt", "can run code"), ("model.bin", "can run code"), ("model-00001-of-00004.safetensors", "split into several"), ("notes.txt", "Not a model file")] {
+        for (name, needle) in [
+            ("model.ckpt", "can run code"),
+            ("model.bin", "can run code"),
+            ("model-00001-of-00004.safetensors", "split into several"),
+            ("notes.txt", "Not a model file"),
+        ] {
             let p = dir.path().join(name);
             std::fs::write(&p, b"0123456789").unwrap();
             let i = inspect(&p).unwrap();
-            assert!(i.role.is_none() && !i.compatible && i.problem.as_deref().unwrap().contains(needle), "{name}: {:?}", i.problem);
+            assert!(
+                i.role.is_none() && !i.compatible && i.problem.as_deref().unwrap().contains(needle),
+                "{name}: {:?}",
+                i.problem
+            );
         }
         let p = dir.path().join("broken.safetensors");
         std::fs::write(&p, b"\xff\xff\xff\xff\xff\xff\xff\xffgarbage").unwrap();
@@ -891,9 +1274,14 @@ pub(crate) mod tests {
     #[test]
     fn official_files_by_name_and_size() {
         let p = Path::new("D:/anywhere/Qwen3VL-8B-Instruct-Q4_K_M.gguf");
-        assert_eq!(official_download(p, TEXT_ENCODER_Q4_K_M.size).unwrap().id, "text_encoder_q4_k_m");
+        assert_eq!(
+            official_download(p, TEXT_ENCODER_Q4_K_M.size).unwrap().id,
+            "text_encoder_q4_k_m"
+        );
         assert!(official_download(p, 123).is_none(), "same name, other size");
-        assert!(official_download(Path::new("D:/x/renamed.gguf"), TEXT_ENCODER_Q4_K_M.size).is_none());
+        assert!(
+            official_download(Path::new("D:/x/renamed.gguf"), TEXT_ENCODER_Q4_K_M.size).is_none()
+        );
     }
 
     #[test]
@@ -901,14 +1289,35 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (dit, vae, te) = comfy_folder(dir.path());
         let files = scan_with(dir.path(), 0);
-        assert_eq!(files.len(), 5, "skipped folders are not entered: {files:#?}");
+        assert_eq!(
+            files.len(),
+            5,
+            "skipped folders are not entered: {files:#?}"
+        );
         let picks = best(&files, Some(16_303));
-        assert_eq!(picks, Picks { diffusion: Some(dit.clone()), vae: Some(vae), text_encoder: Some(te), vision_projector: None }, "the text encoder carries the vision weights");
+        assert_eq!(
+            picks,
+            Picks {
+                diffusion: Some(dit.clone()),
+                vae: Some(vae),
+                text_encoder: Some(te),
+                vision_projector: None
+            },
+            "the text encoder carries the vision weights"
+        );
         // A text encoder without vision needs the projector, when there is one.
         let mm = dir.path().join("models").join("mmproj.gguf");
-        write_gguf(&mm, &[("general.architecture", "clip")], &[("clip.vision.projection_dim", 4096)], &[("v.blk.0.attn_qkv.weight", 1, &[1152, 3456])]);
+        write_gguf(
+            &mm,
+            &[("general.architecture", "clip")],
+            &[("clip.vision.projection_dim", 4096)],
+            &[("v.blk.0.attn_qkv.weight", 1, &[1152, 3456])],
+        );
         let mut files = scan_with(dir.path(), 0);
-        for f in files.iter_mut().filter(|f| f.role == Some(Role::TextEncoder)) {
+        for f in files
+            .iter_mut()
+            .filter(|f| f.role == Some(Role::TextEncoder))
+        {
             f.has_vision = false;
         }
         assert_eq!(best(&files, None).vision_projector, Some(mm));
@@ -924,41 +1333,144 @@ pub(crate) mod tests {
         let preset = crate::catalog::preset("16gb").unwrap();
         let path = |p: &Path| Slot::Path(p.to_path_buf());
         // badraymen's set (#14): the fused text encoder needs no projector.
-        let p = user_profile(&path(&dit), &path(&vae), &path(&te), None, Some(dir.path().to_path_buf()), preset).unwrap();
-        assert_eq!((p.id.as_str(), p.vision_projector.clone(), p.scan_dir.clone()), (crate::config::USER_PROFILE_ID, None, Some(dir.path().to_path_buf())));
+        let p = user_profile(
+            &path(&dit),
+            &path(&vae),
+            &path(&te),
+            None,
+            Some(dir.path().to_path_buf()),
+            preset,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                p.id.as_str(),
+                p.vision_projector.clone(),
+                p.scan_dir.clone()
+            ),
+            (
+                crate::config::USER_PROFILE_ID,
+                None,
+                Some(dir.path().to_path_buf())
+            )
+        );
         // ...and a projector chosen anyway is not passed.
         let mm = dir.path().join("mm.gguf");
-        write_gguf(&mm, &[("general.architecture", "clip")], &[("clip.vision.projection_dim", 4096)], &[("v.blk.0.attn_qkv.weight", 1, &[1152, 3456])]);
-        assert_eq!(user_profile(&path(&dit), &path(&vae), &path(&te), Some(&path(&mm)), None, preset).unwrap().vision_projector, None);
+        write_gguf(
+            &mm,
+            &[("general.architecture", "clip")],
+            &[("clip.vision.projection_dim", 4096)],
+            &[("v.blk.0.attn_qkv.weight", 1, &[1152, 3456])],
+        );
+        assert_eq!(
+            user_profile(
+                &path(&dit),
+                &path(&vae),
+                &path(&te),
+                Some(&path(&mm)),
+                None,
+                preset
+            )
+            .unwrap()
+            .vision_projector,
+            None
+        );
         // Wrong file for the role, or a file of another model.
         let e = user_profile(&path(&vae), &path(&vae), &path(&te), None, None, preset).unwrap_err();
-        assert!(e.message.starts_with("Diffusion model: this is a vae file"), "{}", e.message);
-        let old = dir.path().join("models/diffusion_models/qwen_image_2512.safetensors");
-        assert!(user_profile(&path(&old), &path(&vae), &path(&te), None, None, preset).unwrap_err().message.contains("not Qwen-Image 2.1"));
+        assert!(
+            e.message.starts_with("Diffusion model: this is a vae file"),
+            "{}",
+            e.message
+        );
+        let old = dir
+            .path()
+            .join("models/diffusion_models/qwen_image_2512.safetensors");
+        assert!(
+            user_profile(&path(&old), &path(&vae), &path(&te), None, None, preset)
+                .unwrap_err()
+                .message
+                .contains("not Qwen-Image 2.1")
+        );
         // Official pieces to download: the official text encoder has no vision, so the
         // projector is required, and downloaded too.
         let dl = dir.path().join("dl");
-        let e = user_profile(&path(&dit), &path(&vae), &Slot::Download(dl.clone()), None, None, preset).unwrap_err();
+        let e = user_profile(
+            &path(&dit),
+            &path(&vae),
+            &Slot::Download(dl.clone()),
+            None,
+            None,
+            preset,
+        )
+        .unwrap_err();
         assert!(e.message.contains("vision projector"), "{}", e.message);
-        let p = user_profile(&path(&dit), &Slot::Download(dl.clone()), &Slot::Download(dl.clone()), Some(&Slot::Download(dl.clone())), None, preset).unwrap();
+        let p = user_profile(
+            &path(&dit),
+            &Slot::Download(dl.clone()),
+            &Slot::Download(dl.clone()),
+            Some(&Slot::Download(dl.clone())),
+            None,
+            preset,
+        )
+        .unwrap();
         assert_eq!(p.vae, dl.join(VAE.file_name()));
         assert_eq!(p.text_encoder, dl.join(preset.text_encoder.file_name()));
-        assert_eq!(p.vision_projector, Some(dl.join(VISION_PROJECTOR.file_name())));
-        assert_eq!(crate::catalog::profile_model_downloads(&p).len(), 3, "and they are what the install downloads");
+        assert_eq!(
+            p.vision_projector,
+            Some(dl.join(VISION_PROJECTOR.file_name()))
+        );
+        assert_eq!(
+            crate::catalog::profile_model_downloads(&p).len(),
+            3,
+            "and they are what the install downloads"
+        );
         // A different file under the official name is never overwritten.
         std::fs::create_dir_all(&dl).unwrap();
         std::fs::write(dl.join(VAE.file_name()), b"mine").unwrap();
-        assert!(user_profile(&path(&dit), &Slot::Download(dl), &path(&te), None, None, preset).unwrap_err().message.contains("not the official file"));
+        assert!(
+            user_profile(
+                &path(&dit),
+                &Slot::Download(dl),
+                &path(&te),
+                None,
+                None,
+                preset
+            )
+            .unwrap_err()
+            .message
+            .contains("not the official file")
+        );
     }
 
     #[test]
     fn diffusion_pick_follows_vram() {
-        let f = |name: &str, gib: u64| FileInfo { path: PathBuf::from(name), size: gib << 30, role: Some(Role::Diffusion), compatible: true, has_vision: false, weights: String::new(), official: false, problem: None, warning: None };
+        let f = |name: &str, gib: u64| FileInfo {
+            path: PathBuf::from(name),
+            size: gib << 30,
+            role: Some(Role::Diffusion),
+            compatible: true,
+            has_vision: false,
+            weights: String::new(),
+            official: false,
+            problem: None,
+            warning: None,
+        };
         let files = [f("bf16", 20), f("int8", 10), f("q4", 5)];
-        assert_eq!(best(&files, Some(16 * 1024)).diffusion, Some(PathBuf::from("int8")), "the largest that leaves room");
-        assert_eq!(best(&files, Some(8 * 1024)).diffusion, Some(PathBuf::from("q4")), "nothing fits: the smallest");
+        assert_eq!(
+            best(&files, Some(16 * 1024)).diffusion,
+            Some(PathBuf::from("int8")),
+            "the largest that leaves room"
+        );
+        assert_eq!(
+            best(&files, Some(8 * 1024)).diffusion,
+            Some(PathBuf::from("q4")),
+            "nothing fits: the smallest"
+        );
         let mut off = f("official", 4);
         off.official = true;
-        assert_eq!(best(&[files[0].clone(), off], Some(32 * 1024)).diffusion, Some(PathBuf::from("official")));
+        assert_eq!(
+            best(&[files[0].clone(), off], Some(32 * 1024)).diffusion,
+            Some(PathBuf::from("official"))
+        );
     }
 }
