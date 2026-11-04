@@ -133,6 +133,26 @@ Both the klein and the qwen jobs consume it.
   is the 9B-Q8 PUP; P5 distinguishes matrix-eviction from a TTL race
   and records which happened). Box green at prep time (live==stock-014,
   gateway/vLLM 200, image ports free, service active=klein).
+- 2026-11-04 (window attempt 2, 06:27–06:31, FAIL — a one-character bug in my
+  own script; the matrix itself kept passing): P1/P2 fine. P3 reproduced
+  the clean protect-vllm refusal under the matrix (second time). **P4
+  passed the router test for real**: journal 06:31:13 `matrix:
+  model=kokon-turbo set=qwen-t dsl="qt & pq" evict=[qwen3.8-27b]
+  target=[kokon-pup-qwen kokon-turbo] cost=1` — vLLM evicted for the
+  turbo request and (unlike attempt 1) NOT resurrected: the fixed
+  `vllm-serve.sh` sat out the swap, the qwen pair loaded, the 9B door
+  enhanced (1167 chars) and the engine rendered in 23 s. The window
+  then died on my own P4 record extraction: a hand-transcribed multi-line
+  python one-liner from the r4 script dropped one closing paren
+  (r4-class silent transcription bug; `sh -n` cannot see it — python
+  syntax inside shell single quotes), so the job's `file_path` came
+  back empty and die() fired 2 s after the job's success. Fixed and
+  verified against the real job record (extracts the gallery path);
+  added a `[ -s ]` check on the copied render. Evidence preserved at
+  `/tmp/m015-attempt1/` and `/tmp/m015-attempt2/` (digests carry the
+  matrix journal lines for both attempts). Window re-running (attempt
+  3) — P5, the vLLM-reclaims-the-resident-qwen-pair test, is the only
+  step not yet proven.
 - 2026-11-04 (window attempt 1, 06:00–06:08, FAIL — root-caused and
   fixed): P1 (swap, reload in 8 s), P2 (vLLM revival through the
   matrix), and **P3 (the protect-vllm regression) passed exactly as
