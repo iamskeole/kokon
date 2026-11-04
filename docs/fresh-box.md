@@ -25,7 +25,7 @@ engines, all on 127.0.0.1:
   sd-server (stable-diffusion.cpp, pinned)     :39160 qwen  :39170 klein
   llama-server (llama.cpp, pinned)             :39175 klein sidecar
                                                :39176/:39177 qwen sidecars (PUP)
-  vLLM (owner's chat model)                    :18020
+  vLLM (owner's chat model; two variants, one port)   :18020  text: qwen3.8-27b · vision: qwen3.8-27b-vision
 ```
 
 The service speaks only to the **gateway**, never to engines directly: each
@@ -93,6 +93,14 @@ state of this deployment uses:
 | `gguf/Qwen/Qwen3-VL-8B-Instruct/` | in-engine conditioner for the qwen engine (`model-Q4_K_M.gguf`, `mmproj-F16.gguf`) |
 | `gguf/Qwen/Qwen3-VL-4B-Instruct/` | in-engine conditioner for the klein engine (`model-Q4_K_M.gguf`, `mmproj-Q8_0.gguf`) |
 | `gguf/zerofata/G4-MeroMero-v2-26B`, `…-31B` | the creative models (optional for the image stack) |
+
+The gateway's tenth entry, **`qwen3.8-27b-vision`**, adds **no new weights**:
+it is the owner's chat-model checkpoint served with its vision tower enabled
+(same directory, same quant, same download — the provenance is the one the
+chat-model runtime's `provenance.md` already records; only the launch differs:
+no `--language-model-only`, a shorter context, and the second served name).
+It shares the main variant's port and therefore its whole lifecycle (one
+process at a time; a request for either evicts the other).
 
 The PUP serves two jobs: the klein sidecar runs it at Q8_0 (9.5 GB), and the
 qwen doors run it at Q8_0 for turbo and Q4_K_M for full — the full door takes
@@ -220,8 +228,12 @@ Three rules: a **set** declares which models may co-reside; it never starts
 anything. A request for a model **keeps every running model that sits in some
 set containing it and evicts the rest** (cheapest first, `evict_costs`, default
 1). A model that is a **leaf of no set at all** is an *orphan*: a request for
-it evicts *everything* running. Here **vLLM is deliberately the only orphan** —
-a request for it reclaims the whole card, and (the part that matters) the
+it evicts *everything* running. Here **the vLLM variants are deliberately orphans — both of them**. The
+text and the vision variant share **one listener on :18020 under two served
+names** (the port is not the model's identity; the `--served-model-name` in
+the process argv is), and only one of them can hold the 24 GB card at a
+time, so a request for either first stops the resident other via its
+`cmdStop` and reclaims the whole card, and (the part that matters) the
 daemon's **FIFO scheduler** (in stock since v225; the default, no config
 needed) **defers that request while any of them is still handling one** —
 journal: `queuing request for model … (would evict in-flight process)` — and
@@ -331,11 +343,16 @@ VLM is part of the quality contract, not an optional garnish.
   operator runtime needs, write a DONE/FAIL marker **last**, and make the
   write atomic (`cp … .new && mv -f`) because the 2-second poll can read a
   half-written file.
-- **The chat model's serve script** (`vllm-serve.sh`) has a branch for
-  "port held or a fresh engine core, but not yet healthy": it waits for the
-  in-flight boot instead of evicting and relaunching (a 2026-11-04 incident:
-  a wrapper parked in an eviction wait relaunched a model the router had just
-  evicted, resurrecting it before its targets loaded).
+- **The chat model's serve scripts** (`vllm-serve.sh` / `vllm-serve-vision.sh`
+  in the deploy directory) are **model-aware**: "is this process *my* model?"
+  is answered by the served name in the process argv, never by the port
+  (two variants share one port). Each has a branch for "a *foreign* variant
+  holds the port" — it waits for the router's own eviction to clear it (with
+  a named-holder timeout), and one for "port held or a fresh engine core,
+  but not yet healthy": it waits for the in-flight boot instead of evicting
+  and relaunching (a 2026-11-04 incident: a wrapper parked in an eviction
+  wait relaunched a model the router had just evicted, resurrecting it before
+  its targets loaded). Neither ever kills a foreign holder out of band.
 - **The wrappers are thin.** The serve scripts adopt a healthy co-resident
   and otherwise only run the last-resort zombie clear (never vLLM). There is
   no policy file any more: the sets above are the policy, and the scheduler
