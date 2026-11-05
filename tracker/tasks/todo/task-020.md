@@ -5,6 +5,24 @@
 queue-type knobs that protect active requests. Exploration (below) proved him right;
 he said "proceed".
 
+## Reopened (2026-11-05)
+
+The owner's `/home/p/ml` cleanup (2026-11-05) parked this task's artifacts —
+the thin wrapper generation (`vllm-serve.sh`, the PUP doors, the supervisor
+pair), `gpu-empty.sh`, `evict-gpu.sh`, `config.yaml.stock-016`/`window-020`,
+the `m020-*` jobs, `refs/{pre-020,thin-020}`, `MATRIX.md`, `README.local.md` —
+in `__new_mess/llama-swap-deploy/`, moved the bespoke vLLM repo
+(`backends/stable/qwen38-27b-rtx3090`) to `__backups/`, and re-based the vLLM
+runtime on `backends/hyperqwen-032` (the established vllm fork — the vision
+offload and the other runtime knobs are native there, no 0.27.1 port) with new
+plain direct-exec serve scripts in `backends/_scripts/` and a new unversioned
+config `backends/_configs/llama-swap.yaml` (stock-017 content; its vLLM and
+creative `cmd`/`cmdStop` paths are not re-pointed yet, and `ml-llama-swap` is
+stopped until they are). The box chat route rides a direct
+`serve-qwen3.8-27b-text.sh` boot meanwhile. The history below stands as the
+record of what was proven on the old layout. **Re-scope: pending discussion
+with the owner (2026-11-05 session).**
+
 ## Goal
 
 The v269 gateway is a **request-aware FIFO scheduler** at its core: it already

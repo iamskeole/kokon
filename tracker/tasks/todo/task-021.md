@@ -25,6 +25,20 @@ clear before launching (bounded: the daemon's stop backstop guarantees
 request for `qwen3.8-27b` (this session's route) gets a clean 404-class
 error until a main request evicts it — the two simply cannot co-reside.
 
+## Reopened (2026-11-05)
+
+Same cause as task-020: the owner's `/home/p/ml` cleanup parked this task's
+artifacts (the model-aware `vllm-serve-vision.sh`, the variant-gated
+`start_qwen.sh`/`serve-vision.sh` of the bespoke repo, the 0.27.1 venv with
+the ported tower-offload patch, `config.yaml.stock-017`, the `m021-*` jobs,
+`refs/{thin-021,post-021}`) in `__new_mess/` and re-based the vLLM runtime on
+`backends/hyperqwen-032` (new plain `serve-qwen3.8-27b-vision.sh`; the tower
+offload is native in that tree). The vision variant, the 2 MP pixel cap, the
+offload and the KV headroom all need re-landing and re-measuring on the new
+tree: the new script currently runs 8000M KV / 4M-pixel longest-edge, not the
+measured 7372M / 2 MP budgets of the old variant. **Re-scope: pending
+discussion with the owner (2026-11-05 session).**
+
 ## Goal
 
 1. **One listener, two identities, on :18020.** The vision variant
