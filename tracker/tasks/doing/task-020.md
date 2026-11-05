@@ -743,3 +743,128 @@ vLLM a pure orphan under stock v269; cutover to `config.yaml.stock-016`
 completed and verified; rollback ladders recorded). Remaining owner
 decision points (non-blocking): chat-priority vs fail-the-chat (above)
 and the task-022 one-door topology.
+
+## Re-land on the new layout (2026-11-05, IN PROGRESS)
+
+The owner's `/home/p/ml` cleanup re-based the box (see the Reopened
+section). The re-scope discussion (2026-11-05) fixed the new shape with
+the owner's decisions; the original goal of this task (the router as
+the sole eviction authority, no out-of-band kills) is carried over
+verbatim — it is the contract the new layout was built on.
+
+**Owner decisions (2026-11-05):**
+
+1. **Structure:** `backends/*` non-underscore dirs = pure stock trees
+   (clean for future origin updates — no deployment artifacts inside
+   them); `backends/_scripts/` = boot scripts only; `backends/_configs/`
+   = the config home; previous generations parked cold in
+   `__new_mess/` (this task's: `llama-swap-deploy/`, and the old sdcpp
+   wrapper generation in `sdcpp-deploy/`); the bespoke vllm repo is in
+   `__backups/` (out of service).
+2. **Scripts are pure boots:** preflight + `exec` of the engine — the
+   daemon's tracked process IS the engine. **No `cmdStop` anywhere:**
+   the daemon's default process-group stop is the only unload path. v269
+   starts every cmd with `Setpgid` (verified in `internal/process/`
+   `runtime_unix.go` + `process_command.go`), so the group signal reaches
+   the engine and its children — including vLLM's `EngineCore` child.
+   SIGTERM first, SIGKILL after the model's `unloadTimeout` (240 s on the
+   vLLM variants, 120 s on the rest).
+3. **Zombie nets retired:** `gpu-empty.sh` / `evict-gpu.sh` /
+   `ensure-gpu-free.sh` are gone (the owner deleted the last one).
+   A process started OUTSIDE the daemon is invisible to its eviction —
+   it is now a manual problem, resolved manually (the mutual-exclusion
+   protocol; nothing the gateway runs may kill it).
+4. **The vLLM scripts are the owner's final versions** (`serve-
+   qwen3.8-27b-{text,vision}.sh`: pure boots of the `hyperqwen-032`
+   venv with the owner's own measured parameters — KV 8000M / fp8, the
+   vision offload and mm cap on the vision variant). Untouched by the
+   re-land, not re-measured, **not part of any window** (owner rule:
+   no vLLM phases in the verification window).
+5. **Three separate PUP scripts** for the re-land (zero quality risk on
+   the cutover); the shared single door is task-019 (re-scoped, parked).
+6. **Config:** `backends/_configs/llama-swap.yaml` is the config home
+   (successor of the parked `.stock-013…017` ladder; same 10-model
+   topology and the stock-017 sets); a `.last-good` snapshot lives
+   beside it (a failed edit is ignored by `-watch-config` — the last
+   good config stays live; a successful edit is a hot reload that stops
+   loaded models — never edit mid-job).
+7. **The window** (pending owner sign-off on the plan): no vLLM phases
+   (decision 4); the owner stops the manual vLLM boot before the window
+   and revives it after (card housekeeping is the owner's, not the
+   window's); phases prove the non-vLLM invariants on the new layout.
+
+**Done (2026-11-05, host side — non-git):**
+
+- `backends/stable-diffusion.cpp/` decontaminated: `deploy/` (the whole
+  old wrapper generation: supervisors, stop scripts, PUP doors,
+  `QWEN-ROLLBACK.md`, logs, and the copied build artifacts) +
+  `.build-DONE` → `__new_mess/sdcpp-deploy/`; the tree is now clean
+  (`git status` empty; `build/` + `build.log` are gitignored build
+  state). The `llama.cpp` / `llama-swap` / `hyperqwen-032` trees were
+  already clean.
+- **8 boot scripts in `backends/_scripts/`** (all `sh -n` clean, exec
+  bit set, `exec`-terminating): `serve-kokon-qwen-image-2.1-{turbo,
+  full}.sh` (stock sd-server @ 290148d, :39160, the two DiTs),
+  `serve-kokon-flux-image-3-klein.sh` (:39170), and the three PUP doors
+  (`serve-kokon-pup{,-qwen,-qwen-f}.sh`: llama-server Oct-14 tree on
+  :39175/76/77, the task-010/014 production flag sets, ports baked in)
+  — recipes carried over byte-for-flag from the parked wrappers, minus
+  every eviction/kill/adopt/pidfile line. `serve-g4-meromero-v2-{26,31}b.
+  sh` fixed in place: the `gpu-empty.sh` line deleted, the binary
+  re-pointed to `backends/llama.cpp/build/bin/`, and an `LD_LIBRARY_PATH`
+  for the shared build added — **the Oct-14 `llama-server` binary bakes
+  an absolute RUNPATH at its old path** (`backends/latest/llama.cpp/
+  build/bin`, which no longer exists); the `.so` sits next to the binary
+  and the env var resolves it (verified: `--version` prints
+  `0.6.0-dev … commit 529ac893e`). The `_todo_` stubs are gone;
+  `ensure-gpu-free.sh` deleted (decision 3).
+- **`backends/_configs/llama-swap.yaml` rewritten:** same 10 models and
+  stock-017 sets; every `cmd` points at `_scripts/`; **all `cmdStop`
+  entries deleted**; header + per-model comments describe the new
+  contract (router = sole eviction authority; the pair forms from the
+  job's two requests; the vLLM scripts are the owner's final versions).
+  `llama-swap -config … -validate`: **"10 model(s), 0 peer(s)"** on the
+  built v269 binary. `llama-swap.yaml.last-good` seeded (re-seed after
+  the window passes).
+- **`ml-llama-swap` repointed and started:** unit now runs
+  `backends/llama-swap/build/llama-swap-linux-amd64 -config
+  backends/_configs/llama-swap.yaml -listen 127.0.0.1:8081
+  -watch-config`; active, `/health` OK, `/v1/models` 200, **no engine
+  processes running** (the daemon boots nothing until a request).
+
+**Acceptance criteria (re-landed):**
+
+- [x] Config `-validate` clean (10 models); **zero `cmdStop` entries**;
+      no script kills or evicts out-of-band (grep proof over
+      `_configs/` + `_scripts/`); every `cmd` has the exec bit (the
+      qwabl lesson).
+- [ ] **Daemon default stop releases VRAM for each engine class**,
+      measured in the window: sd-server (stock build — **watch item:**
+      its SIGTERM reliability on this build is unproven (the fork era
+      observed zombies); if it hangs, the `unloadTimeout` SIGKILL
+      backstop is the fallback — measure the propagation time and lower
+      the timeout if it's the 120 s worst case) and the llama-server
+      trees (llama.cpp handles SIGTERM natively; the PUP door and the
+      creative writers both prove this path).
+- [ ] **Window (no vLLM phases; owner stops the manual boot before,
+      revives after):** (a) the klein pair forms from two requests
+      (kokon-pup, then kokon-klein — journal set lines for both, the
+      two pids co-resident); (b) a turbo job evicts the pair (journal
+      `evict=[kokon-klein kokon-pup]` — both members, one set); (c) a
+      quality job; (d) a creative writer boots, serves a 1-token
+      request, and is unloaded by the daemon (group-stop propagation
+      time); (e) teardown + final state (config identity, ports free,
+      vLLM untouched by the daemon all along) + **DONE marker last**.
+- [ ] Docs (after the window, owner sign-off): `docs/fresh-box.md`
+      (the new layout: stock-tree purity rule, `_scripts`/`_configs`
+      homes, no cmdStop, the `.last-good` convention, the mutual-
+      exclusion protocol); the host OPS notes; the add-a-model guide
+      re-homed from the parked `MATRIX.md` (task-021's); the daemon
+      unit line in whatever records it.
+- [ ] `.last-good` re-seeded on the window-passed config.
+- The task moves to `done/` only after the window passes and the docs
+  land. The original task-020 record above (the v269 scheduler
+  exploration, the stock-016 design, the six window attempts) stays as
+  the provenance of the invariants being re-landed — the FIFO deferral,
+  chat-priority semantics, TTL-skip and journal formats all carry over
+  unchanged (same v269 binary).
