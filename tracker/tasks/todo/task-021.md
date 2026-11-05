@@ -463,3 +463,66 @@ acceptance is superseded by the measurement this follow-up made real:
 with the tower offloaded the settled vision VRAM is 22372 MiB, leaving
 ~2.2 GiB for image prefills — the 131k/7372M KV config stands as the
 owner tuned it.
+
+## Re-land on the new layout (2026-11-05, IN PROGRESS)
+
+The owner's cleanup parked this task's entire bespoke-vLLM generation
+(the 0.27.1 venv with the ported tower-offload patch, the model-aware
+wrapper pair, `serve.sh`/`serve-vision.sh`, `config.yaml.stock-017`,
+the `m021-*` jobs, `refs/{thin-021,post-021}`) and re-based the vLLM
+runtime on `backends/hyperqwen-032` — the established vllm tree whose
+`VLLM_VISION_CPU_OFFLOAD_GB` knob is native (the 0.27.1 1:1 port is no
+longer needed). The owner then wrote the final pure-boot scripts
+themselves (`serve-qwen3.8-27b-{text,vision}.sh` in `backends/_scripts/`
+— direct `exec` of the venv vllm, their own measured parameters: KV
+8000M / fp8 on both, the vision offload + mm cap on the vision variant)
+and renamed the new unversioned config to `backends/_configs/llama-swap.yaml`.
+
+**Owner decisions (2026-11-05) that re-scope this task:**
+
+- **The vLLM scripts and parameters are the owner's final calibration on
+  the new tree — do not touch them, do not re-measure them, and vLLM is
+  out of any verification window.** (The old measured numbers — 7372M
+  KV / 2 MP cap / 0.86 GiB tower offload on 0.27.1 — were for the old
+  tree and are superseded by the new scripts' values, which the owner
+  tuned on the new tree.)
+- The vision variant keeps its task-021 design: **same :18020, second
+  served name, pure orphan, the port is not the identity** — now
+  implemented without the wrapper state machine: the boot script itself
+  is model-aware only in that it boots the right variant; the daemon's
+  default process-group stop (no `cmdStop`) is the unload path for both
+  variants, and the router's eviction of one variant before loading the
+  other is the only other lifecycle event.
+
+**Done (2026-11-05):** the vision entry lives in the new production
+config (`_configs/llama-swap.yaml`: `cmd` = the owner's vision script,
+no `cmdStop`, `proxy`/`checkEndpoint`/`unloadTimeout` 240 /
+capabilities `in: [text, image]` / context 131072 / in no set) and the
+config `-validate`s with the main variant as its 10th model; the daemon
+is running on it.
+
+**Remaining (acceptance, re-scoped):**
+
+- [ ] **A live vision boot/evict proof** — owner's call whether it is a
+      window phase or the owner's own manual test (their rule keeps vLLM
+      out of the window; the proof content is unchanged from a6: a
+      vision request boots and answers — ideally with an image actually
+      seen; a main request evicts it back, journal
+      `evicting [qwen3.8-27b-vision]`; the group stop releases the VRAM
+      in bounded time — now the thing to verify on this tree instead of
+      the wrapper's stop path).
+- [ ] **The add-a-model guide re-homed.** Its home (`MATRIX.md`) is
+      parked in `__new_mess/llama-swap-deploy/`. Proposed new home:
+      beside the config (e.g. `backends/_configs/adding-a-model.md`) —
+      owner picks in the docs step. Content needs one update pass: the
+      wrapper-contract bullet becomes the pure-boot contract (preflight
+      + exec; no cmdStop; group stop; the pair-forms-from-two-requests
+      pattern), the worked example stays the vision variant.
+- [ ] `docs/fresh-box.md`: the 10th model line + the new layout
+      (`_configs`/`_scripts`, the stock-tree purity rule, the
+      `.last-good` convention) — with the task-020 docs, owner sign-off.
+- The task moves to `done/` when the proof lands and the guide is
+  re-homed. The record above (the same-port decision, the tower/OOM
+  history, the a6 window, the photo fix) stays as the vision variant's
+  provenance; its old measured numbers are annotated as 0.27.1-tree
+  values wherever they are cited.
