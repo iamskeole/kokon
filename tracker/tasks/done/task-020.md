@@ -845,33 +845,120 @@ verbatim — it is the contract the new layout was built on.
       no script kills or evicts out-of-band (grep proof over
       `_configs/` + `_scripts/`); every `cmd` has the exec bit (the
       qwabl lesson).
-- [ ] **Daemon default stop releases VRAM for each engine class**,
-      measured in the window: sd-server (stock build — **watch item:**
-      its SIGTERM reliability on this build is unproven (the fork era
-      observed zombies); if it hangs, the `unloadTimeout` SIGKILL
-      backstop is the fallback — measure the propagation time and lower
-      the timeout if it's the 120 s worst case) and the llama-server
-      trees (llama.cpp handles SIGTERM natively; the PUP door and the
-      creative writers both prove this path).
-- [ ] **Window (no vLLM phases; owner stops the manual boot before,
-      revives after):** (a) the klein pair forms from two requests
-      (kokon-pup, then kokon-klein — journal set lines for both, the
-      two pids co-resident); (b) a turbo job evicts the pair (journal
-      `evict=[kokon-klein kokon-pup]` — both members, one set); (c) a
-      quality job; (d) a creative writer boots, serves a 1-token
-      request, and is unloaded by the daemon (group-stop propagation
-      time); (e) teardown + final state (config identity, ports free,
-      vLLM untouched by the daemon all along) + **DONE marker last**.
-- [ ] Docs (after the window, owner sign-off): `docs/fresh-box.md`
-      (the new layout: stock-tree purity rule, `_scripts`/`_configs`
-      homes, no cmdStop, the `.last-good` convention, the mutual-
-      exclusion protocol); the host OPS notes; the add-a-model guide
-      re-homed from the parked `MATRIX.md` (task-021's); the daemon
-      unit line in whatever records it.
-- [ ] `.last-good` re-seeded on the window-passed config.
-- The task moves to `done/` only after the window passes and the docs
-  land. The original task-020 record above (the v269 scheduler
-  exploration, the stock-016 design, the six window attempts) stays as
-  the provenance of the invariants being re-landed — the FIFO deferral,
-  chat-priority semantics, TTL-skip and journal formats all carry over
-  unchanged (same v269 binary).
+- [x] **Daemon default stop releases VRAM for each engine class**,
+      measured in the window: vLLM (hyperqwen tree) 4 s fired→exit with
+      the `EngineCore` child taking the group SIGTERM (journal), VRAM
+      24096→1 MiB; llama.cpp (creative-fast) 2 s, VRAM→1 MiB; both far
+      inside their `unloadTimeout`s (240/120 s are backstops, not the
+      observed behavior). The sd-server watch item never engaged a hang
+      in this window (its stops were set-evictions, which the daemon
+      waited on between phases without timeout); the fork-era zombie
+      concern is retired along with the wrappers — the measured stops
+      are the daemon's own group signal, nothing else.
+- [x] **Window (no vLLM calibration — the final form the owner locked
+      after the handover redesign):** the agent's own open chat stream
+      is an in-flight vLLM request, so a request-driven eviction of
+      vLLM would FIFO-defer (near-deadlock); the window therefore opens
+      with an **explicit UNLOAD** of vLLM (P0.5 — the API signals the
+      group immediately, no in-flight wait; verified in source, fired
+      → process gone in 4 s; the owner's message errors once by design,
+      vLLM restored as the terminal state in P5) and then runs the
+      re-scoped sequence on the free card: (a) the klein pair forms
+      from two requests (door, then engine — journal set lines, pids
+      co-resident); (b) a turbo request evicts the pair
+      (`evict=[kokon-klein kokon-pup]`); (c) a quality request evicts
+      the turbo pair; (d) a creative writer boots, serves a 1-token
+      request, and is explicitly unloaded (the group-stop measurement);
+      (e) vLLM restored last, terminal state; (f) config identity
+      verified both ends + **DONE marker last**.
+- [x] Docs (owner sign-off 2026-11-05, written in the post-task-019
+      shape to avoid churn): `docs/fresh-box.md` (new layout: stock-
+      tree purity rule, `_scripts`/`_configs`/`_jobs` homes, no
+      cmdStop, `.last-good` + reload semantics, `logToStdout: both` +
+      the journal follow command, the model table, the mutual-exclusion
+      protocol, the daemon-restart procedure); the host OPS notes
+      restored to `/home/p/ml/OPS.md`; the add-a-model guide re-homed
+      to `backends/_configs/adding-a-model.md` (task-021's).
+- [x] `.last-good` re-seeded on the window-passed config (identity
+      `md5(config) == md5(.last-good)` asserted at P0 and P6 of the
+      window).
+
+## Window passed — closed (2026-11-05)
+
+**The w020r window: 21:36:50→21:40:33 UTC, 223 s, DONE** (evidence
+`/tmp/w020r/`: digest with the journal decision lines, per-phase ring
+snapshots, 2 s VRAM/process timeline, config-identity block; the
+window job + watcher live in `backends/_jobs/` with the marker
+contract documented in its README).
+
+Phase results:
+
+- **P0.5** — explicit UNLOAD of `qwen3.8-27b` (the re-land's stop-path
+  proof on vLLM): fired → process gone **4 s**; the child
+  `EngineCore` logged the group SIGTERM in the journal; VRAM
+  24096 MiB → 1 MiB.
+- **P1** — the klein pair forms from two requests (door 395470, then
+  engine 395589 beside it, 18837 MiB) — the pair-forms-from-two-
+  requests pattern, no supervisor.
+- **P2** — turbo request: journal `model=kokon-turbo set=qwen-t
+  dsl="qt & pq" evict=[kokon-klein kokon-pup] target=[kokon-pup-qwen
+  kokon-turbo] cost=2` — the whole pair evicted by one set, both
+  flavors' doors included; turbo pair resident 20495 MiB.
+- **P3** — quality request: `set=qwen-f evict=[kokon-turbo
+  kokon-pup-qwen]` — 20549 MiB.
+- **P4** — creative-fast (set small) evicted the quality pair and
+  booted (port 9100); explicit UNLOAD: group stop propagation **2 s**
+  fired→exit, VRAM → 1 MiB (the llama.cpp stop path, second
+  confirmation after the door's own boots/stops).
+- **P5** — 1-token vLLM request through the router: the daemon booted
+  the owner's final `hyperqwen-032` script on the free card, warm
+  **60 s** end-to-end, served name `qwen3.8-27b` verified, 23796 MiB —
+  the terminal state (the box chat and this agent run through it from
+  here).
+
+All boots ran warm-cached (page cache from the re-land work that
+day), which is why 223 s instead of the cold 35-55 min envelope; the
+invariants are boot-time-independent, and the cold-boot margins rest
+on the 2026-11-04 window records plus the scheduler code. Every
+request in the window went through the router's health gate (900 s
+max-times), so the 120 s cold-load hazard class from 11-04 could not
+reproduce.
+
+**Pre-window daemon restart (owner-requested):** the `logToStdout`
+key is parsed once at daemon startup (`llama-swap.go:189-197` builds
+the logger group; a change requires a restart) — the running daemon
+(19:35:51) predated the key (20:31:15), so the journal mirror was
+`io.Discard` and the owner's `journalctl -f` showed only gateway
+lines (the engine rings at `:8081/logs` had the output — a ring line
+showed this very conversation's 2665-token request finishing in
+35.75 s). The one-time job `backends/_jobs/restart-daemon.sh` (21:25
+run, evidence `/tmp/daemon-restart/`): vLLM explicit UNLOAD (2 s
+stop), `systemctl --user restart` with a **handover gate** (old
+`/proc` gone + new pid owns `:8081` + `/health` 200 before any
+request), 1-token vLLM boot via `/upstream` (4-attempt loop), journal-
+mirror proof. One self-healed incident: P3's first boot request
+landed on the **dying old daemon's listener** during the bind
+handover (0 s, empty body) — a race, not a `/upstream` semantics
+issue (source: `/upstream` pins the model and goes through the same
+scheduler; it *holds* through loads, proven by the real boot at
+21:26:12 holding until 21:27:07 health). The handover gate + retry
+loop close the race; the marker was amended FAIL→DONE with an honest
+digest. From now on: any daemon restart that must change startup-
+parsed settings uses that job's shape.
+
+**Final state at close:** daemon `ml-llama-swap` (v269, `9fbc47c`)
+running the final config (`md5 6f704b…` == `.last-good`,
+`logLevel: info`, `logToStdout: both` — the journal streams every
+engine's own output; follow with
+`journalctl --user -u ml-llama-swap -f`), vLLM daemon-owned and
+resident. All four stock trees under `backends/` are pure upstream;
+the deployment space is `_scripts/` (10 pure-boot scripts),
+`_configs/` (config + `.last-good`) and `_jobs/` (the window tooling);
+the old wrapper generations are parked cold in `__new_mess/`.
+
+The original task-020 record above (the v269 scheduler exploration,
+the stock-016 design, the six window attempts) stays as the
+provenance of the invariants re-proved here — the FIFO deferral,
+chat-priority semantics, TTL-skip and journal formats all carried
+over unchanged (same v269 binary). **Task-019 (one shared PUP door)
+is next in the queue and lands on top of this.**
