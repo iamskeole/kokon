@@ -806,8 +806,11 @@ verbatim — it is the contract the new layout was built on.
   bit set, `exec`-terminating): `serve-kokon-qwen-image-2.1-{turbo,
   full}.sh` (stock sd-server @ 290148d, :39160, the two DiTs),
   `serve-kokon-flux-image-3-klein.sh` (:39170), and the three PUP doors
-  (`serve-kokon-pup{,-qwen,-qwen-f}.sh`: llama-server Oct-14 tree on
-  :39175/76/77, the task-010/014 production flag sets, ports baked in)
+  (`serve-kokon-pup-flux-image-3-klein.sh`, `serve-kokon-pup-qwen-image-
+  2.1-turbo.sh`, `serve-kokon-pup-qwen-image-2.1-full.sh` — renamed by the
+  owner 2026-11-05 so the doors mirror the engine names; llama-server
+  Oct-14 tree on :39175/76/77, the task-010/014 production flag sets,
+  ports baked in)
   — recipes carried over byte-for-flag from the parked wrappers, minus
   every eviction/kill/adopt/pidfile line. `serve-g4-meromero-v2-{26,31}b.
   sh` fixed in place: the `gpu-empty.sh` line deleted, the binary
@@ -822,7 +825,11 @@ verbatim — it is the contract the new layout was built on.
   stock-017 sets; every `cmd` points at `_scripts/`; **all `cmdStop`
   entries deleted**; header + per-model comments describe the new
   contract (router = sole eviction authority; the pair forms from the
-  job's two requests; the vLLM scripts are the owner's final versions).
+  job's two requests; the vLLM scripts are the owner's final versions);
+  `logToStdout: both` (owner, 2026-11-05: every engine's stdout — all ten
+  models' cmd processes — is copied to the daemon's stdout = the systemd
+  user journal, so `journalctl --user -u ml-llama-swap` carries the
+  engines' own output, not just the daemon's decision lines).
   `llama-swap -config … -validate`: **"10 model(s), 0 peer(s)"** on the
   built v269 binary. `llama-swap.yaml.last-good` seeded (re-seed after
   the window passes).
