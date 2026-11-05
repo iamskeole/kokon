@@ -55,7 +55,7 @@ ml/backends/     llama.cpp/             pinned, pure upstream — one shared
                  _scripts/              deployment space: the pure boot
                                         scripts (one per gateway model)
                  _configs/              deployment space: llama-swap.yaml
-                                        (the config home) + .last-good +
+                                        (the config home) + llama-swap.yaml.last-good +
                                         adding-a-model.md
                  _jobs/                 the window tooling (verification
                                         windows, the daemon-restart job)
@@ -224,8 +224,8 @@ cd backends/llama-swap && git checkout v269 && make   # -> build/llama-swap-<goo
 ```
 
 The deployment lives in the two underscore directories (purity rule):
-`_configs/` — `llama-swap.yaml` (the config home), `.last-good`,
-`adding-a-model.md` — and `_scripts/` (the boot scripts). The daemon runs as
+`_configs/` — `llama-swap.yaml` (the config home),
+`llama-swap.yaml.last-good`, `adding-a-model.md` — and `_scripts/` (the boot scripts). The daemon runs as
 a **systemd user unit** (`ml-llama-swap`):
 
 ```
@@ -316,18 +316,18 @@ in-flight request is never interrupted; the evictor waits. The sets:
   card (26B + 31B > 24 GB), and a creative request evicts vLLM and any image
   pair too.
 
-**Hot reload and `.last-good`.** `-watch-config` polls the file every 2 s.
+**Hot reload and the last-good copy.** `-watch-config` polls the file every 2 s.
 A **successful** edit is a hot reload: the daemon atomically swaps in a new
 server built from the new config and shuts the old one down — **that stops
 every loaded model** (vLLM included), and nothing auto-revives until the
 next request. So: never edit mid-job; a window that changes the config owns
 the whole sequence (swap → wait for the reload → re-boot what the box needs
 → **marker last**). A **failed** parse is ignored and the old config stays
-live. `.last-good` is a byte copy of the last validated-and-deployed config:
-after every deliberate change `cp llama-swap.yaml .last-good`, and a window
-asserts `md5(config) == md5(.last-good)` at start and end. Rollback =
-restore `.last-good` (the 2-s poll reloads it; loaded models stop, then
-re-boot on demand).
+live. `llama-swap.yaml.last-good` is a byte copy of the last
+validated-and-deployed config: after every deliberate change
+`cp llama-swap.yaml llama-swap.yaml.last-good`, and a window asserts the two
+md5s match at start and end. Rollback = restore the last-good copy (the
+2-s poll reloads it; loaded models stop, then re-boot on demand).
 
 **Logs in the journal.** `logToStdout: both` copies every log stream (proxy,
 upstream — every engine's own stdout/stderr — and http) to the daemon's
@@ -447,7 +447,8 @@ VLM is part of the quality contract, not an optional garnish.
   old server down; nothing auto-revives anything — the daemon is pure
   on-demand). Plan live config changes as a *window*: swap atomically
   (`cp … .new && mv -f` — the 2-second poll can read a half-written file),
-  re-seed `.last-good`, wait for the `configuration reloaded` journal line,
+  re-seed `llama-swap.yaml.last-good`, wait for the `configuration reloaded`
+  journal line,
   re-boot what the box needs, and write the DONE/FAIL marker **last** (the
   marker means "the runtime is back"). The box's windows live in
   `backends/_jobs/`: a setsid'd job script (self-deadline), a second
@@ -466,8 +467,8 @@ VLM is part of the quality contract, not an optional garnish.
   the router tracks; there are no zombie nets. An out-of-state process (a
   manual boot) is a manual problem — the mutual-exclusion protocol in the
   gateway section is the policy.
-- **Rollback**: restore `.last-good` over `llama-swap.yaml` (atomic mv; the
-  2-s poll reloads it). The pre-re-land wrapper generation is parked cold in
+- **Rollback**: restore `llama-swap.yaml.last-good` over `llama-swap.yaml`
+  (atomic mv; the 2-s poll reloads it). The pre-re-land wrapper generation is parked cold in
   `__new_mess/` if an old-layout state is ever needed — restoring it means
   restoring the whole old layout, not a one-file swap.
 - **The journal is the ops log**: `journalctl --user -u ml-llama-swap -f`
