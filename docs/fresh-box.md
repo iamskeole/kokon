@@ -19,42 +19,68 @@ Kokon service (this repo: docker image)          browser + MCP
         │  loopback HTTP + token
         ▼
 llama-swap gateway (stock, pinned) on 127.0.0.1:8081
-        │  starts / evicts on demand; TTL unloads
+        │  starts / evicts on demand; TTL unloads; the only thing that
+        │  ever stops a model process (its default process-group signal)
         ▼
 engines, all on 127.0.0.1:
   sd-server (stable-diffusion.cpp, pinned)     :39160 qwen  :39170 klein
-  llama-server (llama.cpp, pinned)             :39175 klein sidecar
-                                               :39176/:39177 qwen sidecars (PUP)
+  llama-server (llama.cpp, pinned)             :39175 the PUP sidecar
+                                               (one shared door, all three
+                                               image families) · :9100/:9101
+                                               the creative writers
   vLLM (owner's chat model; two variants, one port)   :18020  text: qwen3.8-27b · vision: qwen3.8-27b-vision
 ```
 
 The service speaks only to the **gateway**, never to engines directly: each
-pipeline in its config names a gateway alias for its engine and another for its
-VLM sidecar. The gateway is the only component that ever starts a process.
-
+pipeline in its config names a gateway alias for its engine and another for
+its VLM sidecar (all three image families point their VLM at the same shared
+PUP door — task-019). The gateway is the only component that ever starts a
+process, and since the 2026-11-05 re-land the only one that ever stops one.
 ## Host layout
 
-Three host-level directories, all outside the repository (non-git):
+Everything deployment-side lives under one root (reference host: `/home/p/ml`),
+outside the repository (non-git):
 
 ```
-<host>/backends/    llama-swap/        pinned, pristine upstream (v269)
-                    llama-swap-deploy/ the live deployment: config.yaml,
-                                       serve/stop scripts, systemd unit docs
-                                       (non-git; its own README.local.md)
-                    stable-diffusion.cpp/  pinned, one build, deploy/{klein,qwen}/
-                    llama.cpp/     the sidecars' named build (build/bin/llama-server)
-                    <owner's chat-model runtime>   e.g. a vLLM checkout
-<host>/frontends/kokon/  the service deployment: compose.yaml (+README)
-<host>/models/      gguf/   {org}/{Model}/model-<QUANT>.gguf · mmproj-<PRECISION>.gguf
-                    sd-cpp/ {org}/{Model}/  engine DiTs + VAEs; upscalers/ stays flat
-                    huggingface/  (owner-owned; not part of this stack)
+ml/backends/     llama.cpp/             pinned, pure upstream — one shared
+                                        build (build/bin/llama-server,
+                                        shared-linked: the libggml-*.so sit
+                                        beside the binaries)
+                 stable-diffusion.cpp/  pinned, pure upstream (290148d);
+                                        one sd-server build serves both
+                                        image families
+                 llama-swap/            pinned, pure upstream (v269)
+                 hyperqwen-032/         pinned, pure upstream — the vLLM
+                                        runtime (a project venv inside)
+                 _scripts/              deployment space: the pure boot
+                                        scripts (one per gateway model)
+                 _configs/              deployment space: llama-swap.yaml
+                                        (the config home) + .last-good +
+                                        adding-a-model.md
+                 _jobs/                 the window tooling (verification
+                                        windows, the daemon-restart job)
+ml/frontends/    kokon/                 the service deployment: compose.yaml (+README)
+                 openwebui/             the LAN door (accounts)
+ml/models/       gguf/   {org}/{Model}/model-<QUANT>.gguf · mmproj-<PRECISION>.gguf
+                 sd-cpp/ {org}/{Model}/  engine DiTs + VAEs; upscalers/ stays flat
+                 safetensors/  the vLLM weights
+ml/__new_mess/   parked cold history: the old wrapper generation (the former
+                 llama-swap-deploy/ and sdcpp deploy/ trees, the old OPS
+                 notes) — never loaded, never referenced by the live system
+ml/__backups/    parked backups (the old bespoke vLLM runtime, out of service)
 ```
+
+**The stock-tree purity rule:** every non-underscore directory under
+`backends/` is a pristine upstream checkout — no deployment scripts, no
+configs, no logs, no pid files inside. Everything deployment-side lives in
+the underscore directories. (The old layout had a `llama-swap-deploy/`
+sibling and per-engine `deploy/` trees *inside* the checkouts; the 2026-11-05
+re-land moved all of that out and parked the old generation cold.)
 
 Each model directory carries a `provenance.md`: source org/repo/URL, quant,
 license, download date, sha256, converter/imatrix notes. **Provenance is the
 record of where a weight came from and what it is; every new model lands with
 one.** The directory layout and file naming shown above *are* the convention.
-
 ## Prerequisites
 
 Verified on the reference host (Ubuntu 26.04.1 LTS, RTX 3090 24 GB):
@@ -94,7 +120,7 @@ state of this deployment uses:
 | `gguf/Qwen/Qwen3-VL-4B-Instruct/` | in-engine conditioner for the klein engine (`model-Q4_K_M.gguf`, `mmproj-Q8_0.gguf`) |
 | `gguf/zerofata/G4-MeroMero-v2-26B`, `…-31B` | the creative models (optional for the image stack) |
 
-The gateway's tenth entry, **`qwen3.8-27b-vision`**, adds **no new weights**:
+The gateway's vision entry, **`qwen3.8-27b-vision`**, adds **no new weights**:
 it is the owner's chat-model checkpoint served with its vision tower enabled
 (same directory, same quant, same download — the provenance is the one the
 chat-model runtime's `provenance.md` already records; only the launch differs:
@@ -102,10 +128,12 @@ no `--language-model-only`, a shorter context, and the second served name).
 It shares the main variant's port and therefore its whole lifecycle (one
 process at a time; a request for either evicts the other).
 
-The PUP serves two jobs: the klein sidecar runs it at Q8_0 (9.5 GB), and the
-qwen doors run it at Q8_0 for turbo and Q4_K_M for full — the full door takes
-the lighter quant because its engine (13.6 GB) plus a Q8 sidecar exceeded the
-24 GB card (measured OOM; the Q4 pair fits at ~19 GB).
+The PUP fine-tune runs as **one shared sidecar door** (task-019) at Q4_K_M —
+the only quant that fits all three image pairs in 24 GB (the Q8 full door's
+OOM, measured 2026-11-03, is the constraint) — serving all three families
+under two names (the klein entry's name and the `qwen3vl-8b` alias the qwen
+entries use), so a family or flavor switch reloads only the engine, never the
+sidecar.
 
 Downloads: follow each directory's `provenance.md` on the reference host
 (source, converter, hash). Verify sha256 after every download; a model is not
@@ -113,7 +141,9 @@ Downloads: follow each directory's `provenance.md` on the reference host
 
 ## 2. Engines (stock upstream, named slots)
 
-Two pinned upstream checkouts under `backends/`; neither is modified.
+Four pinned upstream checkouts under `backends/`; **none is modified** (the
+purity rule above). The boot scripts in `backends/_scripts/` are the only
+thing between the gateways models and these trees.
 
 **stable-diffusion.cpp** at a pinned master commit (one `sd-server` build
 serves both image families):
@@ -130,9 +160,9 @@ cmake -B build -DBUILD_SHARED_LIBS=OFF -DBUILD_KLEIN=ON -DGGML_SYCL=OFF \
 make -C build -j12 sd-server    # ~6 min on the reference host
 ```
 
-Its `deploy/` tree (in the checkout, host-local) holds the serve/stop scripts
-per family; the live deployments are symlinked from the gateway's deploy
-directory. The exact engine invocations (verified):
+The exact engine invocations (verified; the `serve-kokon-*.sh` scripts
+preflight their model files and `exec` this binary — the daemon's tracked
+process *is* the engine):
 
 - **klein** (`:39170`): `sd-server --listen-ip 127.0.0.1 --listen-port 39170
   --diffusion-model models/sd-cpp/BFL/flux-3-image-klein/model-Q8_0.gguf
@@ -146,38 +176,46 @@ directory. The exact engine invocations (verified):
   conditioner `Qwen3-VL-8B-Instruct` (Q4_K_M + mmproj-F16); VAE the
   texture-fix one. Same flag set as klein.
 
-The **klein serve script is a joint supervisor**: one process lifetime runs
-the engine *and* its PUP sidecar together, so the pair loads and dies as one
-(18–20 GB together) — the one thing the gateway cannot do natively (start
-two processes from one request). It is a thin launcher: it adopts a healthy
-pair, and its only GPU action is a last-resort zombie clear (it never stops
-anything the router knows about — the router is the sole eviction authority,
-see the gateway section).
-
-**llama.cpp** (the sidecars' named build — `build/bin/llama-server` with CUDA
-and vision):
+**llama.cpp** — one shared build serving the PUP sidecar and the creative
+writers (`build/bin/llama-server`). The reference host's build is
+**shared-linked** (the `libggml-*.so` live in the build's bin directory,
+beside the binaries), so every boot script exports
+`LD_LIBRARY_PATH` at that directory — the binary's baked RUNPATH predates
+the tree's location in `backends/`:
 
 ```sh
-# verified: reference host (May-21 tree, task-004). cmake Release,
-# GGML_CUDA=ON, CUDA arch 86; the sidecars need vision (mmproj) and --jinja.
+# verified: reference host (Oct-14 tree, commit 529ac893e). cmake Release,
+# GGML_CUDA=ON, CUDA arch 86, shared libs; the PUP needs vision (mmproj)
+# and --jinja.
 git clone https://github.com/ggml-org/llama.cpp backends/llama.cpp
-cd backends/llama.cpp
+cd backends/llama.cpp && git checkout 529ac893e
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
-      -DCMAKE_CUDA_ARCHITECTURES=86
+      -DBUILD_SHARED_LIBS=ON -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build build --config Release -j12 --target llama-server
 ```
 
-The sidecars are plain `llama-server` processes (OpenAI-compatible, with
-vision): klein's on `:39175` (PUP Q8_0 + mmproj-F16, `--jinja`,
-`--ctx-size 8192`, `--n-gpu-layers 999`, thinking disabled via
-`--chat-template-kwargs`), the qwen doors on `:39176` (turbo, Q8_0) and
-`:39177` (full, Q4_K_M). The serve scripts check the model file exists, adopt
-a healthy listener on their port instead of double-starting, and write pid
-files.
+The PUP sidecar is a plain `llama-server` (OpenAI-compatible, with vision).
+Since task-019 it is **one shared door** (`serve-kokon-pup.sh`): the BFL PUP
+fine-tune at Q4_K_M + mmproj-F16 on `:39175`, `--ctx-size 8192`, thinking
+off (`--jinja --chat-template-kwargs '{"enable_thinking":false}'`), image
+clamps `--image-min-tokens 1024 --image-max-tokens 4096` (the processor is
+patch-16/merge-2 — one visual token per 32×32 px; the fine-tune's mmproj
+metadata carries no pixel limits, so these flags set the window), default
+sampling = the base model's official non-thinking general row, and two
+`--alias` names so the single process answers both client families. The
+creative writers (`serve-g4-meromero-v2-26b.sh` / `-31b.sh`) are the same
+binary on the gateway's auto-assigned ports (9100/9101).
 
+**hyperqwen-032** — the owner's chat-model runtime: a stock upstream
+vLLM-based tree with a project venv (reference host: python 3.14). The two
+vLLM boot scripts (`serve-qwen3.8-27b-text.sh` / `-vision.sh`) `exec`
+`venv/bin/vllm serve` with **the owner's final calibration** — the scripts
+are the record of those parameters; this doc deliberately does not restate
+them, and nothing in this stack re-tunes them.
 ## 3. Gateway (llama-swap, pinned)
 
-**llama-swap v269** (tag `9fbc47c`), pristine upstream, built from its Makefile:
+**llama-swap v269** (tag `9fbc47c`), pristine upstream, built from its
+Makefile:
 
 ```sh
 # verified: reference host (task-001)
@@ -185,25 +223,46 @@ git clone https://github.com/mostlygeek/llama-swap backends/llama-swap
 cd backends/llama-swap && git checkout v269 && make   # -> build/llama-swap-<goos>-<goarch>
 ```
 
-The deployment lives in a **non-git** directory (`backends/llama-swap-deploy/`):
+The deployment lives in the two underscore directories (purity rule):
+`_configs/` — `llama-swap.yaml` (the config home), `.last-good`,
+`adding-a-model.md` — and `_scripts/` (the boot scripts). The daemon runs as
+a **systemd user unit** (`ml-llama-swap`):
 
 ```
-config.yaml            the live config (below); versions: config.yaml.<name>
-llama-swap             the built binary
-vllm-serve.sh …        one serve/stop script per model, referenced by cmd/cmdStop
-<engines'/ deploy dirs> symlinked serve/stop scripts
+ExecStart=…/backends/llama-swap/build/llama-swap-linux-amd64 \
+          -config …/backends/_configs/llama-swap.yaml -listen 127.0.0.1:8081 -watch-config
 ```
 
-Run it as a **systemd user unit** (`ml-llama-swap`) with
-`-config config.yaml -watch-config`: the 2-second config poll makes live
-config swaps work without a restart — with the sharp edge that **every reload
-kills running model processes** (see Operations).
+**Pure boots, no `cmdStop`.** Every `cmd` is a small POSIX script that
+preflights (model files present, its port free) and `exec`s the engine: the
+daemon's *tracked* process **is** the engine, nothing else. v269 starts
+every cmd in its own process group (`Setpgid`), so the daemon's **default
+stop** — SIGTERM to the group, SIGKILL after the model's `unloadTimeout` —
+reaches the engine's children (vLLM's `EngineCore` included) and is the
+**only** unload path on this box. Measured in the 2026-11-05 re-land window:
+vLLM 4 s fired→exit, llama.cpp 2 s, VRAM back to ~1 MiB in both; the
+`unloadTimeout`s (240 s vLLM, 120 s the rest) are backstops, not the observed
+behavior. No script on this box kills or evicts anything the router tracks —
+**the router is the sole eviction authority**.
 
-`config.yaml`: one entry per model — `proxy` (the real port), `cmd`/`cmdStop`
-(the serve/stop scripts), `ttl` (idle unload; 0 = never; the kokon models use
-120 s, the creative ones 300 s) — and the **routing block** that decides what
-may co-reside and what a new request evicts. This deployment runs the **matrix
-router** (v269), a superset of the older `groups` router:
+`llama-swap.yaml`: `startPort: 9100` (auto-assignment for the creative
+writers), `healthCheckTimeout: 1200` (a cold vLLM load once took ~16 min),
+`globalTTL: 0` (per-model TTLs decide — 600 s the kokon models, 300 s the
+writers), `logLevel: info`, `logToStdout: both`, and one entry per model
+(`proxy`, `cmd`, `checkEndpoint`, `ttl`, `unloadTimeout`, capabilities):
+
+| model | engine | port | in a set |
+|---|---|---|---|
+| `qwen3.8-27b` | vLLM (text) | :18020 | no — **orphan** |
+| `qwen3.8-27b-vision` | vLLM (vision tower on; same port, second served name) | :18020 | no — **orphan** |
+| `kokon-klein` | stock sd-server (FLUX.3 Klein) | :39170 | `klein` |
+| `kokon-pup` | llama-server (the shared PUP door, two names) | :39175 | **all three image sets** |
+| `kokon-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | :39160 | `qwen-t` |
+| `kokon-full` | stock sd-server (Qwen-Image 2.1 full) | :39160 (shared with turbo) | `qwen-f` |
+| `creative-fast` | llama.cpp (G4 26B, MTP) | auto (9100) | `small` |
+| `creative-slow` | llama.cpp (G4 31B, MTP) | auto (9101) | `small` |
+
+and the **routing block** (the matrix router, v269):
 
 ```yaml
 routing:
@@ -212,57 +271,92 @@ routing:
     settings:
       matrix:
         vars:
-          k: kokon-klein        p: kokon-pup
-          qt: kokon-turbo       pq: kokon-pup-qwen
-          qf: kokon-full        pqf: kokon-pup-qwen-f
-          v: qwen3.8-27b
-          cf: creative-fast     cs: creative-slow
+          k: kokon-klein
+          p: kokon-pup          # the ONE shared PUP door — member of all
+          qt: kokon-turbo       # three image sets (task-019): a family or
+          qf: kokon-full        # flavor switch reloads only the engine,
+          v: qwen3.8-27b        # never the sidecar
+          cf: creative-fast
+          cs: creative-slow
         sets:
           klein:  "k & p"
-          qwen-t: "qt & pq"
-          qwen-f: "qf & pqf"
+          qwen-t: "qt & p"
+          qwen-f: "qf & p"
           small:  "cf | cs"
 ```
 
 Three rules: a **set** declares which models may co-reside; it never starts
-anything. A request for a model **keeps every running model that sits in some
-set containing it and evicts the rest** (cheapest first, `evict_costs`, default
-1). A model that is a **leaf of no set at all** is an *orphan*: a request for
-it evicts *everything* running. Here **the vLLM variants are deliberately orphans — both of them**. The
-text and the vision variant share **one listener on :18020 under two served
+anything (a request starts *only* the requested model — the klein pair forms
+from the kokon job's two gateway calls, VLM request then image request, and
+stays co-resident because both are in `klein`). A request for a model **keeps
+every running model that sits in some set containing it and evicts the rest**
+(cheapest first, `evict_costs`, default 1). A model that is a **leaf of no
+set at all** is an *orphan*: a request for it evicts *everything* running.
+Here **the vLLM variants are deliberately orphans — both of them.** The text
+and the vision variant share **one listener on :18020 under two served
 names** (the port is not the model's identity; the `--served-model-name` in
 the process argv is), and only one of them can hold the 24 GB card at a
-time, so a request for either first stops the resident other via its
-`cmdStop` and reclaims the whole card, and (the part that matters) the
-daemon's **FIFO scheduler** (in stock since v225; the default, no config
-needed) **defers that request while any of them is still handling one** —
-journal: `queuing request for model … (would evict in-flight process)` — and
-retries on every completion. An in-flight request is never interrupted; the
-evictor waits. The sets:
+time, so a request for either first stops the resident other with the
+daemon's group signal and reclaims the whole card, and (the part that
+matters) the daemon's **FIFO scheduler** (in stock since v225; the default,
+no config needed) **defers that request while any evict target is still
+handling one** — journal (debug level): `queuing request for model … (would
+evict in-flight process)` — and re-evaluates on every completion. An
+in-flight request is never interrupted; the evictor waits. The sets:
 
-- `klein: k & p` — the klein engine plus its PUP sidecar. A klein request
-  evicts everything else, vLLM included: the card holds one heavy job, the
-  job runs, and the chat model comes back when a request for it reclaims the
-  card (warm boot ~60–90 s).
-- `qwen-t` / `qwen-f` — each qwen flavor is its engine plus its PUP door. The
-  two flavors never mix (different engine variants share one port anyway),
-  and each evicts everything else when requested.
+- `klein: k & p` — the klein engine plus the shared PUP door. A klein
+  request evicts everything else, vLLM included: the card holds one heavy
+  job, the job runs, and the chat model comes back when a request for it
+  reclaims the card (warm boot ~60–90 s).
+- `qwen-t` / `qwen-f` — each qwen flavor is its engine plus the *same*
+  shared door. The two flavors never mix (their engine variants share one
+  port anyway), and each evicts everything else **except the door** when
+  requested — the flavor switch is an engine-only reload.
 - `small: cf | cs` — one creative writer; the two writers never share the
   card (26B + 31B > 24 GB), and a creative request evicts vLLM and any image
   pair too.
 
-The router is the **sole eviction authority**: it stops what it evicts via
-each model's `cmdStop`, and the serve scripts no longer kill anything on
-their own — their only GPU action is a last-resort clear for out-of-state
-zombies that never touches vLLM. The deploy directory keeps the full
-write-up (router + scheduler + the wrapper contract + the live-change
-protocol); the upstream docs
-(`docs/kb/guides/routing/groups-and-matrix.md`) describe the semantics
-generically.
+**Hot reload and `.last-good`.** `-watch-config` polls the file every 2 s.
+A **successful** edit is a hot reload: the daemon atomically swaps in a new
+server built from the new config and shuts the old one down — **that stops
+every loaded model** (vLLM included), and nothing auto-revives until the
+next request. So: never edit mid-job; a window that changes the config owns
+the whole sequence (swap → wait for the reload → re-boot what the box needs
+→ **marker last**). A **failed** parse is ignored and the old config stays
+live. `.last-good` is a byte copy of the last validated-and-deployed config:
+after every deliberate change `cp llama-swap.yaml .last-good`, and a window
+asserts `md5(config) == md5(.last-good)` at start and end. Rollback =
+restore `.last-good` (the 2-s poll reloads it; loaded models stop, then
+re-boot on demand).
 
-Before any live use: `./llama-swap -config config.yaml -validate` (validates
-and exits).
+**Logs in the journal.** `logToStdout: both` copies every log stream (proxy,
+upstream — every engine's own stdout/stderr — and http) to the daemon's
+stdout, which is the systemd user journal:
 
+```sh
+journalctl --user -u ml-llama-swap -f     # follow everything
+```
+
+The `:8081/logs` ring buffers (100 KB per stream) keep working regardless.
+**The key is parsed once at daemon startup** (the logger group is built
+before the watch loop, source `llama-swap.go`): adding or changing it needs
+a daemon restart — use the `_jobs/restart-daemon.sh` shape: explicit UNLOAD
+of whatever is loaded, `systemctl --user restart`, then a **handover gate**
+(old process gone + the new pid owns `:8081` + `/health` 200) before any
+request is sent — a request sent during the bind handover can land on the
+dying old listener and come back empty.
+
+**Mutual exclusion (manual boots).** The daemon can see and stop only the
+processes it started. Anything booted outside it (e.g. the owner's manual
+vLLM) is invisible to the router: gateway requests for another model queue
+behind it (FIFO deferral) or fail — the gateway **never** kills a manual
+boot, and that is by design. The protocol: while a manual boot holds the
+card, the chat that needs it goes to the manual port directly, and the
+owner — and only the owner — decides when it stops. That is the only
+sanctioned way a manually-held card is freed.
+
+Before any live use: `…/llama-swap-linux-amd64 -config …/llama-swap.yaml
+-validate` (validates and exits: "N model(s), 0 peer(s)").
 ## 4. The service (this repository)
 
 Build the image (the two-stage `docker/Dockerfile` builds the UI, then
@@ -317,52 +411,72 @@ VLM is part of the quality contract, not an optional garnish.
 
 ## 5. Verification (fresh box)
 
-1. **Gateway**: `curl 127.0.0.1:8081` answers; `journalctl --user -u
-   ml-llama-swap` shows the config load.
-2. **One-token probes** (the readiness check everywhere in this stack — `/health`
-   lies while models load; a 1-token completion does not): the chat model via
-   the gateway (`/upstream/<alias>/v1/completions`), each sidecar's port
-   directly, `/sdcpp/v1/capabilities` on each engine port after a request has
-   started it.
+1. **Gateway**: `curl 127.0.0.1:8081/health` is 200; `journalctl --user -u
+   ml-llama-swap` shows the config load; `GET /running` lists in-state
+   models (state `"ready"` once the model's health check passes).
+2. **One-token probes** — the readiness check everywhere in this stack
+   (`/health` lies while models load; a 1-token completion does not):
+   `GET /upstream/<model>/<path>` **pins** the model and **holds** through
+   its load (the request blocks until the health check passes — the canary
+   pattern; the job scripts use 900 s timeouts for this reason); a 1-token
+   `POST /v1/completions` per sidecar; `/sdcpp/v1/capabilities` on each
+   engine port after a request has started it; `POST /api/models/unload/
+   <model>` is the explicit stop (it blocks until the process actually
+   exits — the number of seconds it took *is* the stop-propagation
+   measurement).
 3. **One job per family** through the service UI (39152): a klein edit and a
    qwen text-to-image. Both must land in the gallery, and the journal must
-   show the matrix decisions, e.g.
-   `matrix: model=kokon-turbo set=qwen-t … evict=[…] … cost=N` — that line is
-   the proof the matrix router (not the groups fallback) is what decided.
-   The scheduler's own lines are Debug-level: `logLevel: debug` in a
-   candidate config shows the deferral behavior
-   (`queuing request for model … (would evict in-flight process)`).
-4. **Idle unload**: after 120 s without requests the pair's ports go quiet
-   (TTL); the next request reloads it.
-
+   show the matrix decisions at info level, e.g.
+   `matrix: model=kokon-turbo set=qwen-t dsl="qt & p" evict=[kokon-klein]
+   target=[kokon-pup kokon-turbo] cost=2` — that line is the proof the
+   matrix router (not the groups fallback) is what decided, and `… Health
+   check passed on http://127.0.0.1:<port>/…` marks each boot. The
+   scheduler's own deferral lines are Debug-level: `logLevel: debug` in a
+   *candidate* config (never the live one) shows `queuing request for model
+   … (would evict in-flight process)`.
+4. **Idle unload**: after 600 s (kokon models) / 300 s (creative writers)
+   without requests the ports go quiet (TTL); the next request re-boots
+   (warm, page-cached).
+5. **The shared door** (task-019): `GET /upstream/kokon-pup/v1/models` lists
+   both alias names; a klein job and a qwen job back-to-back keep the
+   **same** sidecar pid resident — the journal shows `evict=[kokon-klein]`
+   and `evict=[kokon-turbo]` (the engines only), never the door.
 ## 6. Operations
 
-- **A config swap kills every running model** (the watcher reload tears down
-  the old server; nothing auto-revives anything — the daemon is pure
-  on-demand). Plan live config changes as a *window*: swap, revive what the
-  operator runtime needs, write a DONE/FAIL marker **last**, and make the
-  write atomic (`cp … .new && mv -f`) because the 2-second poll can read a
-  half-written file.
-- **The chat model's serve scripts** (`vllm-serve.sh` / `vllm-serve-vision.sh`
-  in the deploy directory) are **model-aware**: "is this process *my* model?"
-  is answered by the served name in the process argv, never by the port
-  (two variants share one port). Each has a branch for "a *foreign* variant
-  holds the port" — it waits for the router's own eviction to clear it (with
-  a named-holder timeout), and one for "port held or a fresh engine core,
-  but not yet healthy": it waits for the in-flight boot instead of evicting
-  and relaunching (a 2026-11-04 incident: a wrapper parked in an eviction
-  wait relaunched a model the router had just evicted, resurrecting it before
-  its targets loaded). Neither ever kills a foreign holder out of band.
-- **The wrappers are thin.** The serve scripts adopt a healthy co-resident
-  and otherwise only run the last-resort zombie clear (never vLLM). There is
-  no policy file any more: the sets above are the policy, and the scheduler
-  makes every conflict a deferrable, in-flight-safe eviction.
-- **Rollback ladder** (in the deploy directory): the current config → the
-  previous versioned config (`config.yaml.<previous>`) → the engine-rollback
-  notes cover stock ↔ the older build. If a rollback crosses the point where
-  the wrapper scripts changed generation (a set that contains vLLM needs the
-  older, gate-era scripts), restore both the config and the script snapshot
-  together — the deploy directory keeps the pre-change scripts.
-- **A window is a script, not a habit**: self-deadline, a separate watcher
-  process as backstop, and the marker written only after the box is back to
-  its known-good state.
+- **A config swap stops every loaded model** (a successful reload shuts the
+  old server down; nothing auto-revives anything — the daemon is pure
+  on-demand). Plan live config changes as a *window*: swap atomically
+  (`cp … .new && mv -f` — the 2-second poll can read a half-written file),
+  re-seed `.last-good`, wait for the `configuration reloaded` journal line,
+  re-boot what the box needs, and write the DONE/FAIL marker **last** (the
+  marker means "the runtime is back"). The box's windows live in
+  `backends/_jobs/`: a setsid'd job script (self-deadline), a second
+  setsid'd backstop watcher (hard cap; fallback digest + best-effort
+  restore + forced FAIL), and `wait-marker.sh` as the blocking wait.
+- **The vLLM boot scripts are model-aware** (the owner's final calibration —
+  the scripts are the record of the parameters): "is this process *my*
+  model?" is answered by the served name in the process argv, never by the
+  port (two variants share :18020). Each has an **adopt** branch (a healthy
+  instance of *this* served name is attached to as the tracked process, not
+  relaunched) and a **wait** branch (a *foreign* holder, or a port held by an
+  in-flight boot that isn't healthy yet, is waited on, never killed out of
+  band — the script never double-launches an in-flight boot). They `exec`
+  vllm; they kill nothing.
+- **No out-of-band kills anywhere.** No script on this box stops a process
+  the router tracks; there are no zombie nets. An out-of-state process (a
+  manual boot) is a manual problem — the mutual-exclusion protocol in the
+  gateway section is the policy.
+- **Rollback**: restore `.last-good` over `llama-swap.yaml` (atomic mv; the
+  2-s poll reloads it). The pre-re-land wrapper generation is parked cold in
+  `__new_mess/` if an old-layout state is ever needed — restoring it means
+  restoring the whole old layout, not a one-file swap.
+- **The journal is the ops log**: `journalctl --user -u ml-llama-swap -f`
+  (everything, because `logToStdout: both`); grep `matrix:` for routing
+  decisions, `Health check passed` for readiness, `reloading configuration`
+  / `configuration reloaded` for reloads, and the engine's own lines for
+  load/exit. The `:8081` UI and its `/logs` rings show the same at 100 KB
+  depth.
+- **A window is a script, not a habit**: self-deadline, a separate backstop
+  watcher, and the marker written only after the box is back to its
+  known-good state.
+
