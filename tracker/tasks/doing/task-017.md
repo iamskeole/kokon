@@ -129,6 +129,16 @@ it is) happens here, at the end, with the whole picture in hand.
   - Fork audit: no stashes; untracked = one generated test log; every
     local branch is now on the fork. **Nothing worked on is outside
     the fork.**
+  - **Fork tidied (same day, on the owner's "it's confusing" prompt):**
+    the default branch renamed **`flux` → `main`** (the old name was a
+    historical feature-branch name — a misnomer for the whole fork),
+    and the public branch list shrank from **10 branches to 2**
+    (`main` + `pr-external-engine-012`): the two pre-v2 lines preserved
+    as annotated tags **`parked/pre-v2-pr`** (`7958672`) /
+    **`parked/pre-v2-line`** (`d318018`) — visible in the tag list, out
+    of the branch list, still on the fork; the 7 upstream-mirror
+    branches deleted (six byte-identical to the author's own branches;
+    the fork's stale `master` snapshot fully contained in `main`).
 - **The publish is deliberately NOT done yet (owner):** "the pr assume
   mergeable on the spot, but dont publish the pr or a discussion yet,
   thats the last item on our agenda and we need to hash that out

@@ -21,7 +21,7 @@ Keep this file current at the end of every task.
 - [x] G5 production qwen = stock build + PUP sidecar (task-012, 013, 014 — stock pin 290148d per the audit; PUP = 9B, task-014)
 - [x] G6 gateway: generic N-models-per-job, the "matrix" (task-015 — **v269's native `matrix` router, no upstream PR needed**: `config.yaml.stock-015` live 11-04, sets klein=k&p&v / qwen-t=qt&pq / qwen-f=qf&pqf / small=(cf|cs)&v, vLLM shared across sets; 4,608-case replay 0 violations / all deltas strict supersets; live window proved it in 255 s (protect-vllm kept under the matrix, qwen evicts vLLM, vLLM reclaims the resident qwen pair — the nudge-404 class fixed at the router); one latent race found and fixed in vllm-serve.sh (never double-launch an in-flight boot); deploy-dir doc `MATRIX.md` = how to define a new job's set)
 - [x] G7 fresh-box doc (task-016 — `docs/fresh-box.md`: the whole stack from a new machine — host layout, verified prerequisites, the final-state model list with the provenance convention, the stock engine recipes, the v269 gateway with the full matrix routing block, the service image + schema-13 compose, verification checklist, ops rules; no BFL prompt bytes, no fork references)
-- [ ] G8 upstream PR / merge / philosophy discussion — last (task-017 — **unblocked by the 024 rebase; the discussion variant is the next post when `pr-external-engine-012` is mergeable on the spot (owner, 2026-11-06)**: branch `pr-external-engine-012` = upstream master `f9b6971` (0.12) + the 5 DCO commits of the feature in final form (schema-13 config, gateway client, service-side VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green on the branch (qls-core 370 / UI 228 / service 18 / mcp 35+3sk); the draft PR body + discussion variant + 4 decision points in `tracker/pr-upstream-body.md` — **executed 2026-11-06 (owner's "go with a")**: the **complete** branch (BFL bundle in — public on the fork from this point; the first time it exists outside this box) is pushed as fork branch `pr-external-engine-012`, and `flux` is the fork's **default branch** (everything we have ever worked on is on the fork, including the preserved pre-v2 line as `pr-external-engine`); **the publish itself (the discussion variant — or a PR if that is chosen) is HELD for the joint call** (owner: "that's the last item on our agenda and we need to hash that out together"); the `iamskeole` login is **read-only on the author's repo** (no write ⇒ cannot create a discussion; api.github.com carries no discussions API) so the channel is part of the decision — (1) author grants `iamskeole` write ⇒ post via the web-session endpoint, (2) the owner pastes the prepared title + body in the web UI (category Ideas, link #35), (3) an Issue instead (any logged-in user may; deviates from the discussion-variant instruction); rejection on the author's one-model vision is the expected outcome (owner), the fork is the product either way (D-RB))
+- [ ] G8 upstream PR / merge / philosophy discussion — last (task-017 — **unblocked by the 024 rebase; the discussion variant is the next post when `pr-external-engine-012` is mergeable on the spot (owner, 2026-11-06)**: branch `pr-external-engine-012` = upstream master `f9b6971` (0.12) + the 5 DCO commits of the feature in final form (schema-13 config, gateway client, service-side VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green on the branch (qls-core 370 / UI 228 / service 18 / mcp 35+3sk); the draft PR body + discussion variant + 4 decision points in `tracker/pr-upstream-body.md` — **executed 2026-11-06 (owner's "go with a")**: the **complete** branch (BFL bundle in — public on the fork from this point; the first time it exists outside this box) is pushed as fork branch `pr-external-engine-012`, and `main` (renamed from `flux` that day) is the fork's **default branch** (everything we have ever worked on is on the fork; the branch list tidied to just `main` + `pr-external-engine-012`, the pre-v2 lines preserved as `parked/*` tags); **the publish itself (the discussion variant — or a PR if that is chosen) is HELD for the joint call** (owner: "that's the last item on our agenda and we need to hash that out together"); the `iamskeole` login is **read-only on the author's repo** (no write ⇒ cannot create a discussion; api.github.com carries no discussions API) so the channel is part of the decision — (1) author grants `iamskeole` write ⇒ post via the web-session endpoint, (2) the owner pastes the prepared title + body in the web UI (category Ideas, link #35), (3) an Issue instead (any logged-in user may; deviates from the discussion-variant instruction); rejection on the author's one-model vision is the expected outcome (owner), the fork is the product either way (D-RB))
 
 ## Work packages (PLAN.md §4)
 - [x] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling) / task-002 done 11-02 (`290148d` pinned + built + stock klein verified, findings logged) / task-003 done 11-02 (`models/gguf`+`models/sd-cpp` reorg per the provenance convention, all reference paths updated, config validates 6/6; klein DiT conversion source unresolved — owner question, non-blocking)
@@ -36,9 +36,10 @@ Keep this file current at the end of every task.
 **task-017 — the last item: the publish (the discussion variant, or a PR if we
 choose that) is HELD for the joint decision ("we need to hash that out
 together"). `pr-external-engine-012` is in a mergeable-on-the-spot shape and
-is pushed to the fork complete; the fork backup is complete — everything we
-have worked on is on the fork, `flux` as the default branch; task-023 stays
-parked on the owner's trigger.**
+is pushed to the fork complete; the fork backup is complete and tidied —
+everything we have worked on is on the fork, `main` as the default branch,
+branch list down to main + the proposal, pre-v2 lines preserved as
+`parked/*` tags; task-023 stays parked on the owner's trigger.**
 - **task-024 — rebase onto upstream master (= 0.12.0) — DONE 2026-11-06.**
   Both branches re-landed on upstream master `f9b6971`: `flux` (110 commits,
   13 conflict stops resolved hunk-level — 0.12 wins for upstream behaviour,
@@ -75,10 +76,13 @@ parked on the owner's trigger.**
   **mergeable on the spot**. What happened since (the owner's "go with a"):
   the **complete** branch — BFL bundle in (`9255632`), public on the fork
   for the first time — is pushed as fork branch `pr-external-engine-012`
-  (`e141d35`); `flux` (`1ab6a2c`) is the fork's **default branch** and
-  contains everything (the pre-v2 line preserved as `pr-external-engine`
-  `7958672`; stashes empty; the other fork branches are upstream mirrors).
-  **The fork is safe.** The publish is blocked by a permissions wall until
+  (`e141d35`); the fork's **default branch** (renamed `flux` → `main` that
+day) contains everything, and the branch list was tidied to just `main`
+  + `pr-external-engine-012` (pre-v2 lines preserved as the annotated tags
+  `parked/pre-v2-pr` `7958672` / `parked/pre-v2-line` `d318018`; the 7
+  upstream-mirror branches deleted — six byte-identical to the author's
+  own, the stale `master` snapshot fully contained in `main`). **The fork
+  is safe and clean.** The publish is blocked by a permissions wall until
   the joint call: the `iamskeole` login is **read-only** on the author's
   repo (`pull: true`, `push/triage: false`) and GitHub's Discussions API is
   web-session-only, so the channel is part of the decision — (1) the author
