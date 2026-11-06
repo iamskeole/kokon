@@ -454,6 +454,7 @@ pub enum CancelOutcome {
 pub struct SdcppClient {
     base: String,
     http: reqwest::Client,
+    api_key: Option<String>,
 }
 
 fn unavailable(e: impl std::fmt::Display) -> AppError {
@@ -481,6 +482,26 @@ impl SdcppClient {
         Self {
             base: base.into().trim_end_matches('/').into(),
             http,
+            api_key: None,
+        }
+    }
+
+    /// Bearer key for a keyed gateway (a load-on-demand router that validates the client's
+    /// `Authorization` before it forwards). Blank or `None` keeps the client keyless: no
+    /// auth header is sent at all, so a keyless deployment sees exactly what it saw before.
+    pub fn with_api_key(mut self, key: Option<String>) -> Self {
+        self.api_key = key.and_then(|k| {
+            let t = k.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        });
+        self
+    }
+
+    /// Attaches the Bearer header when a key is configured.
+    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(key) => req.header("Authorization", format!("Bearer {key}")),
+            None => req,
         }
     }
 
@@ -490,9 +511,7 @@ impl SdcppClient {
 
     pub async fn capabilities(&self, timeout: Duration) -> Result<Capabilities, AppError> {
         let r = self
-            .http
-            .get(format!("{}/sdcpp/v1/capabilities", self.base))
-            .timeout(timeout)
+            .auth(self.http.get(format!("{}/sdcpp/v1/capabilities", self.base)).timeout(timeout))
             .send()
             .await
             .map_err(unavailable)?;
@@ -515,11 +534,13 @@ impl SdcppClient {
     pub async fn submit(&self, req: &ImgGenRequest) -> Result<JobAccepted, AppError> {
         let body = serde_json::to_vec(req).map_err(AppError::internal)?;
         let r = self
-            .http
-            .post(format!("{}/sdcpp/v1/img_gen", self.base))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .timeout(Duration::from_secs(120))
+            .auth(
+                self.http
+                    .post(format!("{}/sdcpp/v1/img_gen", self.base))
+                    .header("Content-Type", "application/json")
+                    .body(body)
+                    .timeout(Duration::from_secs(120)),
+            )
             .send()
             .await
             .map_err(unavailable)?;
@@ -555,11 +576,13 @@ impl SdcppClient {
     pub async fn upscale(&self, req: &UpscaleRequest) -> Result<UpscaleResponse, AppError> {
         let body = serde_json::to_vec(req).map_err(AppError::internal)?;
         let r = self
-            .http
-            .post(format!("{}/sdcpp/v1/upscale", self.base))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .timeout(Duration::from_secs(600))
+            .auth(
+                self.http
+                    .post(format!("{}/sdcpp/v1/upscale", self.base))
+                    .header("Content-Type", "application/json")
+                    .body(body)
+                    .timeout(Duration::from_secs(600)),
+            )
             .send()
             .await
             .map_err(unavailable)?;
@@ -627,11 +650,13 @@ impl SdcppClient {
         })
         .map_err(AppError::internal)?;
         let r = self
-            .http
-            .post(format!("{}/sdcpp/v1/text_gen", self.base))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .body(body)
+            .auth(
+                self.http
+                    .post(format!("{}/sdcpp/v1/text_gen", self.base))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .body(body),
+            )
             .send()
             .await
             .map_err(unavailable)?;
@@ -713,9 +738,7 @@ impl SdcppClient {
 
     pub async fn job(&self, id: &str) -> Result<BackendJob, AppError> {
         let r = self
-            .http
-            .get(format!("{}/sdcpp/v1/jobs/{}", self.base, id))
-            .timeout(Duration::from_secs(60))
+            .auth(self.http.get(format!("{}/sdcpp/v1/jobs/{}", self.base, id)).timeout(Duration::from_secs(60)))
             .send()
             .await
             .map_err(unavailable)?;
@@ -737,9 +760,11 @@ impl SdcppClient {
 
     pub async fn cancel(&self, id: &str) -> Result<CancelOutcome, AppError> {
         let r = self
-            .http
-            .post(format!("{}/sdcpp/v1/jobs/{}/cancel", self.base, id))
-            .timeout(Duration::from_secs(10))
+            .auth(
+                self.http
+                    .post(format!("{}/sdcpp/v1/jobs/{}/cancel", self.base, id))
+                    .timeout(Duration::from_secs(10)),
+            )
             .send()
             .await
             .map_err(unavailable)?;
@@ -1374,5 +1399,80 @@ mod tests {
             "version unknown, commit 3f8527a"
         );
         assert!(parse_version_banner("nothing").is_none());
+    }
+
+    /// Like `fake_server`, but hands back the FULL raw request (headers + body):
+    /// the auth tests need to see the `Authorization` header, which the body-only
+    /// capture never shows.
+    async fn fake_server_raw(
+        status: u16,
+        body: &str,
+    ) -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let body = body.to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+            let _ = tx.send(String::from_utf8_lossy(&raw).into_owned());
+        });
+        (port, rx)
+    }
+
+    #[tokio::test]
+    async fn client_sends_the_bearer_when_keyed() {
+        let (port, raw) = fake_server_raw(404, "").await;
+        let client = SdcppClient::new_url(format!("http://127.0.0.1:{port}")).with_api_key(Some(
+            "gw-key-123".into(),
+        ));
+        let err = client.job("j1").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        let raw = raw.await.unwrap();
+        assert!(raw.to_ascii_lowercase().contains("authorization: bearer gw-key-123"), "{}", raw);
+        // A blank key is filtered out: the client behaves as keyless.
+        let (port, raw) = fake_server_raw(404, "").await;
+        let client = SdcppClient::new_url(format!("http://127.0.0.1:{port}")).with_api_key(Some(
+            "   ".into(),
+        ));
+        let _ = client.job("j1").await;
+        assert!(!raw.await.unwrap().to_ascii_lowercase().contains("authorization"), "blank key: no header");
+    }
+
+    #[tokio::test]
+    async fn client_sends_no_auth_header_when_keyless() {
+        let (port, raw) = fake_server_raw(404, "").await;
+        let client = SdcppClient::new_url(format!("http://127.0.0.1:{port}"));
+        let _ = client.job("j1").await;
+        assert!(!raw.await.unwrap().to_ascii_lowercase().contains("authorization"), "keyless: no auth header");
     }
 }

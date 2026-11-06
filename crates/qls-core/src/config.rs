@@ -360,6 +360,10 @@ pub struct VlmEndpoint {
 pub struct ExternalEngine {
     /// Base URL of the load-on-demand gateway, e.g. `http://127.0.0.1:8080/engine`.
     pub gateway: String,
+    /// Bearer token for a keyed gateway; empty for a keyless gateway (the
+    /// header is sent only when non-empty).
+    #[serde(default)]
+    pub api_key: String,
     /// The model the gateway loads on demand for this UI (its id in the gateway's vocabulary).
     pub model: String,
     /// File name of the diffusion model the running engine must report (`/capabilities`).
@@ -867,6 +871,15 @@ impl AppConfig {
             Some(e) => format!("{}/{}", e.gateway.trim_end_matches('/'), e.model),
             None => format!("http://127.0.0.1:{}", self.server_port),
         }
+    }
+
+    /// Bearer key for the external gateway: `Some` only when an `externalEngine` is
+    /// configured and its `apiKey` is non-blank (a keyless gateway sends no header).
+    pub fn engine_api_key(&self) -> Option<String> {
+        self.external_engine
+            .as_ref()
+            .map(|e| e.api_key.trim().to_string())
+            .filter(|k| !k.is_empty())
     }
 
     pub fn user_profile(&self) -> Option<&ModelProfile> {
@@ -1836,6 +1849,11 @@ mod tests {
         assert_eq!(c.models[0].vlm, None);
         assert_eq!(c.models[0].prompt_bundle, "");
         assert_eq!(c.models[0].gateway, None);
+        assert_eq!(
+            c.external_engine.as_ref().unwrap().api_key,
+            "",
+            "no apiKey in the file: keyless gateway"
+        );
         let saved = serde_json::to_string(&c).unwrap();
         assert!(!saved.contains("\"vlm\""), "unset sub-entries stay out of the JSON");
 
@@ -1850,8 +1868,9 @@ mod tests {
         c.models[0].prompt_bundle = "bfl-klein".into();
         c.external_engine.as_mut().unwrap().vlm = c.models[0].vlm.clone();
         c.external_engine.as_mut().unwrap().prompt_bundle = "bfl-klein".into();
+        c.external_engine.as_mut().unwrap().api_key = "gw-key".into();
         std::fs::write(&p, serde_json::to_string(&c).unwrap()).unwrap();
-        let r = AppConfig::load_from(&p);
+        let mut r = AppConfig::load_from(&p);
         let m = &r.models[0];
         assert_eq!(m.gateway.as_deref(), Some("http://other-gw"));
         assert_eq!(m.vlm.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/kokon-pup");
@@ -1859,6 +1878,11 @@ mod tests {
         assert_eq!(m.prompt_bundle, "bfl-klein");
         assert_eq!(r.external_engine.as_ref().unwrap().vlm, m.vlm);
         assert_eq!(r.external_engine.as_ref().unwrap().prompt_bundle, "bfl-klein");
+        assert_eq!(r.external_engine.as_ref().unwrap().api_key, "gw-key");
+        assert_eq!(r.engine_api_key().as_deref(), Some("gw-key"));
+        assert_eq!(r.engine_api_key().filter(|k| k.is_empty()), None, "blank key = keyless");
+        r.external_engine.as_mut().unwrap().api_key = "   ".into();
+        assert_eq!(r.engine_api_key(), None);
     }
 
     #[test]
@@ -1873,6 +1897,7 @@ mod tests {
         let gw = "http://127.0.0.1:8081";
         cfg.external_engine = Some(ExternalEngine {
             gateway: gw.into(),
+            api_key: String::new(),
             model: "kokon-turbo".into(),
             model_name: "turbo.gguf".into(),
             sample: serde_json::json!({}),

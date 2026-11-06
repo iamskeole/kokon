@@ -646,7 +646,7 @@ impl ServerManager {
         cfg: &AppConfig,
         ext: &ExternalEngine,
     ) -> Result<Capabilities, AppError> {
-        let client = SdcppClient::new_url(cfg.engine_base_url());
+        let client = SdcppClient::new_url(cfg.engine_base_url()).with_api_key(cfg.engine_api_key());
         let compatible =
             |c: &Capabilities| c.model_matches(Path::new(&ext.model_name)) && c.supports_img_gen();
         // Quick probe: if the right engine is already up, the answer comes in a few ms and
@@ -1736,6 +1736,7 @@ CPU	Apple M2 Pro
         let mut cfg = AppConfig::default();
         cfg.external_engine = Some(ExternalEngine {
             gateway,
+            api_key: String::new(),
             model: "model-a".into(),
             model_name: model_name.into(),
             sample: serde_json::json!({}),

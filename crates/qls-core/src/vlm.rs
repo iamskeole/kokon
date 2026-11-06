@@ -296,7 +296,7 @@ mod tests {
 
         let raw = seen.await.unwrap();
         assert!(raw.contains("POST /upstream/kokon-pup/v1/chat/completions"));
-        assert!(!raw.contains("Authorization"), "keyless: no auth header");
+        assert!(!raw.to_ascii_lowercase().contains("authorization"), "keyless: no auth header");
         let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
         assert_eq!(sent["model"], "q35");
         assert_eq!(sent["stream"], false);
