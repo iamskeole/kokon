@@ -108,3 +108,45 @@ it is) happens here, at the end, with the whole picture in hand.
   to the public fork (with or without the BFL bundle commit), and (2)
   post the discussion on the author's repo (GitHub Discussions, linked
   from or in reply to #35). G8 closes when the decision is recorded.
+
+## executed — 2026-11-06 (owner go-ahead "go with a" + "everything on the fork")
+
+- **Pushed (all DCO-signed, no force on any new ref):**
+  - `flux` → fork default branch, force-updated to `1ab6a2c` (proven
+    first: the remote tip `71df3d9` and every commit it added were
+    contained in the rebased local flux — no work overwritten).
+  - `pr-external-engine-012` → **new** fork branch at `e141d35`, the
+    complete proposal **with the BFL bundle** (owner's "go with a":
+    "i dont want us to lose work … our fork becomes the source of
+    truth"). The bundle is public on the fork from this commit on.
+  - `pr-external-engine` → **new** fork branch at `7958672`: the old
+    pre-v2 parked line (10 commits, never pushed before) — the last
+    work not on the fork. The fork's other old branches
+    (`external-engine` 15 commits; `master`, `macos-optimization`,
+    `prompt-enhancer`, `release-0.9.4-docs`, `server-0.11`,
+    `cla-signatures`, `mac-engine-0.1.1` = upstream mirrors, two of
+    them byte-identical to upstream) already existed.
+  - Fork audit: no stashes; untracked = one generated test log; every
+    local branch is now on the fork. **Nothing worked on is outside
+    the fork.**
+- **The publish is deliberately NOT done yet (owner):** "the pr assume
+  mergeable on the spot, but dont publish the pr or a discussion yet,
+  thats the last item on our agenda and we need to hash that out
+  together." The branch is in that shape (verified above); both the PR
+  and the discussion post stay unmade until the joint decision.
+- **The permissions wall (found while preparing the post):** the `iamskeole`
+  account has **read-only** on the author's repo (`permissions`
+  `pull: true, push/triage: false`), and GitHub's Discussions API is
+  web-session-only (no `addDiscussion` on api.github.com, REST 404) —
+  so I cannot create the discussion with this login, whatever the
+  decision. The paths, for the joint call:
+  1. The author grants `iamskeole` write (collaborator) on the repo →
+     I retry the post via the web-session GraphQL/REST endpoint.
+  2. The owner opens it in the browser with the prepared title + body
+     (in `pr-upstream-body.md`), category **Ideas**
+     (`DIC_kwDOVBkBuM4DHe3H`), linked from / in reply to #35.
+  3. An **Issue** instead (any logged-in user may open issues there) —
+     deviates from the "discussion variant" instruction; only if chosen.
+- G8 stays open: it closes when the joint decision (channel, account,
+  with-or-without a companion PR, and the BFL-bundle-already-public note
+  in the body if relevant) is made and the post is up.
