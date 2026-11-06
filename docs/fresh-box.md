@@ -120,7 +120,7 @@ state of this deployment uses:
 
 | Path | Role |
 |---|---|
-| `sd-cpp/BFL/flux-3-image-klein/model-Q8_0.gguf` | the klein DiT (engine, `kokon-klein`) |
+| `sd-cpp/BFL/flux-3-image-klein/model-Q8_0.gguf` | the klein DiT (engine, `kokon-flux-image-3-klein`) |
 | `sd-cpp/BFL/flux-3-ae/ae.safetensors` | klein's VAE |
 | `sd-cpp/Qwen/qwen-image-2.1/model-Q8_0.gguf` | qwen "full" DiT |
 | `sd-cpp/Qwen/qwen-image-2.1-turbo/model-Q4_K_M.gguf` | qwen "turbo" DiT |
@@ -299,12 +299,19 @@ above, and one entry per model (`proxy`, `cmd`, `checkEndpoint`, `ttl`,
 |---|---|---|---|
 | `creative-fast` | llama.cpp (G4 26B, MTP) | 9100 | `small` |
 | `creative-slow` | llama.cpp (G4 31B, MTP) | 9101 | `small` |
-| `kokon-full` | stock sd-server (Qwen-Image 2.1 full) | 9102 | `qwen-f` |
-| `kokon-klein` | stock sd-server (FLUX.3 Klein) | 9103 | `klein` |
-| `kokon-pup` | llama-server (the shared PUP door, two names) | 9104 | **all three image sets** |
-| `kokon-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | 9105 | `qwen-t` |
+| `kokon-flux-image-3-klein` | stock sd-server (FLUX.3 Klein) | 9102 | `klein` |
+| `kokon-pup` | llama-server (the shared PUP door, two names) | 9103 | **all three image sets** |
+| `kokon-qwen-image-2.1-full` | stock sd-server (Qwen-Image 2.1 full) | 9104 | `qwen-f` |
+| `kokon-qwen-image-2.1-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | 9105 | `qwen-t` |
 | `qwen3.8-27b` | vLLM (text) | 9106 | `vllm` |
 | `qwen3.8-27b-vision` | vLLM (vision tower on; own port, second served name) | 9107 | `vllm` |
+
+2026-11-06: the three kokon ids were renamed to their boot-script names
+(`kokon-turbo` → `kokon-qwen-image-2.1-turbo`, `kokon-full` →
+`kokon-qwen-image-2.1-full`, `kokon-klein` → `kokon-flux-image-3-klein`;
+`kokon-pup` already matched) so registry id == script name. The
+alphabetical map shifted with the rename: klein 9103→9102, pup 9104→9103,
+full 9102→9104; turbo's 9105 and the vLLM pair's 9106/9107 did not move.
 
 **The port contract (a v269 property — nothing to memorize).** The daemon
 assigns the next number from `startPort` to the models **with their IDs
@@ -326,11 +333,11 @@ routing:
     settings:
       matrix:
         vars:
-          k: kokon-klein
+          k: kokon-flux-image-3-klein
           p: kokon-pup          # the ONE shared PUP door — member of all
-          qt: kokon-turbo       # three image sets (task-019): a family or
-          qf: kokon-full        # flavor switch reloads only the engine,
-          v: qwen3.8-27b        # never the sidecar
+          qt: kokon-qwen-image-2.1-turbo   # three image sets (task-019): a
+          qf: kokon-qwen-image-2.1-full    # family or flavor switch
+          v: qwen3.8-27b        # reloads only the engine, never the sidecar
           vv: qwen3.8-27b-vision
           cf: creative-fast
           cs: creative-slow
@@ -442,7 +449,7 @@ Build the image (the two-stage `docker/Dockerfile` builds the UI, then
 # verified: reference host. Tag convention: external-engine-<version>-<commit>.
 git clone <this repo> kokon && cd kokon   # or work in the existing clone
 docker build -f docker/Dockerfile \
-  -t ghcr.io/<org>/kokon:external-engine-0.11.2-<short-commit> .
+  -t ghcr.io/<org>/kokon:external-engine-0.12.0-<short-commit> .
 ```
 
 Deploy it with a compose file (the live one is `frontends/kokon/compose.yaml`
@@ -451,7 +458,7 @@ on the reference host):
 ```yaml
 services:
   kokon:
-    image: ghcr.io/<org>/kokon:external-engine-0.11.2-<short-commit>
+    image: ghcr.io/<org>/kokon:external-engine-0.12.0-<short-commit>
     container_name: kokon
     restart: unless-stopped
     network_mode: host          # the service binds 127.0.0.1 and drops
@@ -477,15 +484,32 @@ inherits it — the service's gateway client and all its VLM entrypoints sit
 behind the same keyed door), and each pipeline names its engine alias, its
 VLM entrypoint and the prompt bundle the VLM applies:
 
-- engine aliases: `kokon-klein`, `kokon-turbo`, `kokon-full`
+- engine aliases: `kokon-flux-image-3-klein`, `kokon-qwen-image-2.1-turbo`,
+  `kokon-qwen-image-2.1-full` (renamed to the boot-script names 2026-11-06 —
+  the service config's `models[]` and `externalEngine.model` carry the same
+  ids; the `gateway` base plus the `model` id *is* the engine URL the
+  service's client calls)
 - VLM: the single shared door `kokon-pup` (one llama-server process,
   Q4_K_M, two `--alias` names): the klein entry speaks the alias `q35`, the
   qwen entries `qwen3vl-8b` — a family or flavor switch reloads only the
-  engine, never the door (task-019)
+  engine, never the door (task-019). In 0.12 the area/Expand Prompt+ rides
+  this same door in external mode: the service sends the area/expand request
+  (Kokon's own prompts, the image included) to the pipeline's VLM, and its
+  answer becomes the prompt the image job runs on (in default mode the same
+  request shape goes to the in-engine LLM instead)
 - prompt bundles: the committed asset bundles under
   `crates/qls-core/assets/` (`pup`, `pup-qwen`); the service copies them into
   the container's `/data/assets/` and reads them per job, so a dropped-in
   replacement applies to the next job
+
+0.12 adds two CPU-only ONNX models to the service (zero VRAM, zero engine
+interaction — identical in both modes): the **BiRefNet-lite** quick cut-out
+(224 MB, in-service CPU, `POST /api/v1/matte/download` on first use, lands
+in the data volume's `sdcpp/models/matting/`) and **MobileSAM** (~30 MB,
+downloaded and served by the service for the browser's Layers lab).
+Both download on first use, on demand; nothing about them touches the
+engines — the lab's DiT-touching operations (Quality cut-out, Blend,
+Expand, painted-area edits) ride the same sdcpp job API as everything else.
 
 A down sidecar **hard-fails the job** (no silent raw-prompt fallback): the
 VLM is part of the quality contract, not an optional garnish.
@@ -505,7 +529,7 @@ VLM is part of the quality contract, not an optional garnish.
    `POST /v1/completions` per llama.cpp sidecar — the BFL klein hybrid is
    the exception: it has **no** `/v1/completions` (its LLM loads only as
    the prompt conditioner; a clean 404 is the healthy answer), and its
-   readiness proof is a real image job: `POST /upstream/kokon-klein/sdcpp/
+   readiness proof is a real image job: `POST /upstream/kokon-flux-image-3-klein/sdcpp/
    v1/img_gen` → poll `GET …/sdcpp/v1/jobs/<id>` → a PNG back; `GET
    /upstream/<model>/sdcpp/v1/capabilities` on each sd-server after a
    request has started it; `POST /api/models/unload/<model>` is the explicit
@@ -514,8 +538,9 @@ VLM is part of the quality contract, not an optional garnish.
 3. **One job per family** through the service UI (39152): a klein edit and a
    qwen text-to-image. Both must land in the gallery, and the journal must
    show the matrix decisions at info level, e.g.
-   `matrix: model=kokon-turbo set=qwen-t dsl="qt & p" evict=[kokon-klein]
-   target=[kokon-pup kokon-turbo] cost=2` — that line is the proof the
+   `matrix: model=kokon-qwen-image-2.1-turbo set=qwen-t dsl="qt & p"
+   evict=[kokon-flux-image-3-klein]
+   target=[kokon-pup kokon-qwen-image-2.1-turbo] cost=2` — that line is the proof the
    matrix router (not the groups fallback) is what decided, and `… Health
    check passed on http://127.0.0.1:<port>/…` marks each boot. The
    scheduler's own deferral lines are Debug-level: `logLevel: debug` in a
@@ -526,8 +551,9 @@ VLM is part of the quality contract, not an optional garnish.
    re-boots on the same number (warm, page-cached).
 5. **The shared door** (task-019): `GET /upstream/kokon-pup/v1/models` lists
    both alias names; a klein job and a qwen job back-to-back keep the
-   **same** sidecar pid resident — the journal shows `evict=[kokon-klein]`
-   and `evict=[kokon-turbo]` (the engines only), never the door.
+   **same** sidecar pid resident — the journal shows
+   `evict=[kokon-flux-image-3-klein]` and
+   `evict=[kokon-qwen-image-2.1-turbo]` (the engines only), never the door.
 ## 6. Operations
 
 - **A config swap stops every loaded model** (a successful reload shuts the
