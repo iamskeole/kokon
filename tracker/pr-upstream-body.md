@@ -111,22 +111,67 @@ you say otherwise.
 
 ## Discussion variant (if (c) = discussion-first)
 
+v2, 2026-11-06 (owner direction: more personal + full scope): the personal
+opening (the wife / headless-box story), the production scope (both image
+families by name, the one shared 9B PUP serving both, the co-resident
+text-chat pair, the single-keyed-port gateway as our own deployment), the
+vision acknowledgment, and the measured diff size (61 files, +15,416 /
+-2,060 against `f9b6971` = ~17,500 changed lines). Deliberately not
+included: the gateway internals (v269 matrix, the port map — our
+deployment, not his repo) and MOSS (parked research, not built).
+
 > **Title:** Proposal: run Kokon against your own model gateway
 > (external-engine mode)
 >
-> We've been running a configuration where Kokon doesn't own the engine
-> at all: the service points at a small local gateway that loads models
-> on demand (one GPU, several models, evict-on-demand), and Kokon
-> adopts whatever it finds. It's been in production on our box since 11-02 across two model families, and the shape of the change in the
-> repo is smaller than it sounds: a config surface (per-pipeline
-> gateway/VLM/prompt-bundle), an extra path segment in the engine
-> client, the prompt-enhancement call moved into the service as a plain
-> chat API client, and the prompts becoming replaceable data. The
-> in-engine mode is untouched and stays the default. Before we open a
-> PR we'd like the conversation this repo asks for: is "Kokon as a thin
-> layer over your own gateway" a direction you'd accept upstream, what
-> would you want different (naming, config shape, the VLM hard-fail
-> policy, the bundle layout), and is there overlap with anything you're
-> planning on the server side? It is built on 0.12 as released, so it is
-> ready to review as-is: the branch (`iamskeole/kokon:pr-external-engine-012`)
-> and a full diff are linked here.
+> First, a personal word: Kokon is a masterclass in UI, and a brilliant
+> piece of engineering — in that order. The moment I found it I knew it
+> would solve my problem. Happy wife, happy life: the only thing my wife
+> hated me showing her more than Excel pivot tables was ComfyUI nodes. She
+> needs image generation and editing in her workflows, and until Kokon,
+> everything was a no for her.
+>
+> The complication in our setup: we have exactly one machine powerful
+> enough to run models — a headless Linux box with a 3090 — and it is not
+> where she works. So the question became: how do I run Kokon where the
+> GPU lives, and let her use it from her own machine? This branch is that
+> answer: Kokon, unbundled from its engine.
+>
+> **What it is.** The service can point at a small local gateway that
+> loads models on demand (one GPU, several models, evict-on-demand — the
+> llama-swap `/upstream/<model>` proxy is the reference deployment), and
+> Kokon stops being an engine owner: it adopts whatever the gateway loads
+> and never starts, stops or downloads a model. "No model loaded" is its
+> resting state, not an error.
+>
+> **What we have been running with it.** In production on that box since
+> 11-02: two image-model families — the Qwen-Image 2.1 line (Turbo and
+> full) and the BFL FLUX.3 Klein line — plus one shared 9B
+> prompt-enhancement VLM that serves both families from the same 24 GB
+> card, with a text-chat model pair co-resident and evicting cleanly. (The
+> gateway itself is our own deployment, out of scope for the repo: it
+> runs that whole set on the one card, evict-on-demand, behind a single
+> keyed port.) She uses it from her own machine; the box stays headless. I
+> suspect a number of users have a similar setup — one capable box,
+> several machines to use it from — and would benefit from the same
+> unbundling of UI and engine management.
+>
+> **The shape of the change in the repo** is smaller than it sounds: a
+> config surface (per-pipeline gateway / VLM / prompt-bundle; old configs
+> read unchanged), one extra path segment in the engine client, the
+> prompt-enhancement call moved into the service as a plain chat-API
+> client, and the prompts becoming replaceable data. The in-engine mode —
+> the default you ship — is untouched.
+>
+> **Why a discussion first.** I understand and respect the product vision
+> this repo is built on — one carefully chosen model, nothing to tune —
+> and I'd rather have this conversation than throw a ~17,500-line diff at
+> you and hope for the best. So: is "Kokon as a thin layer over your own
+> gateway" a direction you'd accept upstream, what would you want
+> different (naming, config shape, the VLM hard-fail policy, the bundle
+> layout), and is there overlap with anything you're planning on the
+> server side?
+>
+> It is built on 0.12 as released, so it is ready to review as-is:
+>
+> - Branch: https://github.com/iamskeole/kokon/tree/pr-external-engine-012
+> - Diff against `upstream/master` @ `f9b6971`: https://github.com/GabrieleLozupone/kokon/compare/f9b6971...iamskeole:kokon@pr-external-engine-012
