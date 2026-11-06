@@ -111,22 +111,60 @@ riding on it (D-RB: always master).
   3 skipped**, mock-gateway harness **16/16** after its own 0.12
   refresh (`/models/switch` route, schema-13 config) — commit `85e9656`.
 
-## remaining
+- **2026-11-06 — the w024 window** (15:54 UTC; the protocol: self-contained
+  job + watcher + blocking wait; vllm neutralized in P1, revived last, the
+  `FAIL` marker in `/tmp/w024/` is run 2's historical record, the completion
+  record is `COMPLETION.txt`):
+  - **The owner's matrix rename landed in-window** (the ask that unblocked
+    this): the gateway's kokon ids now equal their boot-script names —
+    `kokon-turbo` → `kokon-qwen-image-2.1-turbo`, `kokon-full` →
+    `kokon-qwen-image-2.1-full`, `kokon-klein` → `kokon-flux-image-3-klein`
+    (`kokon-pup` unchanged) — registry id == script name, so the tests and
+    the matrix share one vocabulary. The alphabetical port map shifted with
+    the rename (klein 9103→9102, pup 9104→9103, full 9102→9104; turbo 9105
+    and the vLLM pair 9106/9107 unmoved); the volume config was renamed
+    in-step (backup `config.json.bak-w024pre`); live yaml == last-good.
+  - **P0–P4 green in-window**: baseline (keyed one door, vllm ready on
+    9106); the window config neutralized vllm (reload, 4 s); the 0.12 image
+    recreated the service on the renamed config in ~1 s; **T1** a t2i on
+    the *renamed* turbo through the service's keyed one-door client path
+    (job `job_20d7bb3f…`, 1,268,111-byte PNG, set qwen-t cold-booted on
+    demand); **T2** an Expand on the T1 image — 0.12's area/Expand Prompt+
+    ran through the **shared PUP sidecar** (alias `qwen3vl-8b` on
+    `/upstream/kokon-pup`; the job's prompt is the sidecar's own 1,114-char
+    answer; the DiT co-tenant stayed loaded) — the one design branch, proven
+    end to end.
+  - **P5 failed in-window** on the matte: 0.12 gates BiRefNet-lite behind a
+    separate `POST /matte/download` the script omitted (`missing_model`).
+    The restore ran as designed: the FINAL renamed config (vLLM pair
+    re-registered) live, vllm revived by its own tracked boot (1-token 200
+    in 40 s).
+  - **P5 completed manually post-window** (CPU-only — the matte is a
+    224 MB CPU/ONNX run, zero VRAM, so no window was needed; vllm resident
+    on 9106 the whole time): `/matte/download` (→
+    `/data/sdcpp/models/matting/birefnet_lite.onnx`), then `/matte` on the
+    run-2 test image → a 7,788-byte grey PNG in 10 s **with vllm on the
+    card** (the zero-engine-interaction claim holds); the qwen-t set
+    self-reaped on its 600 s TTL (the daemon's own unload); the active model
+    switched back to klein (the owner's 11:39 pipeline). The job script's P5
+    now includes the download pre-step (`backends/_jobs/w024-job.sh`), so a
+    future re-run is self-contained.
+  - **The final image**: `external-engine-0.12.0-b77d049`, rebuilt at the
+    final `flux` tip (the in-window `5c8a8d7` image was code-identical —
+    the delta is docs-only); `frontends/kokon` pointed at it, service
+    healthy, UI 200, vllm never touched by the swap.
+  - **The harness aligned with the rename** (`9d87211`): the mock gateway,
+    the reference config and the driver now use the script-aligned ids —
+    16/16 green on the 0.12 build.
+  - `docs/fresh-box.md` carried the 0.12 pass and the 022 one-door section
+    in the same commit as the tip (`b77d049`).
 
-1. **w024 GPU window** (autonomy protocol): external path on 0.12 —
-   image job through the keyed one-door gateway, an area/Expand job
-   showing the sidecar-routed Prompt+ end-to-end, lab fast cut-out
-   (CPU ONNX) while the engine runs, vLLM revived last, marker last.
-   Registry neutralization of vllm per the w022 runbook. The owner's
-   **matrix script-naming update** rides this window (names the tests
-   align to: `kokon-qwen-image-2.1-full`, `kokon-qwen-image-2.1-turbo`,
-   `kokon-flux-image-3-klein`, `kokon-pup`; boot-script naming
-   semantics — the live box stays untouched until the window).
-2. Rebuild + tag the image `external-engine-0.12.0-<sha>`; point
-   `frontends/kokon` at it; `docs/fresh-box.md` 0.12 + the 022
-   one-door section in the same pass.
-3. **task-017 unblocks**: post the discussion variant when
-   `pr-external-engine-012` is in a mergeable-on-the-spot shape.
+**DONE 2026-11-06.** Terminal state: the keyed one-door gateway on the
+final renamed config (== last-good); kokon 0.12 (`b77d049`) on the renamed
+volume config, active model klein; BiRefNet-lite in the data volume; vllm
+resident on 9106. Every acceptance criterion above is met — the PR branch
+re-derived (`pr-external-engine-012`) and green; the w024 window ran to its
+restore; the image and the fresh-box doc are at the final tip.
 
 ## decisions
 
