@@ -1,11 +1,8 @@
 # task-019 — one shared PUP sidecar across all image families
 
-**Status: CURRENT (2026-11-05 — task-020/021 closed this span; the spec
-is locked in the last section — door quant, names, sampling, image
-clamps, sets, service repoint, proof window). Implementation lands in
-`backends/_scripts/serve-kokon-pup.sh` + the config swap; the proof
-window (`w019`) runs the Klein→turbo→quality sequence with the door pid
-asserted stable across both switches.**
+**Status: DONE (2026-11-05 — window w019 run 2 passed in 75 s; the
+shared door is live and proven; see the completion record at the
+bottom).**
 
 ## goal
 
@@ -123,6 +120,13 @@ top of the re-landed topology. It waits on: (a) task-020/021 closing
   unification, the flag decision and the pid-stability window stand
   as written above. It stays parked ahead of task-020/021 in the
   queue per the standing convention.
+- **Window neutralization (run 2, 2026-11-05):** the proof window
+  deploys a registry-neutralized config (both vLLM entries removed,
+  kept as `llama-swap.yaml.window-019`) for its proof phases, because
+  run 1 proved that the window's own agent turn — and the owner's
+  chat — are gateway clients that will boot a vLLM orphan and evict
+  whatever set it excludes, the instant either sends a message. The
+  cost: the box chat is down for the whole window (not one message).
 
 ## Spec locked (2026-11-05, owner decisions incorporated)
 
@@ -213,3 +217,124 @@ sampling defaults, resolved in the final discussion of the span:
   a VRAM sample per pair (expect the Q4 door to free ~1.7 GB vs the
   Q8 turbo door and remove the Q4-for-full OOM constraint for the
   turbo pair).
+
+## Completion record (2026-11-05, both runs of w019)
+
+**Implementation (all in place before the window):**
+- `backends/_scripts/serve-kokon-pup.sh` — the shared door, exactly the
+  locked spec: Q4_K_M + mmproj-F16, `--alias q35,qwen3vl-8b` (one flag —
+  this llama.cpp build comma-splits the value into a set,
+  `common/arg.cpp`), `--jinja` + thinking off, `--temp 0.7 --top-p 0.8
+  --top-k 20 --min-p 0 --presence-penalty 1.5`, `--image-min-tokens 1024
+  --image-max-tokens 4096`, ctx 8192, batch/ubatch 1024, GPU-only,
+  flash-attn, shared-linked `LD_LIBRARY_PATH` for the Oct-14 build.
+- The three old door scripts parked in
+  `__new_mess/pup-doors-2026-11-05/`.
+- Config: 10 → 8 models (the two per-flavor entries retired; the
+  `kokon-pup` entry now points at the shared door; sets share `p`).
+  The 10→8 swap itself **landed during window run 1** (below) and has
+  been live ever since (md5 `0c1defca…` = live =
+  `llama-swap.yaml.last-good` — the last-good copy's real name, per
+  the owner, is the qualified `llama-swap.yaml.last-good`;
+  docs corrected accordingly).
+- Service repoint (container `kokon`, external-engine mode): all three
+  VLM entrypoints → `/upstream/kokon-pup` (klein's was already there;
+  both qwen entries changed; model names `q35` / `qwen3vl-8b` unchanged
+  — the aliases are the contract); `config.json.bak-019` kept in the
+  volume; container restarted, `:39152` 200.
+- Docs: `docs/fresh-box.md` rewritten in the post-019 shape (stock-tree
+  purity rule, `_scripts/_configs/_jobs` layout, pure-boot +
+  default-group-stop, last-good semantics, the eight-model table, the
+  mutual-exclusion protocol, the journal-follow workflow).
+
+**Run 1 (23:49 UTC) — FAILed at P2, and the failure is the design fix.**
+The 10→8 swap itself passed (4 s; vLLM gone by the old server's
+shutdown). The door then booted in 4 s (page cache), `/v1/models`
+returned both aliases correctly, and **the door's 1-token never
+answered because a vLLM request arrived the same second** and the
+router — correctly, per the orphan rule — evicted the door for it
+(journal: `matrix: model=qwen3.8-27b … evict=[kokon-pup]`). The request
+was the agent's own recovery message: the launch one-liner had a race
+(the wait ran before its `mkdir`), the invocation returned early, the
+turn resumed, and that resumption is an LLM call routed through the
+gateway → vLLM. This is exactly the hazard w020r's P0.5 existed to
+kill ("drop the window's own open stream"); run 1 had no P0.5 and
+assumed the P1 swap was enough. die() restored vLLM; the box was
+unhurt; the 10→8 config stayed live.
+
+**Run 2 (23:58–23:59 UTC) — PASSED in 75 s**, with the protocol's
+registry-neutralization: for P1→P5 the window deploys
+`llama-swap.yaml.window-019` (the 8-model config minus both vLLM
+entries, kept in `_configs/` as the reusable pattern). While it is
+live, **no** gateway client — owner chat, this agent, anything — can
+boot vLLM or evict the door with it (a request for it is an unknown
+model; a direct `:18020` request cannot trigger a boot either, the
+model simply isn't running). The box chat was down for the window's
+duration (told to the owner in advance); P6 swaps back to the final
+8-model config (3 s; the card was empty) and restores vLLM (warm, 43
+s).
+
+Phase results (all warm page cache; the proof, not the load times):
+- **P1** 4 s: neutralized swap; `configuration reloaded` in the journal
+  (logged after the old server's shutdown); `/running` empty; vLLM pid
+  gone; VRAM 1 MiB; daemon survived.
+- **P2** 7 s: door 448719 booted (3 s); `/v1/models` listed **both**
+  aliases (`"id":"q35","aliases":["q35","qwen3vl-8b"]`); 1-token
+  answered `q35`; klein engine 448781 loaded beside it (VRAM 15605
+  MiB — Q4 door + klein Q8, fits).
+- **P3** 5 s: turbo 448880 up, klein gone, **door still 448719**. Journal:
+  `matrix: model=kokon-turbo set=qwen-t dsl="qt & p" evict=[kokon-klein]
+  target=[kokon-pup kokon-turbo] cost=1`.
+- **P4** 5 s: full 449008 up, turbo gone, **door still 448719** — two
+  consecutive switches, zero sidecar reloads. Journal:
+  `matrix: model=kokon-full set=qwen-f dsl="qf & p" evict=[kokon-turbo]
+  target=[kokon-full kokon-pup] cost=1`. Across the whole window:
+  **0** journal lines with the door inside an `evict=[…]` bracket;
+  **2** with it inside a `target=[…]` (kept resident) — the proof.
+  (w020r baselines for these two phases were 9 s / 11 s *including a
+  full door reload each*; now 5 s / 5 s with the door untouched.)
+- **P5** 4 s: explicit UNLOADs — full engine group stop 2 s, **door
+  group stop 2 s**, VRAM back to 1 MiB.
+- **P6** 46 s: final 8-model config live (3 s); vLLM restored (43 s
+  warm, 23796 MiB, `EngineCore` child in the group); served name
+  exactly `qwen3.8-27b`; `/running` = that model alone.
+- **P7**: identity after = before = final (`0c1defca…`, live =
+  last-good); daemon active; ports 39160/39170/39175/9100/9101 all
+  down.
+
+Evidence: `/tmp/w019/` — `digest.txt` (phases, job log, identity,
+final state; the P7 journal slice plus a supplemental P1–P5 slice in
+`journal-proof-P1-P5.txt`), `window-journal-proof.txt`, `door-pids.txt`
+(the D0 narrative), `timeline` (2 s census), per-phase request
+artifacts, DONE marker last.
+
+**Acceptance criteria (all met):**
+- [x] One PUP entry (Q4_K_M, one flag set; `q35` + `qwen3vl-8b` both
+      served, asserted in `/v1/models`) in all three sets (`k & p`,
+      `qt & p`, `qf & p`); `-validate` clean (8 models); rollback =
+      restore `llama-swap.yaml.last-good`.
+- [x] Window with the PUP pid proven stable across a klein→turbo and a
+      turbo→quality switch (`/proc/<pid>` assertions + the journal
+      decision lines; 0 sidecar evictions, 2 keep-residents); both
+      served names answer; VRAM sample per pair.
+- [x] Before/after measured: per flavor switch, sidecar work went from
+      a full door reload (w020r: 9 s / 11 s phases, each stopping one
+      door and cold-loading another) to **zero** (5 s / 5 s, door
+      untouched); the klein door's own Q4 stop propagation measured at
+      2 s. The Q4 door also frees ~1.7 GB vs the Q8 turbo door and
+  removes the full/Q8 OOM constraint for that pair (the OOM was the
+  original reason the quality door was Q4).
+- [~] Visual re-check of a render from the flag-losing family (klein
+      edits of sub-1 MP inputs now get a 1 MP upscale instead of
+      pass-through — the only behavior change; owner pre-cleared it:
+      "sub 1MP is never going to be an issue") — available as the
+      owner's next klein edit; not a window phase.
+
+## blockers (at completion)
+
+None. One process lesson recorded: a window whose proof phase keeps a
+model resident must neutralize that model's would-be evictors in the
+registry (or kill the window's own client stream, as w020r's P0.5
+tried to) — "the swap stops vLLM" is not enough, because the window's
+own agent turn and the owner's chat are gateway clients that will
+resurrect an orphan the instant they send a message.
