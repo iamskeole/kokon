@@ -17,8 +17,8 @@ What it proves (16 assertions):
    the service adopts the running engine as `owned: false`.
 3. **job** — a real generation job travels
    `{gateway}/{model}/sdcpp/v1/img_gen` → `jobs/{id}` and completes.
-4. **switch** — `POST /api/v1/models/flavor` re-points the service at a different
-   flavor: only the config changes, the gateway is untouched.
+4. **switch** — `POST /api/v1/models/switch` re-points the service at a different
+   model: only the config changes, the gateway is untouched.
 5. **generation** — the next job triggers the swap: the gateway evicts the old
    tenant, loads the new model, the job completes and the service reports it.
 6. **gateway down** — with the gateway killed, a start request lands in the

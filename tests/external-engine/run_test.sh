@@ -13,7 +13,7 @@ mkdir -p "$D/data" "$D/config"
 cp "$(cd "$(dirname "$0")" && pwd)/mock_gateway.py" "$D/mock_gateway.py"
 cat > "$D/config/config.json" <<EOF
 {
-  "schemaVersion": 11,
+  "schemaVersion": 13,
   "servicePort": $PORT,
   "serverPort": 39900,
   "setupComplete": true,
@@ -81,7 +81,7 @@ JERR=$(curl -s -H "$H" $S/jobs/"$JID" | python3 -c "import json,sys;d=json.load(
 [ "$JERR" = "-" ] || echo "  (job error: $JERR)"
 
 echo "=== 4. flavor switch: turbo -> full (records the pick, touches nothing) ==="
-curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/models/flavor -d "{
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/models/switch -d "{
   \"gateway\": \"http://127.0.0.1:$GW/upstream\",
   \"model\": \"kokon-full\",
   \"modelName\": \"qwen-image-2.1-Q8_0.gguf\",
