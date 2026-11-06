@@ -73,3 +73,38 @@ it is) happens here, at the end, with the whole picture in hand.
   direct PR; (d) when to push/submit.
 - G8 stays open until that call; the task file moves to `done/` with the
   recorded decision.
+
+## re-derived on the 0.12 base — 2026-11-06 (with task-024)
+
+- **The branch is `pr-external-engine-012`** (local only): rebased onto
+  `upstream/master` @ `f9b6971` (0.12.0 + the 6 zero-code post-release
+  commits) — the 5 signed commits replayed as `ff372fc` (core) / `9255632`
+  (bundles) / `595d76f` (service) / `fbcd114` (UI) / `e141d35` (tests+
+  docs); the old `pr-external-engine-v2` name is retired. The re-
+  derivation folded in two 0.12-semantics fixes (the `pup-qwen` bundle
+  re-extracted against 0.12's built-in prompts; the cut-off VLM answer
+  kept with a length-limit note, not discarded). Verified on the branch
+  2026-11-06: qls-core 370/370, qls-service 18/18, vitest 228/228 (tsc
+  clean), mcp 35 passed + 3 skipped, GPU-free harness 16/16.
+- **Exclusions after the re-derivation:** the pre-v2 note above stands
+  for `tracker/`, the AGENTS preamble, `docs/fresh-box.md` and the
+  harness run-artifact dirs; the 10 support files' rewrapping is gone —
+  every format-only file was proven by token-diff and taken wholesale
+  from 0.12, so the diff against upstream master carries no formatter
+  noise.
+- **Decisions (owner, 2026-11-06):** (c) = **the discussion variant, not
+  the PR** — posted on the author's repo only when the branch is in a
+  mergeable-on-the-spot shape (it is, per the verification above); the
+  expected outcome is rejection on the one-model vision, and the fork is
+  the product either way (D-RB). (a) and (b) ride the post: pushing the
+  branch to the public fork (required for "mergeable on the spot") makes
+  the BFL bundle (`assets/pup/`, commit `9255632`) public for the first
+  time — that is the owner's call; the discussion text itself carries no
+  BFL bytes. (d) = parked until the go-ahead.
+- **The draft is finalized in [`pr-upstream-body.md`](../pr-upstream-body.md)**
+  (base/hashes/counts updated to the re-derived branch; the discussion
+  variant now states the 0.12 base and names the branch).
+- **Awaiting the owner's go-ahead** to: (1) push `pr-external-engine-012`
+  to the public fork (with or without the BFL bundle commit), and (2)
+  post the discussion on the author's repo (GitHub Discussions, linked
+  from or in reply to #35). G8 closes when the decision is recorded.

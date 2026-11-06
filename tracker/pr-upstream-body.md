@@ -1,21 +1,26 @@
 # task-017 draft — the upstream contribution (NOT submitted; owner review required)
 
 Status: **everything prepared, nothing pushed, nothing submitted.** The
-branch `pr-external-engine-v2` exists only in this clone. Submitting it —
-or even pushing it to our public fork — makes the BFL prompt bundle
-(commit 2) public for the first time; that is decision point (a) below and
-happens only on your word.
+branch `pr-external-engine-012` exists only in this clone (re-derived onto
+the 0.12 base 2026-11-06; the old `pr-external-engine-v2` name is retired).
+Submitting it — or even pushing it to our public fork — makes the BFL
+prompt bundle (commit 2) public for the first time; that is decision
+point (a) below and happens only on your word.
 
-Base: `upstream/master` @ `200f3d5` (fetched 2026-11-04; its 3 new commits
-are all `engine-mac/` M5 work, zero overlap). Contents: 5 DCO commits
-(a1e4c6f core / 9a12945 bundles / 7a9ad05 service / d775a94 UI /
-8469b67 tests+docs) = the external-engine feature in its final v2 form.
-Verified on the branch: qls-core 327/327, qls-service 17/17, vitest
-160/160, plus the GPU-free mock-gateway harness (16 assertions, loopback).
+Base: `upstream/master` @ `f9b6971` (0.12.0 + the 6 zero-code
+post-release commits). Contents: 5 DCO commits (ff372fc core / 9255632
+bundles / 595d76f service / fbcd114 UI / e141d35 tests+docs) = the
+external-engine feature in final form, on 0.12. The re-derivation folded
+in two 0.12-semantics fixes (the `pup-qwen` bundle re-extracted against
+0.12's built-in prompts; the cut-off VLM answer kept with a length-limit
+note, not discarded). Verified on the branch 2026-11-06: qls-core
+370/370, qls-service 18/18, vitest 228/228 (tsc clean), mcp 35 passed +
+3 skipped, plus the GPU-free mock-gateway harness (16 assertions,
+loopback).
 
 ## Decision points (yours)
 
-**(a) The BFL bundle in or out?** Commit 2 carries
+**(a) The BFL bundle in or out?** Commit 2 (`9255632`, the bundles) carries
 `crates/qls-core/assets/pup/` — the klein-pup upsampler's prompt assets
 (Apache-2.0; source + per-file hashes in its LICENSE.md; the code and
 tests reference keys/hashes only, never the text). It has never been
@@ -99,11 +104,10 @@ you say otherwise.
 > business), no Mac changes. The in-engine path (Kokon-owned sd-server)
 > remains the default and is untouched; this mode is opt-in per config.
 >
-> Tests: `cargo test -p qls-core` (327), `-p qls-service` (17),
-> `npm test` (160), and the mock-gateway harness above, all green on the
-> branch. A few long-lived files carry incidental reformatting from a
-> rustfmt pass during development — a maintainer fmt pass will absorb
-> it; I've kept the diff to the files the feature touches.
+> Tests: `cargo test -p qls-core` (370), `-p qls-service` (18),
+> `npm test` (228), the MCP protocol suite (35), and the mock-gateway
+> harness above, all green on the branch; no reformatting of upstream
+> files — the diff is limited to the files the feature touches.
 
 ## Discussion variant (if (c) = discussion-first)
 
@@ -123,5 +127,6 @@ you say otherwise.
 > layer over your own gateway" a direction you'd accept upstream, what
 > would you want different (naming, config shape, the VLM hard-fail
 > policy, the bundle layout), and is there overlap with anything you're
-> planning on the server side? Our working branch and a full diff are
-> available on request.
+> planning on the server side? It is built on 0.12 as released, so it is
+> ready to review as-is: the branch (`iamskeole/kokon:pr-external-engine-012`)
+> and a full diff are linked here.
