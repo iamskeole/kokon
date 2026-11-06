@@ -149,6 +149,18 @@ it is) happens here, at the end, with the whole picture in hand.
   permissions wall above), so either the author grants `iamskeole`
   collaborator write (one click: repo → Settings → Collaborators) or a
   different account posts the same text.
-- **When it is up:** record the discussion URL here, close G8, and move
-  this file to `done/`. Rejection on the one-model vision remains the
-  expected outcome; the fork is the product either way (D-RB).
+- **It is up — 2026-11-06 17:39 UTC, Discussion #52, category Ideas:**
+  https://github.com/GabrieleLozupone/kokon/discussions/52 — posted from
+  `iamskeole` via the web UI. The "wall" described above turned out to be
+  **API-side only**: that repo allows any logged-in user to *start* a
+  discussion (no collaborator grant was needed after all); the account
+  still has no push on the author's repo. The body is verified verbatim
+  = the final v2 (the corrected same-repo diff link included); 0 comments
+  at verification time.
+- **G8 closed; this file moves to `done/`.** What the author's reply
+  decides: accepted ⇒ the fork re-baselines onto the merged upstream and
+  shrinks to whatever diff remains (the mission: keep getting smaller);
+  rejected on the one-model vision ⇒ the fork is the product (D-RB: clone
+  → `docker build` → `docker compose up -d`), and this discussion is the
+  paper trail either way. Nothing else on the queue blocks (task-023
+  stays parked on the owner's trigger).
