@@ -174,4 +174,4 @@ deployment, not his repo) and MOSS (parked research, not built).
 > It is built on 0.12 as released, so it is ready to review as-is:
 >
 > - Branch: https://github.com/iamskeole/kokon/tree/pr-external-engine-012
-> - Diff against `upstream/master` @ `f9b6971`: https://github.com/GabrieleLozupone/kokon/compare/f9b6971...iamskeole:kokon@pr-external-engine-012
+> - Diff against `f9b6971` (upstream master at the 0.12 release; the five commits above, nothing else): https://github.com/iamskeole/kokon/compare/f9b6971...pr-external-engine-012
