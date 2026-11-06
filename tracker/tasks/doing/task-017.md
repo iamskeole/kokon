@@ -139,24 +139,16 @@ it is) happens here, at the end, with the whole picture in hand.
     of the branch list, still on the fork; the 7 upstream-mirror
     branches deleted (six byte-identical to the author's own branches;
     the fork's stale `master` snapshot fully contained in `main`).
-- **The publish is deliberately NOT done yet (owner):** "the pr assume
-  mergeable on the spot, but dont publish the pr or a discussion yet,
-  thats the last item on our agenda and we need to hash that out
-  together." The branch is in that shape (verified above); both the PR
-  and the discussion post stay unmade until the joint decision.
-- **The permissions wall (found while preparing the post):** the `iamskeole`
-  account has **read-only** on the author's repo (`permissions`
-  `pull: true, push/triage: false`), and GitHub's Discussions API is
-  web-session-only (no `addDiscussion` on api.github.com, REST 404) —
-  so I cannot create the discussion with this login, whatever the
-  decision. The paths, for the joint call:
-  1. The author grants `iamskeole` write (collaborator) on the repo →
-     I retry the post via the web-session GraphQL/REST endpoint.
-  2. The owner opens it in the browser with the prepared title + body
-     (in `pr-upstream-body.md`), category **Ideas**
-     (`DIC_kwDOVBkBuM4DHe3H`), linked from / in reply to #35.
-  3. An **Issue** instead (any logged-in user may open issues there) —
-     deviates from the "discussion variant" instruction; only if chosen.
-- G8 stays open: it closes when the joint decision (channel, account,
-  with-or-without a companion PR, and the BFL-bundle-already-public note
-  in the body if relevant) is made and the post is up.
+- **The joint call made (2026-11-06, same day):** the **discussion
+  route**; the v2 body (the personal opening + the full production
+  scope, in `pr-upstream-body.md`) **finalized as-is** (owner: "thats
+  brilliant chief, wont change a thing"); the owner opens it in the
+  browser, category **Ideas** (`DIC_kwDOVBkBuM4DHe3H`).
+- **Sole precondition:** the posting account needs **write** on the
+  author's repo — the `iamskeole` login is read-only there (see the
+  permissions wall above), so either the author grants `iamskeole`
+  collaborator write (one click: repo → Settings → Collaborators) or a
+  different account posts the same text.
+- **When it is up:** record the discussion URL here, close G8, and move
+  this file to `done/`. Rejection on the one-model vision remains the
+  expected outcome; the fork is the product either way (D-RB).
