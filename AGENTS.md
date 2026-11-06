@@ -22,6 +22,15 @@ Each task carries `## blockers` and `## decisions` — surface blockers
 before guessing, and record new decisions in the task file. `tracker/`
 is fork-owned and is never contributed upstream.
 
+**Rebase and release rules (owner-noted 2026-11-06 — do not litigate).**
+Rebases always target **upstream master**, never a release commit
+(upstream doesn't tag its releases; master is by definition the latest
+release plus harmless post-release work). **The fork does no releases** —
+releases are the origin's/author's view (their installers, their tags);
+if the upstream PR doesn't land, our release mechanism is: clone the fork
+→ `docker build` → `docker compose up -d` (the service image is the
+product; `docs/fresh-box.md`).
+
 **Commit discipline (this host, this repo).** DCO-signed commits
 (`git commit -s` — no GPG key here); **never run `cargo fmt`** (no
 rustfmt.toml on this host — hand-format only); one small commit per

@@ -1,6 +1,6 @@
 # STATUS — kokon v2 separation
 
-Updated 2026-11-06 (**task-022 CLOSED this span — the one-door, single-key topology is live and proven**: the gateway (wildcard `:8081`) is the box's only LAN door for model traffic, keyed with the 48-char box key (no-key 401 / with-key 200 / wrong-key 401; `/health` open keyless by v269 design); **zero fixed engine ports** — all eight models on `${PORT}` daemon-assigned (the v269 contract: assigned by *alphabetically sorted* model ID from `startPort: 9100` — 9100 creative-fast … 9107 qwen3.8-27b-vision), every bind `127.0.0.1`; the vLLM pair carries the explicit mutual-exclusion set `vllm: "v | vv"` (proven both directions: vision evicts text onto 9107, text evicts vision back onto 9106); the kokon service runs the compose-managed image `external-engine-0.11.2-d93c3c3` (`apiKey` on `ExternalEngine` + the vlm entries; pristine config backup in the volume) with its exact client path proven — door 9104 (both aliases), turbo 9105 (capabilities), klein 9103 (a real 1024×1024 image job, 14 s, PNG back); vLLM resident on 9106 as the terminal state with both stream modes working. The `w022` window ran five times, each one teaching something: r1 did the config swap + keying + daemon onto the wildcard (died on an async-`systemctl`/`ss`-format harness bug), r2 proved the keying and the pair switch, r3 the service cutover (the pre-compose container's missing labels forced a remove-then-create; stops 2 s) + measured stops, r4 exposed that the BFL hybrid has **no** `/v1/completions` (its LLM loads as the prompt conditioner only — clean 404s, never a crash), r5 proved the real image-job path and the terminal state in 75 s. Evidence `/tmp/w022{,r2,r3,r4,r5}/`. **Earlier this span**: tasks 020/021 (the stock-cleanup re-land) and task-019 (one shared PUP door) stand closed; `docs/fresh-box.md` was rewritten in the post-019 shape **before** 022 — its gateway section still needs the one-door update (drafted for sign-off). **Current work = task-017 (upstream PR — prepared, parked on the owner's call)**; next in the queue after that call: task-023.) `[ ]` open, `[x]` done. **Current work = the oldest file in [`tasks/todo/`](tasks/todo/)** — see [PLAN.md](PLAN.md) for the map.
+Updated 2026-11-06 (**task-022 CLOSED this span — the one-door, single-key topology is live and proven**: the gateway (wildcard `:8081`) is the box's only LAN door for model traffic, keyed with the 48-char box key (no-key 401 / with-key 200 / wrong-key 401; `/health` open keyless by v269 design); **zero fixed engine ports** — all eight models on `${PORT}` daemon-assigned (the v269 contract: assigned by *alphabetically sorted* model ID from `startPort: 9100` — 9100 creative-fast … 9107 qwen3.8-27b-vision), every bind `127.0.0.1`; the vLLM pair carries the explicit mutual-exclusion set `vllm: "v | vv"` (proven both directions: vision evicts text onto 9107, text evicts vision back onto 9106); the kokon service runs the compose-managed image `external-engine-0.11.2-d93c3c3` (`apiKey` on `ExternalEngine` + the vlm entries; pristine config backup in the volume) with its exact client path proven — door 9104 (both aliases), turbo 9105 (capabilities), klein 9103 (a real 1024×1024 image job, 14 s, PNG back); vLLM resident on 9106 as the terminal state with both stream modes working. The `w022` window ran five times, each one teaching something: r1 did the config swap + keying + daemon onto the wildcard (died on an async-`systemctl`/`ss`-format harness bug), r2 proved the keying and the pair switch, r3 the service cutover (the pre-compose container's missing labels forced a remove-then-create; stops 2 s) + measured stops, r4 exposed that the BFL hybrid has **no** `/v1/completions` (its LLM loads as the prompt conditioner only — clean 404s, never a crash), r5 proved the real image-job path and the terminal state in 75 s. Evidence `/tmp/w022{,r2,r3,r4,r5}/`. **Earlier this span**: tasks 020/021 (the stock-cleanup re-land) and task-019 (one shared PUP door) stand closed; `docs/fresh-box.md` was rewritten in the post-019 shape **before** 022 — its gateway section still needs the one-door update (drafted for sign-off). **Current work = task-17a (MOSS-Image research — doc only, park-until-stable verdict); then task-024 (the 0.12 rebase onto upstream master)**; task-023 sorts first by filename but stays parked on the owner's trigger — the `## Current` section is the pointer.) `[ ]` open, `[x]` done. See [PLAN.md](PLAN.md) for the map.
 Keep this file current at the end of every task.
 
 ## Decisions (resolved 2026-11-01 — details in PLAN.md §6)
@@ -11,6 +11,7 @@ Keep this file current at the end of every task.
 - [x] D-FB — VLM down mid-job = hard-fail (making the VLM work is our job)
 - [x] D-WIP — in-engine Qwen3.5 port branch deleted (was ff69b0d; rabbit hole, do not follow)
 - [x] D-ST — host's `stable/` (vllm) is owner-owned; stays as-is
+- [x] D-RB — (owner, 2026-11-06) rebases always target **upstream master**, never a release commit (upstream doesn't tag its releases; master = the release plus post-release work only). **The fork does no releases** — releases are the origin's/author's view (their installers, their tags); if the upstream PR doesn't land, our release mechanism is: clone the fork → `docker build` → `docker compose up -d` (the service image is the product; `docs/fresh-box.md`).
 
 ## Gaps (PLAN.md §2)
 - [x] G1 per-pipeline config surface: entrypoints + key + prompt bundle, all pointable (task-005)
@@ -20,7 +21,7 @@ Keep this file current at the end of every task.
 - [x] G5 production qwen = stock build + PUP sidecar (task-012, 013, 014 — stock pin 290148d per the audit; PUP = 9B, task-014)
 - [x] G6 gateway: generic N-models-per-job, the "matrix" (task-015 — **v269's native `matrix` router, no upstream PR needed**: `config.yaml.stock-015` live 11-04, sets klein=k&p&v / qwen-t=qt&pq / qwen-f=qf&pqf / small=(cf|cs)&v, vLLM shared across sets; 4,608-case replay 0 violations / all deltas strict supersets; live window proved it in 255 s (protect-vllm kept under the matrix, qwen evicts vLLM, vLLM reclaims the resident qwen pair — the nudge-404 class fixed at the router); one latent race found and fixed in vllm-serve.sh (never double-launch an in-flight boot); deploy-dir doc `MATRIX.md` = how to define a new job's set)
 - [x] G7 fresh-box doc (task-016 — `docs/fresh-box.md`: the whole stack from a new machine — host layout, verified prerequisites, the final-state model list with the provenance convention, the stock engine recipes, the v269 gateway with the full matrix routing block, the service image + schema-13 compose, verification checklist, ops rules; no BFL prompt bytes, no fork references)
-- [ ] G8 upstream PR / merge / philosophy discussion — last (task-017 — **prepared, parked on the owner's call**: branch `pr-external-engine-v2` (local only) = upstream 200f3d5 + 5 DCO commits of the feature in final v2 form (schema-13 config, gateway client, service-side VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green on the branch; the draft PR body + discussion variant + 4 decision points in `tracker/pr-upstream-body.md` — **nothing pushed, nothing submitted**: even a push to the public fork would make the BFL bundle public for the first time; the parked 10-commit pre-v2 branch is superseded, not rebased)
+- [ ] G8 upstream PR / merge / philosophy discussion — last (task-017 — **prepared, parked on the owner's call**: branch `pr-external-engine-v2` (local only) = upstream 200f3d5 + 5 DCO commits of the feature in final v2 form (schema-13 config, gateway client, service-side VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green on the branch; the draft PR body + discussion variant + 4 decision points in `tracker/pr-upstream-body.md` — **nothing pushed, nothing submitted**: even a push to the public fork would make the BFL bundle public for the first time; the parked 10-commit pre-v2 branch is superseded, not rebased; **resequenced 2026-11-06**: after task-024's rebase, the discussion variant — not the PR — is posted when the re-derived branch is in a mergeable-on-the-spot shape; rejection on the author's one-model vision is the expected outcome (owner), the fork is the product either way (D-RB))
 
 ## Work packages (PLAN.md §4)
 - [x] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling) / task-002 done 11-02 (`290148d` pinned + built + stock klein verified, findings logged) / task-003 done 11-02 (`models/gguf`+`models/sd-cpp` reorg per the provenance convention, all reference paths updated, config validates 6/6; klein DiT conversion source unresolved — owner question, non-blocking)
@@ -32,15 +33,36 @@ Keep this file current at the end of every task.
 [x] WP6 stock-cleanup — task-020 done 11-04, reopened 11-05, **re-land COMPLETE and closed this span** — the 11-04 record (stock-016 live, deferral proven in both directions, chat-priority the product fact) stands as the provenance of the invariants; the 11-05 re-land: layout surgery (pure stock trees; `_scripts`/`_configs`/`_jobs` homes; 10 pure-boot scripts; **no `cmdStop` anywhere**; `.last-good` + reload semantics; `logToStdout: both`), the owner's handover to the daemon-owned vllm, the pre-window daemon restart (journal mirror engaged; the P3 bind-handover race found + gated), and the **w020r window PASSED 223 s** (vllm 4-s group stop with `EngineCore` in the journal, llama.cpp 2-s, every set eviction per the stock-017 sets, vllm restored last, DONE marker last). Record: `done/task-020.md`.
 
 ## Current
-**task-017 — upstream PR / merge / philosophy (G8, WP4 — the last work package) — in `doing/`, parked on the owner's call.**
-`pr-external-engine-v2` (local only) = upstream 200f3d5 + 5 DCO commits of the
-final-form feature (schema-13 config, gateway client, service-side VLM,
-runtime bundles, picker + box UI, GPU-free mock-gateway test); qls-core 327 /
-service 17 / vitest 160 all green on the branch. Draft PR body + discussion
-variant + the four decision points (BFL bundle in/out, box-editor in/out,
-discussion-first, push/submit timing) in `tracker/pr-upstream-body.md`.
-Nothing pushed or submitted: even a push to the public fork would make the
-BFL bundle public for the first time. G8 closes with the owner's call.
+**task-17a — MOSS-Image research (doc only) — next up; task-024 (the 0.12
+rebase) after it; task-023 stays parked on the owner's trigger.**
+- **task-024 — rebase onto upstream master (= 0.12.0)** — the live `flux`
+  (base `f2e4757`) and the parked PR branch (base `200f3d5`) sit 31 commits
+  below master: 0.12.0 (merge `92f63c4`: Layers lab, Paint-with-colours,
+  Prompt+ for areas/Expand, AI-marking, Mac engine on by default) + 6
+  post-release commits (zero code). Re-land the external-engine feature on
+  it; the one design branch is 0.12's area/Expand Prompt+ (external mode →
+  the service-side VLM via the task-006 client; default mode stays
+  upstream's in-engine path); 0.12's service-resident ONNX (MobileSAM in
+  the webview, BiRefNet-lite CPU) and the lab come in as-is, identical in
+  both modes. The PR branch is re-derived from the result (the old
+  `pr-external-engine-v2` retired, not rebased). One GPU window (w024) per
+  the autonomy protocol before the cutover; `docs/fresh-box.md` gets 0.12
+  and the 022 one-door update in the same pass.
+- **task-017 — upstream PR — parked until the rebase lands (owner,
+  2026-11-06).** `pr-external-engine-v2` (local only) = upstream 200f3d5 +
+  5 DCO commits of the final-form feature (schema-13 config, gateway
+  client, service-side VLM, runtime bundles, picker + box UI, GPU-free
+  mock-gateway test); qls-core 327 / service 17 / vitest 160 all green on
+  the branch; superseded by the re-derived branch of task-024. Draft PR
+  body + discussion variant + the four decision points (BFL bundle in/out,
+  box-editor in/out, discussion-first, push/submit timing) in
+  `tracker/pr-upstream-body.md`. Nothing pushed or submitted (the BFL
+  bundle has never been pushed anywhere). The owner's call: post the
+  **discussion variant only** (not the PR), and only when the re-derived
+  branch is mergeable on the spot; rejection on the author's one-model
+  vision is the expected outcome — the fork is the product either way
+  (D-RB). The BFL-bundle and box-editor decision points stay open until
+  that post.
 - **task-022 closed this span** (one-door, single-key topology — the full
   record: the target table, the v269 alphabetical `\${PORT}` contract, the
   five-run window history and each lesson it taught, the final box state,
@@ -59,7 +81,7 @@ BFL bundle public for the first time. G8 closes with the owner's call.
   `done/task-019.md`); the only open thread is the owner's eyes on a klein
   edit of a sub-1 MP input (the one behavior change: a 1 MP upscale instead
   of pass-through — pre-cleared, not a window phase).
-- Next in the queue after the owner's 017 call: **task-023** (job-hold
-  sidecar) — the oldest file in `tasks/todo/`.
+- **task-023** (job-hold sidecar) stays parked on the owner's trigger —
+  no observed pain from concurrent use; the queue after 17a/024/017.
 - (done this span: **task-018** — the matrix-router question parked since the task-013 era is the same work as done task-015: resolved as a duplicate, with the AC's written comparison written as `tracker/audits/matrix-vs-groups-018.md` (per-requested-model groups-vs-matrix table; the three delta classes; the one deliberately dropped asymmetry; the 4,608-case replay and the live 255 s window as evidence; `config.yaml.stock-015` is the realized candidate, one-copy rollback to stock-014). The queue now holds task-019 (parked) and task-022 (the owner's one-door single-key topology, parked on the owner's two decisions), with task-020 the current work.)
 - (done this span: **task-016** — the fresh-box reproduction doc is `docs/fresh-box.md`: the whole stack from a new machine (host layout; verified prerequisites; final-state model list + provenance convention; the stock engine recipes at their pins; the v269 gateway with the full matrix routing block and its three-rule semantics; the service image + host-network compose + schema-13; the verification checklist incl. the `matrix:` journal line; the ops rules incl. reload-kills-models and marker-last windows). No BFL prompt bytes, no fork references. AGENTS.md's doc table points at it.)
