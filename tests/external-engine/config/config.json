@@ -66,7 +66,7 @@
   "ui": {},
   "externalEngine": {
     "gateway": "http://127.0.0.1:39990/upstream",
-    "model": "kokon-full",
+    "model": "kokon-qwen-image-2.1-full",
     "modelName": "qwen-image-2.1-Q8_0.gguf",
     "sample": {
       "cfg": 6.0,

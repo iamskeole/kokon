@@ -11,8 +11,8 @@ import base64, json, sys, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODELS = {
-    "kokon-turbo": "qwen-image-2.1-turbo-Q4_K_M.gguf",
-    "kokon-full": "qwen-image-2.1-Q8_0.gguf",
+    "kokon-qwen-image-2.1-turbo": "qwen-image-2.1-turbo-Q4_K_M.gguf",
+    "kokon-qwen-image-2.1-full": "qwen-image-2.1-Q8_0.gguf",
 }
 PORT = int(sys.argv[1])
 LOAD_S = float(sys.argv[2]) if len(sys.argv) > 2 else 1.5

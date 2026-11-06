@@ -19,7 +19,7 @@ cat > "$D/config/config.json" <<EOF
   "setupComplete": true,
   "externalEngine": {
     "gateway": "http://127.0.0.1:$GW/upstream",
-    "model": "kokon-turbo",
+    "model": "kokon-qwen-image-2.1-turbo",
     "modelName": "qwen-image-2.1-turbo-Q4_K_M.gguf",
     "sample": {}
   }
@@ -73,8 +73,8 @@ for i in $(seq 1 40); do
   JST=$(js "$JID")
   [ "$JST" = done ] || [ "$JST" = failed ] && break
 done
-check "job completed through /upstream/kokon-turbo" done "$JST"
-grep -q "upstream/kokon-turbo/sdcpp/v1/img_gen" "$D/requests.log" \
+check "job completed through /upstream/kokon-qwen-image-2.1-turbo" done "$JST"
+grep -q "upstream/kokon-qwen-image-2.1-turbo/sdcpp/v1/img_gen" "$D/requests.log" \
   && { echo "PASS: img_gen request used the /upstream prefix"; pass=$((pass+1)); } \
   || { echo "FAIL: no /upstream img_gen request logged"; fail=$((fail+1)); }
 JERR=$(curl -s -H "$H" $S/jobs/"$JID" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('error') or '-')")
@@ -83,7 +83,7 @@ JERR=$(curl -s -H "$H" $S/jobs/"$JID" | python3 -c "import json,sys;d=json.load(
 echo "=== 4. flavor switch: turbo -> full (records the pick, touches nothing) ==="
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/models/switch -d "{
   \"gateway\": \"http://127.0.0.1:$GW/upstream\",
-  \"model\": \"kokon-full\",
+  \"model\": \"kokon-qwen-image-2.1-full\",
   \"modelName\": \"qwen-image-2.1-Q8_0.gguf\",
   \"sample\": {\"steps\": 20, \"cfg\": 6.0, \"sampler\": \"euler\", \"clear_sigmas\": true}
 }" > /dev/null
@@ -91,7 +91,7 @@ sleep 1
 R=$(sf)
 check "after switch: still ready on turbo, no load started" "ready false qwen-image-2.1-turbo-Q4_K_M.gguf" "$R"
 check "gateway: no load, no eviction for a mere switch" "1 0" "$(gs loads) $(gs evicts)"
-check "config now selects full" "kokon-full" "$(curl -s -H "$H" $S/config | python3 -c "import json,sys;print(json.load(sys.stdin)['externalEngine']['model'])")"
+check "config now selects full" "kokon-qwen-image-2.1-full" "$(curl -s -H "$H" $S/config | python3 -c "import json,sys;print(json.load(sys.stdin)['externalEngine']['model'])")"
 
 echo "=== 5. the next generation triggers the swap ==="
 JID=$(curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/jobs -d '{"prompt":"a red square","mode":"generate","quality":"fast","width":64,"height":64}' | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
