@@ -2128,13 +2128,17 @@ impl Engine {
             .iter()
             .find(|m| m.model == model)
             .and_then(|m| m.vlm.as_ref());
+        // The service's key to the gateway is inherited by any VLM
+        // entrypoint that names no key of its own (the one-door topology —
+        // every entrypoint sits behind the same keyed gateway).
+        let gw_key = cfg.external_engine.as_ref().map(|e| e.api_key.as_str());
         let vlm = match pipeline_vlm {
-            Some(v) => Some(crate::vlm::VlmClient::new(v)),
+            Some(v) => Some(crate::vlm::VlmClient::with_inherited_key(v, gw_key)),
             None if enhancer::bfl_pup(model) => cfg
                 .external_engine
                 .as_ref()
                 .and_then(|e| e.vlm.as_ref())
-                .map(crate::vlm::VlmClient::new),
+                .map(|v| crate::vlm::VlmClient::with_inherited_key(v, gw_key)),
             None => None,
         };
         if vlm.is_none() && !caps.text_generation {

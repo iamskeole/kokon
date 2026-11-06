@@ -59,6 +59,28 @@ impl VlmClient {
         }
     }
 
+    /// Construct with the service's gateway key as an **inherited default**:
+    /// an endpoint that names no key of its own presents the gateway key
+    /// (the one-door topology — the service's gateway client and every VLM
+    /// entrypoint sit behind the same keyed gateway, one admission key); a
+    /// non-empty endpoint key always wins (a per-endpoint key is an
+    /// override, e.g. for a VLM served by a different, separately keyed
+    /// server). Both empty = keyless, as with [`Self::new`].
+    pub fn with_inherited_key(endpoint: &VlmEndpoint, inherited: Option<&str>) -> Self {
+        let own = endpoint.api_key.trim();
+        if !own.is_empty() {
+            return Self::new(endpoint);
+        }
+        match inherited.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => {
+                let mut e = endpoint.clone();
+                e.api_key = k.to_string();
+                Self::new(&e)
+            }
+            None => Self::new(endpoint),
+        }
+    }
+
     /// Where requests go: named in the error message.
     pub fn entrypoint(&self) -> &str {
         &self.base
@@ -324,6 +346,40 @@ mod tests {
         client.chat(&req("hi", vec![]), Duration::from_secs(10)).await.unwrap();
         let raw = seen.await.unwrap();
         assert!(raw.contains("authorization: Bearer sekret"), "{}", raw);
+    }
+
+    #[tokio::test]
+    async fn an_empty_endpoint_key_inherits_the_gateway_key() {
+        // The one-door topology: the service's key to the gateway applies
+        // to any VLM entrypoint behind the same gateway that names no key
+        // of its own.
+        let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        let (port, seen) = mock_chat(200, body).await;
+        let client = VlmClient::with_inherited_key(&endpoint(port, ""), Some("gwkey"));
+        client.chat(&req("hi", vec![]), Duration::from_secs(10)).await.unwrap();
+        let raw = seen.await.unwrap();
+        assert!(raw.contains("authorization: Bearer gwkey"), "{}", raw);
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_key_beats_the_inherited_one() {
+        let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        let (port, seen) = mock_chat(200, body).await;
+        let client = VlmClient::with_inherited_key(&endpoint(port, "sekret"), Some("gwkey"));
+        client.chat(&req("hi", vec![]), Duration::from_secs(10)).await.unwrap();
+        let raw = seen.await.unwrap();
+        assert!(raw.contains("authorization: Bearer sekret"), "{}", raw);
+        assert!(!raw.contains("gwkey"), "{}", raw);
+    }
+
+    #[tokio::test]
+    async fn no_key_anywhere_stays_keyless() {
+        let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        let (port, seen) = mock_chat(200, body).await;
+        let client = VlmClient::with_inherited_key(&endpoint(port, ""), None);
+        client.chat(&req("hi", vec![]), Duration::from_secs(10)).await.unwrap();
+        let raw = seen.await.unwrap();
+        assert!(!raw.to_ascii_lowercase().contains("authorization"), "{}", raw);
     }
 
     #[tokio::test]
