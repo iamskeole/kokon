@@ -255,8 +255,8 @@ new number). The journal always prints the number actually in use
 
 - The **phone's pi** needs K in its provider config (or it 401s at the
   gateway); its `:18021` proxy needs no change.
-- The creative pair's `$1`-port boot proof, if the owner wants it
-  (optional window; each boot costs a multi-minute chat drop).
+- The creative pair's `$1`-port boot proof — **done the same day, the
+  `w022c` window (see the addendum below); 105 s, both proven.**
 - Docs in their settled shape (`docs/fresh-box.md`'s gateway section —
   the one-door topology, the alphabetical port contract, *no* port table;
   the add-a-model guide — a new model needs no port knowledge; host OPS
@@ -265,3 +265,45 @@ new number). The journal always prints the number actually in use
 **No new owner decisions were required during execution;** the two
 mid-window corrections (the yield ground truth; the compose label
 history) are harness/deploy-history facts, recorded above.
+
+## Addendum 2026-11-06 (same day, post-close)
+
+**Orphan `macros:` block removed; the settled config is now
+`b4862632d758a540cf140eb13e1e5d31`** (live == `.last-good` == `.new`,
+superseding `115283be…` above). v269's `macros:` blocks are named values
+expandable as `${name}` inside config strings (`cmd`/`proxy`/`env`/…);
+the two blocks in the one-door config (`gguf26`/`gguf31` — and, in the
+draft generation, `creativeFast`/`creativeSlow`) were referenced by
+*nothing*: since the re-land the boot scripts are the single source of
+truth for their own paths, `LD_LIBRARY_PATH` and (byte-frozen) sampling
+flags. The only macro-style reference left in the config is the built-in
+`${PORT}`. The removal went live by hot-reload and re-seeded the triple;
+no engine was disturbed (the running vllm's cmd is untouched — but see
+the reload lesson below).
+
+**The `w022c` creative-pair window: DONE in 105 s** (job
+`backends/_jobs/w022c-job.sh` + watcher variant; evidence `/tmp/w022c/`,
+window config archived as `_configs/llama-swap.yaml.window-022c`).
+Registry-neutralized first (the w019 run-1 lesson: the box's own chat
+traffic must not be able to evict a booting writer; the box chat was
+down for the 105 s and came back with the terminal restore). Both
+writers, through the keyed gateway: **creative-fast** (26B, 9100 —
+healthy in 21 s, alias reported, 1-token answered, 2 s group-stop
+unload, card to empty) and **creative-slow** (31B, 9101 — healthy in
+20 s, same proof, 2 s stop). Then the final config restored (hot-reload)
+and vllm rebooted on 9106 (54 s, both stream modes) as the terminal
+state. No failures; the neutralization made it deterministic. (The two
+`$1`-port scripts had never actually run since the re-land — this was
+the first real execution of each; both were correct as written.)
+
+**v269 hot-reload lesson (observed live twice, now an OPS fact).**
+`-watch-config` does a **full in-process server restart** on every
+config change: it stops *all* running model children (with their groups)
+and cuts in-flight streams — an in-flight chat request gets one 200-with
+empty body and the client retries; on-demand models come back on the
+next request (vllm re-booted ~40 s warm in both observed cases). And the
+daemon does **not** re-seed `.last-good` on a reload — the file stays
+manually maintained (re-seed it after every healthy edit). Consequence:
+any live config edit is a whole-box engine reset + one chat hiccup, even
+when the edited model isn't running — batch config changes into one
+edit.

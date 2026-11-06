@@ -44,7 +44,13 @@ BFL bundle public for the first time. G8 closes with the owner's call.
 - **task-022 closed this span** (one-door, single-key topology — the full
   record: the target table, the v269 alphabetical `\${PORT}` contract, the
   five-run window history and each lesson it taught, the final box state,
-  the owner-side open threads — is in `done/task-022.md`).
+  the owner-side open threads — is in `done/task-022.md`; same-day
+  addendum: the orphan `macros:` block removed (settled config
+  `b4862632…`), the **`w022c` creative-pair window DONE in 105 s**
+  (both G4 writers proven through the keyed gateway on 9100/9101), and
+  the v269 hot-reload lesson — a config reload is a full in-process
+  server restart: all engines stop, in-flight streams get one cut,
+  `.last-good` is never auto-re-seeded).
 - **task-019 closed 2026-11-05** (the full record — spec, run 1's failure
   and the design fix it produced, run 2's evidence, before/after — is in
   `done/task-019.md`); the only open thread is the owner's eyes on a klein
