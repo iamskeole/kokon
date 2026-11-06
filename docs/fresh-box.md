@@ -18,17 +18,19 @@ a fork of an engine.
 Kokon service (this repo: docker image)          browser + MCP
         │  loopback HTTP + token
         ▼
-llama-swap gateway (stock, pinned) on 127.0.0.1:8081
-        │  starts / evicts on demand; TTL unloads; the only thing that
-        │  ever stops a model process (its default process-group signal)
+llama-swap gateway (stock, pinned) on 0.0.0.0:8081
+        │  the box's ONLY LAN door for model traffic — keyed (one 48-char
+        │  box key; /health is the only open path); starts / evicts on
+        │  demand; TTL unloads; the only thing that ever stops a model
+        │  process (its default process-group signal)
         ▼
-engines, all on 127.0.0.1:
-  sd-server (stable-diffusion.cpp, pinned)     :39160 qwen  :39170 klein
-  llama-server (llama.cpp, pinned)             :39175 the PUP sidecar
-                                               (one shared door, all three
-                                               image families) · :9100/:9101
-                                               the creative writers
-  vLLM (owner's chat model; two variants, one port)   :18020  text: qwen3.8-27b · vision: qwen3.8-27b-vision
+engines, all on daemon-assigned 127.0.0.1 ports (${PORT}, from 9100 —
+  assigned by sorted model ID, so there is no port table to memorize):
+  sd-server (stable-diffusion.cpp, pinned)     the qwen engines + the klein engine
+  llama-server (llama.cpp, pinned)             the shared PUP door (all three
+                                               image families) + the two creative writers
+  vLLM (owner's chat model; two variants, one at a time —
+                                               set vllm: "v | vv")  text: qwen3.8-27b · vision: qwen3.8-27b-vision
 ```
 
 The service speaks only to the **gateway**, never to engines directly: each
@@ -36,6 +38,13 @@ pipeline in its config names a gateway alias for its engine and another for
 its VLM sidecar (all three image families point their VLM at the same shared
 PUP door — task-019). The gateway is the only component that ever starts a
 process, and since the 2026-11-05 re-land the only one that ever stops one.
+Since the 2026-11-06 one-door cutover the gateway is **keyed** with one
+48-char box key: the service presents it on every call
+(`externalEngine.apiKey`; a VLM entrypoint that names no key of its own
+inherits it), and so does every other client of the box (the owner's phone,
+MCP) — a call without the key is a 401, except `/health`. There are no fixed
+engine ports anywhere: the daemon assigns every engine a loopback number at
+config load and proxies to it (the contract is in the gateway section).
 ## Host layout
 
 Everything deployment-side lives under one root (reference host: `/home/p/ml`),
@@ -56,6 +65,8 @@ ml/backends/     llama.cpp/             pinned, pure upstream — one shared
                                         scripts (one per gateway model)
                  _configs/              deployment space: llama-swap.yaml
                                         (the config home) + llama-swap.yaml.last-good +
+                                        gateway.key (the box key, mode 600 —
+                                        never in git, never echoed) +
                                         adding-a-model.md
                  _jobs/                 the window tooling (verification
                                         windows, the daemon-restart job)
@@ -125,8 +136,9 @@ it is the owner's chat-model checkpoint served with its vision tower enabled
 (same directory, same quant, same download — the provenance is the one the
 chat-model runtime's `provenance.md` already records; only the launch differs:
 no `--language-model-only`, a shorter context, and the second served name).
-It shares the main variant's port and therefore its whole lifecycle (one
-process at a time; a request for either evicts the other).
+It has its own assigned port, but the two share the card: the set
+`vllm: "v | vv"` (§3) keeps them mutually exclusive — one process at a
+time, a request for either evicting the other.
 
 The PUP fine-tune runs as **one shared sidecar door** (task-019) at Q4_K_M —
 the only quant that fits all three image pairs in 24 GB (the Q8 full door's
@@ -143,7 +155,10 @@ Downloads: follow each directory's `provenance.md` on the reference host
 
 Four pinned upstream checkouts under `backends/`; **none is modified** (the
 purity rule above). The boot scripts in `backends/_scripts/` are the only
-thing between the gateways models and these trees.
+thing between the gateway's models and these trees; **every one of them
+takes its port as `$1`** — the daemon hands it the number `${PORT}` assigned
+at config load (the gateway section), so no script and no config line ever
+names a port.
 
 **stable-diffusion.cpp** at a pinned master commit (one `sd-server` build
 serves both image families):
@@ -164,14 +179,14 @@ The exact engine invocations (verified; the `serve-kokon-*.sh` scripts
 preflight their model files and `exec` this binary — the daemon's tracked
 process *is* the engine):
 
-- **klein** (`:39170`): `sd-server --listen-ip 127.0.0.1 --listen-port 39170
+- **klein** (port from `$1`): `sd-server --listen-ip 127.0.0.1 --listen-port "$1"
   --diffusion-model models/sd-cpp/BFL/flux-3-image-klein/model-Q8_0.gguf
   --llm models/gguf/Qwen/Qwen3-VL-4B-Instruct/model-Q4_K_M.gguf
   --llm_vision models/gguf/Qwen/Qwen3-VL-4B-Instruct/mmproj-Q8_0.gguf
   --vae models/sd-cpp/BFL/flux-3-ae/ae.safetensors
   --hires-upscalers-dir models/sd-cpp/upscalers
   --flash-attn on --sage-attn --eager-load --max-vram 0 --rng cuda`
-- **qwen** (`:39160`, one process; the variant picks the DiT): turbo →
+- **qwen** (port from `$1`; one process; the variant picks the DiT): turbo →
   `qwen-image-2.1-turbo/model-Q4_K_M.gguf`, full → `qwen-image-2.1/model-Q8_0.gguf`;
   conditioner `Qwen3-VL-8B-Instruct` (Q4_K_M + mmproj-F16); VAE the
   texture-fix one. Same flag set as klein.
@@ -196,7 +211,7 @@ cmake --build build --config Release -j12 --target llama-server
 
 The PUP sidecar is a plain `llama-server` (OpenAI-compatible, with vision).
 Since task-019 it is **one shared door** (`serve-kokon-pup.sh`): the BFL PUP
-fine-tune at Q4_K_M + mmproj-F16 on `:39175`, `--ctx-size 8192`, thinking
+fine-tune at Q4_K_M + mmproj-F16 on its `$1` port (daemon-assigned), `--ctx-size 8192`, thinking
 off (`--jinja --chat-template-kwargs '{"enable_thinking":false}'`), image
 clamps `--image-min-tokens 1024 --image-max-tokens 4096` (the processor is
 patch-16/merge-2 — one visual token per 32×32 px; the fine-tune's mmproj
@@ -204,7 +219,8 @@ metadata carries no pixel limits, so these flags set the window), default
 sampling = the base model's official non-thinking general row, and two
 `--alias` names so the single process answers both client families. The
 creative writers (`serve-g4-meromero-v2-26b.sh` / `-31b.sh`) are the same
-binary on the gateway's auto-assigned ports (9100/9101).
+binary, each taking its daemon-assigned port as `$1` (9100/9101 on this box
+— the alphabetical contract in the gateway section).
 
 **hyperqwen-032** — the owner's chat-model runtime: a stock upstream
 vLLM-based tree with a project venv (reference host: python 3.14). The two
@@ -225,13 +241,38 @@ cd backends/llama-swap && git checkout v269 && make   # -> build/llama-swap-<goo
 
 The deployment lives in the two underscore directories (purity rule):
 `_configs/` — `llama-swap.yaml` (the config home),
-`llama-swap.yaml.last-good`, `adding-a-model.md` — and `_scripts/` (the boot scripts). The daemon runs as
+`llama-swap.yaml.last-good`, `gateway.key`, `adding-a-model.md` — and
+`_scripts/` (the boot scripts). The daemon runs as
 a **systemd user unit** (`ml-llama-swap`):
 
 ```
 ExecStart=…/backends/llama-swap/build/llama-swap-linux-amd64 \
-          -config …/backends/_configs/llama-swap.yaml -listen 127.0.0.1:8081 -watch-config
+          -config …/backends/_configs/llama-swap.yaml -listen 0.0.0.0:8081 -watch-config
 ```
+
+The wildcard bind is deliberate: after the one-door cutover (2026-11-06)
+this port is the box's **only** LAN door for model traffic (the phone and
+any other device reach the models through it; the kokon UI on `:39152` and
+the owner's phone proxy on `:18021` are the only other exposed listeners,
+and they route onward to the gateway). Every model-side listener stays
+`127.0.0.1`-only.
+
+**Keyed: one admission key.** The config carries a top-level `apiKeys:`
+list — one 48-char box key on this box; the key's home is
+`_configs/gateway.key` (mode 600, never in git, never echoed). Every
+model-routed path demands it — `/v1/models`, `/upstream/*`, `/running`,
+`/unload`, the UI and the `/logs` rings (`Authorization: Bearer <key>`,
+Basic or `x-api-key` also accepted) — while `/health` (and `/wol-health`)
+stay open. The key is a **door ticket, not an engine secret**: the
+reverse proxy forwards the client's `Authorization` header verbatim to
+engines that have no auth of their own (llama-server, sd-server, and this
+box's keyless vLLM), so the key is inert past the gateway. The daemon
+builds its auth middleware from the config on every load, so a key change
+takes effect on the next hot reload — but a reload is a whole-box engine
+reset (below), so a key change is a window like any other config change.
+Every client of the box holds a copy of the key: the service
+(`externalEngine.apiKey` in its volume config; a VLM entrypoint with no
+key of its own inherits it), the owner's phone, MCP.
 
 **Pure boots, no `cmdStop`.** Every `cmd` is a small POSIX script that
 preflights (model files present, its port free) and `exec`s the engine: the
@@ -245,22 +286,36 @@ vLLM 4 s fired→exit, llama.cpp 2 s, VRAM back to ~1 MiB in both; the
 behavior. No script on this box kills or evicts anything the router tracks —
 **the router is the sole eviction authority**.
 
-`llama-swap.yaml`: `startPort: 9100` (auto-assignment for the creative
-writers), `healthCheckTimeout: 1200` (a cold vLLM load once took ~16 min),
+`llama-swap.yaml`: `startPort: 9100` (the base of the **port assignment for
+every** model — the contract below), `healthCheckTimeout: 1200` (a cold
+20-GB-plus load can take that long — vLLM once took ~16 min),
 `globalTTL: 0` (per-model TTLs decide — 600 s the kokon models, 300 s the
-writers), `logLevel: info`, `logToStdout: both`, and one entry per model
-(`proxy`, `cmd`, `checkEndpoint`, `ttl`, `unloadTimeout`, capabilities):
+writers), `logLevel: info`, `logToStdout: both`, the `apiKeys:` block
+above, and one entry per model (`proxy`, `cmd`, `checkEndpoint`, `ttl`,
+`unloadTimeout`, capabilities) — **every `cmd` and every `proxy` uses the
+`${PORT}` macro, so the config names no port at all**:
 
 | model | engine | port | in a set |
 |---|---|---|---|
-| `qwen3.8-27b` | vLLM (text) | :18020 | no — **orphan** |
-| `qwen3.8-27b-vision` | vLLM (vision tower on; same port, second served name) | :18020 | no — **orphan** |
-| `kokon-klein` | stock sd-server (FLUX.3 Klein) | :39170 | `klein` |
-| `kokon-pup` | llama-server (the shared PUP door, two names) | :39175 | **all three image sets** |
-| `kokon-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | :39160 | `qwen-t` |
-| `kokon-full` | stock sd-server (Qwen-Image 2.1 full) | :39160 (shared with turbo) | `qwen-f` |
-| `creative-fast` | llama.cpp (G4 26B, MTP) | auto (9100) | `small` |
-| `creative-slow` | llama.cpp (G4 31B, MTP) | auto (9101) | `small` |
+| `creative-fast` | llama.cpp (G4 26B, MTP) | 9100 | `small` |
+| `creative-slow` | llama.cpp (G4 31B, MTP) | 9101 | `small` |
+| `kokon-full` | stock sd-server (Qwen-Image 2.1 full) | 9102 | `qwen-f` |
+| `kokon-klein` | stock sd-server (FLUX.3 Klein) | 9103 | `klein` |
+| `kokon-pup` | llama-server (the shared PUP door, two names) | 9104 | **all three image sets** |
+| `kokon-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | 9105 | `qwen-t` |
+| `qwen3.8-27b` | vLLM (text) | 9106 | `vllm` |
+| `qwen3.8-27b-vision` | vLLM (vision tower on; own port, second served name) | 9107 | `vllm` |
+
+**The port contract (a v269 property — nothing to memorize).** The daemon
+assigns the next number from `startPort` to the models **with their IDs
+sorted alphabetically** at config parse (`macros.go` collects the map keys
+and `sort.Strings` them) — so the table above is the whole story, it is
+deterministic per config version, and neither the config nor any script
+carries a port. Adding a model whose ID sorts *before* an existing one
+shifts that existing model's number — harmless: only the gateway knows the
+map, a reload re-boots on the new number, and the journal prints the number
+actually in use on every boot (`… Health check passed on
+http://127.0.0.1:9103/…`).
 
 and the **routing block** (the matrix router, v269):
 
@@ -276,6 +331,7 @@ routing:
           qt: kokon-turbo       # three image sets (task-019): a family or
           qf: kokon-full        # flavor switch reloads only the engine,
           v: qwen3.8-27b        # never the sidecar
+          vv: qwen3.8-27b-vision
           cf: creative-fast
           cs: creative-slow
         sets:
@@ -283,6 +339,7 @@ routing:
           qwen-t: "qt & p"
           qwen-f: "qf & p"
           small:  "cf | cs"
+          vllm:   "v | vv"      # the two vLLM variants never coexist
 ```
 
 Three rules: a **set** declares which models may co-reside; it never starts
@@ -291,18 +348,21 @@ from the kokon job's two gateway calls, VLM request then image request, and
 stays co-resident because both are in `klein`). A request for a model **keeps
 every running model that sits in some set containing it and evicts the rest**
 (cheapest first, `evict_costs`, default 1). A model that is a **leaf of no
-set at all** is an *orphan*: a request for it evicts *everything* running.
-Here **the vLLM variants are deliberately orphans — both of them.** The text
-and the vision variant share **one listener on :18020 under two served
-names** (the port is not the model's identity; the `--served-model-name` in
-the process argv is), and only one of them can hold the 24 GB card at a
-time, so a request for either first stops the resident other with the
-daemon's group signal and reclaims the whole card, and (the part that
-matters) the daemon's **FIFO scheduler** (in stock since v225; the default,
-no config needed) **defers that request while any evict target is still
-handling one** — journal (debug level): `queuing request for model … (would
-evict in-flight process)` — and re-evaluates on every completion. An
-in-flight request is never interrupted; the evictor waits. The sets:
+set at all** is an *orphan*: a request for it evicts *everything* running —
+and since the one-door cutover **no model on this box is an orphan**: the
+vLLM variants, which used to be (the pre-cutover shared-port orphan
+convention), now sit in their own set, **`vllm: "v | vv"`**. That set is a
+disjunction the matrix solver can never satisfy with both sides (a state
+carries one value per variable), so the two variants — 24 GB each, one card
+— **never coexist even though they now have distinct ports**: a request for
+either first stops the resident other with the daemon's group signal and
+reclaims the whole card, and (the part that matters) the daemon's **FIFO
+scheduler** (in stock since v225; the default, no config needed) **defers
+that request while any evict target is still handling one** — journal (debug
+level): `queuing request for model … (would evict in-flight process)` — and
+re-evaluates on every completion. An in-flight request is never interrupted;
+the evictor waits. (A disjunction like this is the general tool for any
+never-coexist pair; the `small` set is the other instance of it.) The sets:
 
 - `klein: k & p` — the klein engine plus the shared PUP door. A klein
   request evicts everything else, vLLM included: the card holds one heavy
@@ -315,15 +375,25 @@ in-flight request is never interrupted; the evictor waits. The sets:
 - `small: cf | cs` — one creative writer; the two writers never share the
   card (26B + 31B > 24 GB), and a creative request evicts vLLM and any image
   pair too.
+- `vllm: v | vv` — the two vLLM variants, one process per card. The text
+  variant is what the box chat runs on; the vision variant is available for
+  vision work on demand, at the cost of a full chat-model restart
+  (~60–90 s warm). Their identity is the `--served-model-name` in the
+  process argv, never the port (the boot scripts are model-aware).
 
 **Hot reload and the last-good copy.** `-watch-config` polls the file every 2 s.
 A **successful** edit is a hot reload: the daemon atomically swaps in a new
 server built from the new config and shuts the old one down — **that stops
 every loaded model** (vLLM included), and nothing auto-revives until the
-next request. So: never edit mid-job; a window that changes the config owns
-the whole sequence (swap → wait for the reload → re-boot what the box needs
-→ **marker last**). A **failed** parse is ignored and the old config stays
-live. `llama-swap.yaml.last-good` is a byte copy of the last
+next request. Two footguns, both observed on this box (task-022): the reset
+is **whole-box even when the edited model isn't loaded** — an in-flight
+stream gets one 200-with-empty-body and the client retries — and the daemon
+**never re-seeds `.last-good` itself** on a reload; that file is manually
+maintained. So: batch config changes into one edit; a window that changes
+the config owns the whole sequence (swap atomically → wait for the reload →
+re-seed `.last-good` → re-boot what the box needs → **marker last**). A
+**failed** parse is ignored and the old config stays live.
+`llama-swap.yaml.last-good` is a byte copy of the last
 validated-and-deployed config: after every deliberate change
 `cp llama-swap.yaml llama-swap.yaml.last-good`, and a window asserts the two
 md5s match at start and end. Rollback = restore the last-good copy (the
@@ -337,23 +407,29 @@ stdout, which is the systemd user journal:
 journalctl --user -u ml-llama-swap -f     # follow everything
 ```
 
-The `:8081/logs` ring buffers (100 KB per stream) keep working regardless.
-**The key is parsed once at daemon startup** (the logger group is built
-before the watch loop, source `llama-swap.go`): adding or changing it needs
-a daemon restart — use the `_jobs/restart-daemon.sh` shape: explicit UNLOAD
-of whatever is loaded, `systemctl --user restart`, then a **handover gate**
-(old process gone + the new pid owns `:8081` + `/health` 200) before any
-request is sent — a request sent during the bind handover can land on the
-dying old listener and come back empty.
+The `:8081/logs` ring buffers (100 KB per stream) keep working regardless
+(behind the key, like the rest of the API). A daemon restart (the
+`_jobs/restart-daemon.sh` shape: explicit UNLOAD of whatever is loaded,
+`systemctl --user restart`, then a **handover gate** — old process gone +
+the new pid owns `:8081` + `/health` 200 — before any request is sent: a
+request sent during the bind handover can land on the dying old listener
+and come back empty) is needed only when the daemon binary itself changes;
+config *and key* changes take effect on the plain hot reload.
 
-**Mutual exclusion (manual boots).** The daemon can see and stop only the
-processes it started. Anything booted outside it (e.g. the owner's manual
-vLLM) is invisible to the router: gateway requests for another model queue
-behind it (FIFO deferral) or fail — the gateway **never** kills a manual
-boot, and that is by design. The protocol: while a manual boot holds the
-card, the chat that needs it goes to the manual port directly, and the
-owner — and only the owner — decides when it stops. That is the only
-sanctioned way a manually-held card is freed.
+**Manual boots (the one sanctioned out-of-band path).** The daemon can see
+and stop only the processes it started. Anything booted outside it is
+invisible to the router — and since the one-door cutover there is no other
+door: a manual boot holds the card, gateway requests for another model queue
+behind it (FIFO deferral) or fail, and the gateway **never** kills a manual
+boot. That is by design: a manual boot is a **human reclaiming the card**,
+and only the human decides when it stops (the pre-cutover convention — "go
+talk to the manual port directly" — died with the fixed ports; the gateway
+is now the only front). The boot scripts' **adopt** branch still matters in
+one place: after a daemon restart (or a config reload that re-resolved
+ports) a healthy engine the daemon no longer tracks may be sitting on its
+*same assigned port* (the number is deterministic per config version); a
+request for it re-attaches to the surviving process instead of
+double-launching.
 
 Before any live use: `…/llama-swap-linux-amd64 -config …/llama-swap.yaml
 -validate` (validates and exits: "N model(s), 0 peer(s)").
@@ -395,12 +471,17 @@ MCP server reads the token from `/data/service-token` in the container).
 
 The container's `/config/config.json` (schema 13) is the external-engine
 configuration: the service's `externalEngine` points at the **gateway**
-(alias, not port), and each pipeline names its engine alias and its VLM alias
-plus the prompt bundle the VLM applies:
+(`http://127.0.0.1:8081/upstream` — alias, not port) and **presents the box
+key** (`externalEngine.apiKey`; a VLM entrypoint that names no key of its own
+inherits it — the service's gateway client and all its VLM entrypoints sit
+behind the same keyed door), and each pipeline names its engine alias, its
+VLM entrypoint and the prompt bundle the VLM applies:
 
 - engine aliases: `kokon-klein`, `kokon-turbo`, `kokon-full`
-- VLM aliases: `kokon-pup` (klein) and `kokon-pup-qwen` / `-f` (qwen turbo /
-  full) — all PUP doors run the fine-tune; the quants differ per door
+- VLM: the single shared door `kokon-pup` (one llama-server process,
+  Q4_K_M, two `--alias` names): the klein entry speaks the alias `q35`, the
+  qwen entries `qwen3vl-8b` — a family or flavor switch reloads only the
+  engine, never the door (task-019)
 - prompt bundles: the committed asset bundles under
   `crates/qls-core/assets/` (`pup`, `pup-qwen`); the service copies them into
   the container's `/data/assets/` and reads them per job, so a dropped-in
@@ -411,19 +492,25 @@ VLM is part of the quality contract, not an optional garnish.
 
 ## 5. Verification (fresh box)
 
-1. **Gateway**: `curl 127.0.0.1:8081/health` is 200; `journalctl --user -u
-   ml-llama-swap` shows the config load; `GET /running` lists in-state
-   models (state `"ready"` once the model's health check passes).
+1. **Gateway**: `curl 127.0.0.1:8081/health` is 200 (the one open path);
+   **the keying**: `curl 127.0.0.1:8081/v1/models` is 401 with no key and
+   200 with `Authorization: Bearer <the box key>`; `journalctl --user -u
+   ml-llama-swap` shows the config load; `GET /running` (keyed) lists
+   in-state models (state `"ready"` once the model's health check passes).
 2. **One-token probes** — the readiness check everywhere in this stack
    (`/health` lies while models load; a 1-token completion does not):
    `GET /upstream/<model>/<path>` **pins** the model and **holds** through
    its load (the request blocks until the health check passes — the canary
-   pattern; the job scripts use 900 s timeouts for this reason); a 1-token
-   `POST /v1/completions` per sidecar; `/sdcpp/v1/capabilities` on each
-   engine port after a request has started it; `POST /api/models/unload/
-   <model>` is the explicit stop (it blocks until the process actually
-   exits — the number of seconds it took *is* the stop-propagation
-   measurement).
+   pattern; the job scripts use long timeouts for this reason); a 1-token
+   `POST /v1/completions` per llama.cpp sidecar — the BFL klein hybrid is
+   the exception: it has **no** `/v1/completions` (its LLM loads only as
+   the prompt conditioner; a clean 404 is the healthy answer), and its
+   readiness proof is a real image job: `POST /upstream/kokon-klein/sdcpp/
+   v1/img_gen` → poll `GET …/sdcpp/v1/jobs/<id>` → a PNG back; `GET
+   /upstream/<model>/sdcpp/v1/capabilities` on each sd-server after a
+   request has started it; `POST /api/models/unload/<model>` is the explicit
+   stop (it blocks until the process actually exits — the number of seconds
+   it took *is* the stop-propagation measurement).
 3. **One job per family** through the service UI (39152): a klein edit and a
    qwen text-to-image. Both must land in the gallery, and the journal must
    show the matrix decisions at info level, e.g.
@@ -435,8 +522,8 @@ VLM is part of the quality contract, not an optional garnish.
    *candidate* config (never the live one) shows `queuing request for model
    … (would evict in-flight process)`.
 4. **Idle unload**: after 600 s (kokon models) / 300 s (creative writers)
-   without requests the ports go quiet (TTL); the next request re-boots
-   (warm, page-cached).
+   without requests the assigned ports go quiet (TTL); the next request
+   re-boots on the same number (warm, page-cached).
 5. **The shared door** (task-019): `GET /upstream/kokon-pup/v1/models` lists
    both alias names; a klein job and a qwen job back-to-back keep the
    **same** sidecar pid resident — the journal shows `evict=[kokon-klein]`
@@ -445,27 +532,32 @@ VLM is part of the quality contract, not an optional garnish.
 
 - **A config swap stops every loaded model** (a successful reload shuts the
   old server down; nothing auto-revives anything — the daemon is pure
-  on-demand). Plan live config changes as a *window*: swap atomically
-  (`cp … .new && mv -f` — the 2-second poll can read a half-written file),
-  re-seed `llama-swap.yaml.last-good`, wait for the `configuration reloaded`
-  journal line,
-  re-boot what the box needs, and write the DONE/FAIL marker **last** (the
-  marker means "the runtime is back"). The box's windows live in
-  `backends/_jobs/`: a setsid'd job script (self-deadline), a second
-  setsid'd backstop watcher (hard cap; fallback digest + best-effort
-  restore + forced FAIL), and `wait-marker.sh` as the blocking wait.
+  on-demand). The reset is **whole-box even when the edited model isn't
+  loaded** (every loaded engine stops; an in-flight stream gets one
+  200-with-empty-body and the client retries), and the daemon **never
+  re-seeds `llama-swap.yaml.last-good` itself** — which is why a window
+  does. Plan live config changes as a *window*: batch the changes into one
+  edit, swap atomically (`cp … .new && mv -f` — the 2-second poll can read a
+  half-written file), re-seed `llama-swap.yaml.last-good`, wait for the
+  `configuration reloaded` journal line, re-boot what the box needs, and
+  write the DONE/FAIL marker **last** (the marker means "the runtime is
+  back"). The box's windows live in `backends/_jobs/`: a setsid'd job
+  script (self-deadline), a second setsid'd backstop watcher (hard cap;
+  fallback digest + best-effort restore + forced FAIL), and `wait-marker.sh`
+  as the blocking wait.
 - **The vLLM boot scripts are model-aware** (the owner's final calibration —
   the scripts are the record of the parameters): "is this process *my*
   model?" is answered by the served name in the process argv, never by the
-  port (two variants share :18020). Each has an **adopt** branch (a healthy
-  instance of *this* served name is attached to as the tracked process, not
-  relaunched) and a **wait** branch (a *foreign* holder, or a port held by an
-  in-flight boot that isn't healthy yet, is waited on, never killed out of
-  band — the script never double-launches an in-flight boot). They `exec`
-  vllm; they kill nothing.
+  port (the two variants have distinct assigned ports now, but the check is
+  the same — the number moves with config versions, the served name
+doesn't). Each has an **adopt** branch (a healthy instance of *this* served
+  name is attached to as the tracked process, not relaunched) and a **wait**
+  branch (a *foreign* holder, or a port held by an in-flight boot that isn't
+  healthy yet, is waited on, never killed out of band — the script never
+double-launches an in-flight boot). They `exec` vllm; they kill nothing.
 - **No out-of-band kills anywhere.** No script on this box stops a process
   the router tracks; there are no zombie nets. An out-of-state process (a
-  manual boot) is a manual problem — the mutual-exclusion protocol in the
+  manual boot) is a human reclaiming the card — the manual-boot note in the
   gateway section is the policy.
 - **Rollback**: restore `llama-swap.yaml.last-good` over `llama-swap.yaml`
   (atomic mv; the 2-s poll reloads it). The pre-re-land wrapper generation is parked cold in
