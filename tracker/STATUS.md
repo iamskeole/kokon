@@ -1,6 +1,6 @@
 # STATUS — kokon v2 separation
 
-Updated 2026-11-06 (**task-022 CLOSED this span — the one-door, single-key topology is live and proven**: the gateway (wildcard `:8081`) is the box's only LAN door for model traffic, keyed with the 48-char box key (no-key 401 / with-key 200 / wrong-key 401; `/health` open keyless by v269 design); **zero fixed engine ports** — all eight models on `${PORT}` daemon-assigned (the v269 contract: assigned by *alphabetically sorted* model ID from `startPort: 9100` — 9100 creative-fast … 9107 qwen3.8-27b-vision), every bind `127.0.0.1`; the vLLM pair carries the explicit mutual-exclusion set `vllm: "v | vv"` (proven both directions: vision evicts text onto 9107, text evicts vision back onto 9106); the kokon service runs the compose-managed image `external-engine-0.11.2-d93c3c3` (`apiKey` on `ExternalEngine` + the vlm entries; pristine config backup in the volume) with its exact client path proven — door 9104 (both aliases), turbo 9105 (capabilities), klein 9103 (a real 1024×1024 image job, 14 s, PNG back); vLLM resident on 9106 as the terminal state with both stream modes working. The `w022` window ran five times, each one teaching something: r1 did the config swap + keying + daemon onto the wildcard (died on an async-`systemctl`/`ss`-format harness bug), r2 proved the keying and the pair switch, r3 the service cutover (the pre-compose container's missing labels forced a remove-then-create; stops 2 s) + measured stops, r4 exposed that the BFL hybrid has **no** `/v1/completions` (its LLM loads as the prompt conditioner only — clean 404s, never a crash), r5 proved the real image-job path and the terminal state in 75 s. Evidence `/tmp/w022{,r2,r3,r4,r5}/`. **Earlier this span**: tasks 020/021 (the stock-cleanup re-land) and task-019 (one shared PUP door) stand closed; `docs/fresh-box.md` was rewritten in the post-019 shape **before** 022 — its gateway section still needs the one-door update (drafted for sign-off). **Current work = task-17a (MOSS-Image research — doc only, park-until-stable verdict); then task-024 (the 0.12 rebase onto upstream master)**; task-023 sorts first by filename but stays parked on the owner's trigger — the `## Current` section is the pointer.) `[ ]` open, `[x]` done. See [PLAN.md](PLAN.md) for the map.
+Updated 2026-11-06 (**task-024 in progress — the 0.12 rebase is DONE on both branches and green**: `flux` (110 commits, 13 conflict stops, all final-fork semantics — `enhancerApplies ≡ true` for the sidecar's area/Expand prompts, model-aware `needsPrompt`, bundle-routed `system_prompt`) and the PR branch re-derived onto upstream master `f9b6971` as **`pr-external-engine-012`** (the 5 signed commits `ff372fc…e141d35`; old name retired) — green on both: qls-core 375 / service 18 / UI 228 / mcp 35+3sk / mock-gateway 16/16 (harness refreshed to `/models/switch` + schema 13); remaining: the w024 GPU window (with the owner's matrix name update), the `external-engine-0.12.0-<sha>` image + `docs/fresh-box.md` pass, then task-017's discussion variant. **task-022 stays CLOSED** — the one-door, single-key topology is live and proven: the gateway (wildcard `:8081`) is the box's only LAN door for model traffic, keyed with the 48-char box key (no-key 401 / with-key 200 / wrong-key 401; `/health` open keyless by v269 design); **zero fixed engine ports** — all eight models on `${PORT}` daemon-assigned (the v269 contract: assigned by *alphabetically sorted* model ID from `startPort: 9100` — 9100 creative-fast … 9107 qwen3.8-27b-vision), every bind `127.0.0.1`; the vLLM pair carries the explicit mutual-exclusion set `vllm: "v | vv"` (proven both directions: vision evicts text onto 9107, text evicts vision back onto 9106); the kokon service runs the compose-managed image `external-engine-0.11.2-d93c3c3` (`apiKey` on `ExternalEngine` + the vlm entries; pristine config backup in the volume) with its exact client path proven — door 9104 (both aliases), turbo 9105 (capabilities), klein 9103 (a real 1024×1024 image job, 14 s, PNG back); vLLM resident on 9106 as the terminal state with both stream modes working. The `w022` window ran five times, each one teaching something: r1 did the config swap + keying + daemon onto the wildcard (died on an async-`systemctl`/`ss`-format harness bug), r2 proved the keying and the pair switch, r3 the service cutover (the pre-compose container's missing labels forced a remove-then-create; stops 2 s) + measured stops, r4 exposed that the BFL hybrid has **no** `/v1/completions` (its LLM loads as the prompt conditioner only — clean 404s, never a crash), r5 proved the real image-job path and the terminal state in 75 s. Evidence `/tmp/w022{,r2,r3,r4,r5}/`. **Earlier this span**: tasks 020/021 (the stock-cleanup re-land) and task-019 (one shared PUP door) stand closed; `docs/fresh-box.md` was rewritten in the post-019 shape **before** 022 — its gateway section still needs the one-door update (drafted for sign-off; lands with the 0.12 pass). **Current work = task-024's w024 GPU window, then task-017 (discussion variant)**; task-023 sorts first by filename but stays parked on the owner's trigger — the `## Current` section is the pointer.) `[ ]` open, `[x]` done. See [PLAN.md](PLAN.md) for the map.
 Keep this file current at the end of every task.
 
 ## Decisions (resolved 2026-11-01 — details in PLAN.md §6)
@@ -21,7 +21,7 @@ Keep this file current at the end of every task.
 - [x] G5 production qwen = stock build + PUP sidecar (task-012, 013, 014 — stock pin 290148d per the audit; PUP = 9B, task-014)
 - [x] G6 gateway: generic N-models-per-job, the "matrix" (task-015 — **v269's native `matrix` router, no upstream PR needed**: `config.yaml.stock-015` live 11-04, sets klein=k&p&v / qwen-t=qt&pq / qwen-f=qf&pqf / small=(cf|cs)&v, vLLM shared across sets; 4,608-case replay 0 violations / all deltas strict supersets; live window proved it in 255 s (protect-vllm kept under the matrix, qwen evicts vLLM, vLLM reclaims the resident qwen pair — the nudge-404 class fixed at the router); one latent race found and fixed in vllm-serve.sh (never double-launch an in-flight boot); deploy-dir doc `MATRIX.md` = how to define a new job's set)
 - [x] G7 fresh-box doc (task-016 — `docs/fresh-box.md`: the whole stack from a new machine — host layout, verified prerequisites, the final-state model list with the provenance convention, the stock engine recipes, the v269 gateway with the full matrix routing block, the service image + schema-13 compose, verification checklist, ops rules; no BFL prompt bytes, no fork references)
-- [ ] G8 upstream PR / merge / philosophy discussion — last (task-017 — **prepared, parked on the owner's call**: branch `pr-external-engine-v2` (local only) = upstream 200f3d5 + 5 DCO commits of the feature in final v2 form (schema-13 config, gateway client, service-side VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green on the branch; the draft PR body + discussion variant + 4 decision points in `tracker/pr-upstream-body.md` — **nothing pushed, nothing submitted**: even a push to the public fork would make the BFL bundle public for the first time; the parked 10-commit pre-v2 branch is superseded, not rebased; **resequenced 2026-11-06**: after task-024's rebase, the discussion variant — not the PR — is posted when the re-derived branch is in a mergeable-on-the-spot shape; rejection on the author's one-model vision is the expected outcome (owner), the fork is the product either way (D-RB))
+- [ ] G8 upstream PR / merge / philosophy discussion — last (task-017 — **unblocked by the 024 rebase; the discussion variant is the next post when `pr-external-engine-012` is mergeable on the spot (owner, 2026-11-06)**: branch `pr-external-engine-012` (local only) = upstream master `f9b6971` (0.12) + the 5 DCO commits of the feature in final form (schema-13 config, gateway client, service-side VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green on the branch (qls-core 370 / UI 228 / service 18 / mcp 35+3sk); the draft PR body + discussion variant + 4 decision points in `tracker/pr-upstream-body.md` — **nothing pushed, nothing submitted**: even a push to the public fork would make the BFL bundle public for the first time; the old `pr-external-engine-v2` name is retired (re-derived onto the 0.12 base) and the parked pre-v2 branch stays superseded; rejection on the author's one-model vision is the expected outcome (owner), the fork is the product either way (D-RB))
 
 ## Work packages (PLAN.md §4)
 - [x] WP0 housekeeping — task-001 done 11-02 (v269 pin + `llama-swap-deploy/` sibling) / task-002 done 11-02 (`290148d` pinned + built + stock klein verified, findings logged) / task-003 done 11-02 (`models/gguf`+`models/sd-cpp` reorg per the provenance convention, all reference paths updated, config validates 6/6; klein DiT conversion source unresolved — owner question, non-blocking)
@@ -33,36 +33,41 @@ Keep this file current at the end of every task.
 [x] WP6 stock-cleanup — task-020 done 11-04, reopened 11-05, **re-land COMPLETE and closed this span** — the 11-04 record (stock-016 live, deferral proven in both directions, chat-priority the product fact) stands as the provenance of the invariants; the 11-05 re-land: layout surgery (pure stock trees; `_scripts`/`_configs`/`_jobs` homes; 10 pure-boot scripts; **no `cmdStop` anywhere**; `.last-good` + reload semantics; `logToStdout: both`), the owner's handover to the daemon-owned vllm, the pre-window daemon restart (journal mirror engaged; the P3 bind-handover race found + gated), and the **w020r window PASSED 223 s** (vllm 4-s group stop with `EngineCore` in the journal, llama.cpp 2-s, every set eviction per the stock-017 sets, vllm restored last, DONE marker last). Record: `done/task-020.md`.
 
 ## Current
-**task-17a — MOSS-Image research (doc only) — next up; task-024 (the 0.12
-rebase) after it; task-023 stays parked on the owner's trigger.**
-- **task-024 — rebase onto upstream master (= 0.12.0)** — the live `flux`
-  (base `f2e4757`) and the parked PR branch (base `200f3d5`) sit 31 commits
-  below master: 0.12.0 (merge `92f63c4`: Layers lab, Paint-with-colours,
-  Prompt+ for areas/Expand, AI-marking, Mac engine on by default) + 6
-  post-release commits (zero code). Re-land the external-engine feature on
-  it; the one design branch is 0.12's area/Expand Prompt+ (external mode →
-  the service-side VLM via the task-006 client; default mode stays
-  upstream's in-engine path); 0.12's service-resident ONNX (MobileSAM in
+**task-024 — the w024 GPU window (then the 0.12 image + docs pass, then
+task-017's discussion variant); task-023 stays parked on the owner's trigger.**
+- **task-024 — rebase onto upstream master (= 0.12.0) — rebase DONE, green; w024 window next.**
+  Both branches re-landed on upstream master `f9b6971`: `flux` (110 commits,
+  13 conflict stops resolved hunk-level — 0.12 wins for upstream behaviour,
+  fork work preserved, additive unioned) and the PR branch, re-derived as
+  **`pr-external-engine-012`** (the 5 signed commits `ff372fc…e141d35`; the
+  old `pr-external-engine-v2` name retired). The one design branch is in:
+  0.12's area/Expand Prompt+ keeps its in-engine path in default mode and
+  routes the same `own` request through the service-side VLM (the task-006
+  client) in external mode — the built-in area/expand prompts are Kokon's
+  own words, safe on the sidecar. 0.12's service-resident ONNX (MobileSAM in
   the webview, BiRefNet-lite CPU) and the lab come in as-is, identical in
-  both modes. The PR branch is re-derived from the result (the old
-  `pr-external-engine-v2` retired, not rebased). One GPU window (w024) per
-  the autonomy protocol before the cutover; `docs/fresh-box.md` gets 0.12
-  and the 022 one-door update in the same pass.
-- **task-017 — upstream PR — parked until the rebase lands (owner,
-  2026-11-06).** `pr-external-engine-v2` (local only) = upstream 200f3d5 +
-  5 DCO commits of the final-form feature (schema-13 config, gateway
-  client, service-side VLM, runtime bundles, picker + box UI, GPU-free
-  mock-gateway test); qls-core 327 / service 17 / vitest 160 all green on
-  the branch; superseded by the re-derived branch of task-024. Draft PR
+  both modes. Green on the `flux` tip: qls-core 375 / service 18 / UI 228 /
+  mcp 35+3sk / mock-gateway harness 16/16 (harness refreshed to
+  `/models/switch` + schema 13, `85e9656`). Next: **the w024 GPU window**
+  (autonomy protocol; the owner's matrix name update rides it —
+  `kokon-qwen-image-2.1-{full,turbo}`, `kokon-flux-image-3-klein`,
+  `kokon-pup`), then rebuild + tag `external-engine-0.12.0-<sha>`, point
+  `frontends/kokon` at it, and `docs/fresh-box.md` (0.12 + the 022 one-door
+  section in the same pass).
+- **task-017 — upstream PR — unblocked by the rebase (owner, 2026-11-06): the
+  discussion variant is the next post, when `pr-external-engine-012` is in a
+  mergeable-on-the-spot shape.** The branch = upstream master + 5 DCO commits
+  of the final-form feature (schema-13 config, gateway client, service-side
+  VLM, runtime bundles, picker + box UI, GPU-free mock-gateway test); green
+  on the branch (qls-core 370 / UI 228 / service 18 / mcp 35+3sk). Draft PR
   body + discussion variant + the four decision points (BFL bundle in/out,
   box-editor in/out, discussion-first, push/submit timing) in
   `tracker/pr-upstream-body.md`. Nothing pushed or submitted (the BFL
   bundle has never been pushed anywhere). The owner's call: post the
-  **discussion variant only** (not the PR), and only when the re-derived
-  branch is mergeable on the spot; rejection on the author's one-model
-  vision is the expected outcome — the fork is the product either way
-  (D-RB). The BFL-bundle and box-editor decision points stay open until
-  that post.
+  **discussion variant only** (not the PR), and only when the branch is
+  mergeable on the spot; rejection on the author's one-model vision is the
+  expected outcome — the fork is the product either way (D-RB). The
+  BFL-bundle and box-editor decision points stay open until that post.
 - **task-022 closed this span** (one-door, single-key topology — the full
   record: the target table, the v269 alphabetical `\${PORT}` contract, the
   five-run window history and each lesson it taught, the final box state,
