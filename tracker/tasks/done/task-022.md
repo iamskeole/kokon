@@ -307,3 +307,13 @@ manually maintained (re-seed it after every healthy edit). Consequence:
 any live config edit is a whole-box engine reset + one chat hiccup, even
 when the edited model isn't running — batch config changes into one
 edit.
+
+**VLM key inheritance (same day, `ab1b425`).** The 022 keying left the klein pipeline's shared-door
+VLM entry (`externalEngine.vlm`, alias `q35`) keyless, which the keyed gateway would have 401'd —
+every klein job would have hard-failed. The fix is a general rule: a VLM entrypoint with an empty
+`apiKey` inherits the service's `externalEngine.apiKey` (`VlmClient::with_inherited_key` in vlm.rs;
+both construction sites in engine.rs); a non-empty endpoint key still overrides, and keyless stays
+keyless — a 401 from a keyless endpoint means the door is wrong, not the ticket. 3 new tests
+(332 total, container run). The live volume config was updated too: all three vlm blocks now carry
+the box key (backup `config.json.bak-022c`; the pristine `.bak-022` keeps the pre-022 shape),
+service rebuilt `…d93c3c3` → `…f22e80a` and restarted.

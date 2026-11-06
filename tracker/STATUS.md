@@ -50,7 +50,10 @@ BFL bundle public for the first time. G8 closes with the owner's call.
   (both G4 writers proven through the keyed gateway on 9100/9101), and
   the v269 hot-reload lesson — a config reload is a full in-process
   server restart: all engines stop, in-flight streams get one cut,
-  `.last-good` is never auto-re-seeded).
+  `.last-good` is never auto-re-seeded; plus the VLM key-inheritance fix
+  `ab1b425`: a VLM entrypoint with an empty `apiKey` inherits the
+  service's gateway key — the live bug it closed: the klein pipeline's
+  shared-door entry was keyless against a now-keyed gateway).
 - **task-019 closed 2026-11-05** (the full record — spec, run 1's failure
   and the design fix it produced, run 2's evidence, before/after — is in
   `done/task-019.md`); the only open thread is the owner's eyes on a klein
