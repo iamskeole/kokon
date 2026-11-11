@@ -209,3 +209,16 @@ dies). The discussion (with his reply) is the permanent paper trail.
 2. **"Other devices" / `--remote`:** compare his remote story with our
    reverse-proxy remote-login work on the fork; keep whichever is the
    better mechanism, note the overlap.
+
+## Fork identity — 2026-11-11 (owner decision, after the reply)
+
+The repo **keeps the name `kokon`** (it remains a true superset of his
+codebase — his default intact and still the default, our mode opt-in —
+and his Discussion #52 blessing named the fork). The one-line identity
+layer the rename would have provided was set on the repo's **description
+instead**: "Kokon with an external engine mode — the service points at
+your own model gateway (one box, many models, evict-on-demand). A
+maintained fork of GabrieleLozupone/kokon, rebased onto upstream master
+with every release." A rename stays off the table until the fork stops
+being a superset (external mode becomes *our* default, or we drop his
+features) — and even then it is cheap (GitHub redirects).
