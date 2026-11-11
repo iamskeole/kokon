@@ -368,13 +368,15 @@ impl Engine {
 
     /// Replaces the configuration. Returns true when the backend must restart.
     pub fn set_config(&self, mut new: AppConfig) -> AppResult<bool> {
-        // LoRAs change only through `set_loras`, network access only through `set_remote` (a
-        // Settings save may carry older values).
+        // LoRAs change only through `set_loras`, network access only through `set_remote`,
+        // and the gateway/VLM keys never through the UI (a Settings save may carry older or
+        // empty values; see `AppConfig::absorb_secrets`).
         {
             let cur = self.cfg.read().unwrap();
             new.loras = cur.loras.clone();
             new.remote_access = cur.remote_access;
             new.remote_port = cur.remote_port;
+            new.absorb_secrets(&cur);
         }
         // The official profile follows the folder and preset; see `AppConfig::normalize`.
         new.normalize();

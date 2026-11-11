@@ -864,6 +864,35 @@ impl AppConfig {
         self.external_engine.as_ref()
     }
 
+    /// A settings save round-trips the config through the UI, which never shows the key
+    /// fields (the UI's `ExternalEngine` type has no gateway key at all): an empty key in
+    /// the incoming config therefore means "unchanged", and the stored value is kept for
+    /// the gateway and for each VLM of a model the UI knows by id. Measured incident
+    /// (2026-11-11 box): the first settings save after the 0.12 upgrade carried an empty
+    /// key and every request to the keyed gateway answered 401 until the key was restored
+    /// by hand.
+    pub fn absorb_secrets(&mut self, from: &AppConfig) {
+        if let (Some(e), Some(f)) = (&mut self.external_engine, &from.external_engine) {
+            if e.api_key.trim().is_empty() && !f.api_key.trim().is_empty() {
+                e.api_key = f.api_key.clone();
+            }
+        }
+        for m in &mut self.models {
+            if let (Some(v), Some(fv)) = (
+                m.vlm.as_mut(),
+                from
+                    .models
+                    .iter()
+                    .find(|f| f.model == m.model)
+                    .and_then(|f| f.vlm.as_ref()),
+            ) {
+                if v.api_key.trim().is_empty() && !fv.api_key.trim().is_empty() {
+                    v.api_key = fv.api_key.clone();
+                }
+            }
+        }
+    }
+
     /// Base URL of the inference engine's API: the external gateway when configured,
     /// otherwise the local server on the configured port.
     pub fn engine_base_url(&self) -> String {
@@ -1883,6 +1912,68 @@ mod tests {
         assert_eq!(r.engine_api_key().filter(|k| k.is_empty()), None, "blank key = keyless");
         r.external_engine.as_mut().unwrap().api_key = "   ".into();
         assert_eq!(r.engine_api_key(), None);
+    }
+
+    #[test]
+    fn settings_save_round_trip_keeps_gateway_and_vlm_keys() {
+        // The UI never shows the key fields: a settings save carries empty keys and must
+        // not wipe the stored ones (the 2026-11-11 box incident; see `absorb_secrets`).
+        let mut stored = AppConfig::default();
+        stored.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            api_key: "gw-key".into(),
+            model: "m-turbo".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: Some(VlmEndpoint {
+                entrypoint: "http://127.0.0.1:8081/upstream/pup".into(),
+                model: "q35".into(),
+                api_key: "vlm-key".into(),
+            }),
+            prompt_bundle: String::new(),
+        });
+        stored.models = vec![
+            ExternalModel {
+                label: "Turbo".into(),
+                sub: None,
+                model: "m-turbo".into(),
+                model_name: "model.gguf".into(),
+                sample: serde_json::json!({}),
+                gateway: None,
+                vlm: stored.external_engine.as_ref().unwrap().vlm.clone(),
+                prompt_bundle: String::new(),
+            },
+            ExternalModel {
+                label: "Full".into(),
+                sub: None,
+                model: "m-full".into(),
+                model_name: "model.gguf".into(),
+                sample: serde_json::json!({}),
+                gateway: None,
+                vlm: None,
+                prompt_bundle: String::new(),
+            },
+        ];
+
+        // The incoming config as the UI saves it: same pipelines, no keys.
+        let mut incoming = stored.clone();
+        incoming.external_engine.as_mut().unwrap().api_key = String::new();
+        incoming.models[0].vlm.as_mut().unwrap().api_key = String::new();
+        incoming.absorb_secrets(&stored);
+        assert_eq!(incoming.external_engine.as_ref().unwrap().api_key, "gw-key");
+        assert_eq!(incoming.models[0].vlm.as_ref().unwrap().api_key, "vlm-key");
+
+        // A non-empty incoming key is deliberate and stays.
+        let mut explicit = stored.clone();
+        explicit.external_engine.as_mut().unwrap().api_key = "new-key".into();
+        explicit.absorb_secrets(&stored);
+        assert_eq!(explicit.external_engine.as_ref().unwrap().api_key, "new-key");
+
+        // No external engine in the incoming config: nothing to keep, none invented.
+        let mut none = stored.clone();
+        none.external_engine = None;
+        none.absorb_secrets(&stored);
+        assert_eq!(none.external_engine, None);
     }
 
     #[test]
