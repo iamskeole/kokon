@@ -164,3 +164,48 @@ it is) happens here, at the end, with the whole picture in hand.
   → `docker build` → `docker compose up -d`), and this discussion is the
   paper trail either way. Nothing else on the queue blocks (task-023
   stays parked on the owner's trigger).
+
+## The reply — 2026-11-10 (the branch the fork had planned for)
+
+The author replied 2026-11-10 15:49 UTC:
+
+- Thanks, and "asking before opening a 17,500-line PR was the right
+  call." The discussion-first strategy is validated by him, not just by
+  us.
+- **The external-engine mode is not taken upstream.** Two reasons, in
+  his words: (1) the one-model vision — "several model families, a
+  separate prompt VLM and replaceable prompt bundles go the other way";
+  (2) maintainability — "a change that size would also be more than I
+  can keep tested release after release."
+- **The kind line, quoted because it matters:** "Your fork is the right
+  home for that setup, and it's good to see it exists for people with a
+  box like yours." — an explicit author acknowledgment of the fork's
+  existence.
+- He points out the *access* half is already upstream: Settings →
+  Other devices / `kokon-service --remote` headless / the Docker image
+  — the full interface in a browser with a password, box stays headless.
+- **Announced for the next release: idle unload** — Kokon will unload
+  the model after a period of inactivity *even with a window or browser
+  tab open*, and reload on the next request ("that should let it sit
+  next to your other models on the same card without an external
+  gateway in between").
+
+**Outcome per the decision framework — the rejection branch, as
+planned:** the fork is the product (D-RB: clone → `docker build` →
+`docker compose up -d`); the fork keeps the `kokon` name (owner). There
+is no merged upstream to re-baseline onto; the `pr-external-engine-012`
+branch stays on the fork as the record of how the feature was built
+(the fork's `main` carries the same feature in fork form — nothing
+dies). The discussion (with his reply) is the permanent paper trail.
+
+**Two watch items for the next rebase (his next release = idle-unload):**
+1. **Idle unload vs the gateway:** his change governs the *in-engine*
+   path. In external mode the model's lifetime is the gateway's job
+   (v269's 120 s TTL) — the service must not start managing a model it
+   doesn't own. Before adopting his release, check the service's idle
+   timer against the gateway's lifecycle in external mode (expect: the
+   service-side timer simply doesn't apply; verify it can't double-unload
+   or fight the gateway).
+2. **"Other devices" / `--remote`:** compare his remote story with our
+   reverse-proxy remote-login work on the fork; keep whichever is the
+   better mechanism, note the overlap.
