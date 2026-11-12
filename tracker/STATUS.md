@@ -145,14 +145,20 @@ day) contains everything, and the branch list was tidied to just `main`
 - **task-028 — CURRENT (not parked)**: Qwen native PUPs per job mode
   (PE-T2I for t2i, PE-I2I for image-grounded, both qwen flavors;
   klein keeps the BFL door). Created 2026-11-12 from the owner's
-  question; the investigation and the full build document (downloads
-  + pinning, the two new gateway tenants and the mode-keyed matrix
-  sets, schema 14's per-mode VLM endpoint, the native system-prompt
-  bundle under third-party asset discipline, the think+JSON output
-  protocol, the A/B window, one-step rollback) live in
-  `tasks/todo/task-028.md`. No blockers that block starting; the
-  open questions (GGUF/tree compatibility, mmproj-less T2I door,
-  thinking on/off, one-shot compose) resolve during the task.
+  question; the investigation and the full build document live in
+  `tasks/todo/task-028.md`. **Naming per the owner the same day:
+  explicit per-family door ids — `kokon-pup-flux-image-3-klein` (the
+  shared door, renamed), `kokon-pup-qwen-image-2.1-t2i` / `-i2i`
+  (new)** — one identity per door (gateway id = alias = service
+  `model` field = script name). The work splits into an independent
+  zero-behaviour rename (its own pre-A/B window; port map unchanged,
+  four service entrypoints + caps cache + repo fixtures/docs), an
+  additive gateway step (two new tenants, sets `qt & (p|pt|pi)` / `qf
+  & (p|pt|pi)`, final 10-model port map), and — after the A/B — a
+  cutover that is a pure service-config change (one step to roll
+  back, no gateway work). Open questions (GGUF/tree compatibility,
+  mmproj-less T2I door, thinking on/off, one-shot compose) resolve
+  during the task; no blockers that block starting.
 - (done this span: **task-018** — the matrix-router question parked since the task-013 era is the same work as done task-015: resolved as a duplicate, with the AC's written comparison written as `tracker/audits/matrix-vs-groups-018.md` (per-requested-model groups-vs-matrix table; the three delta classes; the one deliberately dropped asymmetry; the 4,608-case replay and the live 255 s window as evidence; `config.yaml.stock-015` is the realized candidate, one-copy rollback to stock-014). The queue now holds task-019 (parked) and task-022 (the owner's one-door single-key topology, parked on the owner's two decisions), with task-020 the current work.)
 - (done this span: **task-016** — the fresh-box reproduction doc is `docs/fresh-box.md`: the whole stack from a new machine (host layout; verified prerequisites; final-state model list + provenance convention; the stock engine recipes at their pins; the v269 gateway with the full matrix routing block and its three-rule semantics; the service image + host-network compose + schema-13; the verification checklist incl. the `matrix:` journal line; the ops rules incl. reload-kills-models and marker-last windows). No BFL prompt bytes, no fork references. AGENTS.md's doc table points at it.)
 - **task-025** (the lab's models on the box — BiRefNet → CUDA EP, MobileSAM → box-run endpoint, so weak clients use the lab as a thin client) — **PARKED on the owner's trigger** (created 2026-11-11 from the owner's question after the incident night: the VRAM fits on the heaviest pairs (20–21 GB of 24 GB; both lab models cost well under ~1 GB with a capped ORT arena). The 12-inch Intel MacBook cannot run the in-browser models natively (no WebGPU, one-thread WASM, and the BiRefNet WASM OOM'd in the spike) — a box-run lab is the long-term fix for that client. The file splits the work: BiRefNet→GPU is the small half, MobileSAM→box is the architectural half; in-browser stays the stock-mode default.)

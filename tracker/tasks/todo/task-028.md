@@ -1,4 +1,4 @@
-# Task-028 (CURRENT — owner-triggered 2026-11-12) — Qwen native PUPs: PE-T2I for t2i jobs, PE-I2I for i2i jobs, per mode
+# Task-028 (CURRENT — owner-triggered 2026-11-12) — Qwen native PUPs: PE-T2I for t2i jobs, PE-I2I for i2i jobs, per mode, under explicit per-family door names
 
 **Created:** 2026-11-12 — the owner: "qwen actually released two fine
 tune pups for t2i and i2i, maybe have each model with its designated /
@@ -7,8 +7,30 @@ on HF). This file documents the build. **Not parked** — the other
 `todo/` files (023/025/026/027) stay parked on their triggers. The
 reading that fits the two releases: *each* Qwen pipeline job mode gets
 its **native** PUP — `PE-T2I` for text-to-image, `PE-I2I` for every
-image-grounded job — on both qwen flavors. **Klein is untouched: its
-native PUP is BFL's own fine-tune, already the shared door (task-010/019).**
+image-grounded job — on both qwen flavors. **Klein is untouched in
+behaviour: its native PUP is BFL's own fine-tune, already the shared
+door (task-010/019)** — but its door gets the explicit name (below).
+
+**Naming (owner, 2026-11-12: "explicit better than implicit"):** every
+PUP door is named after what it serves — one identity per door, used
+everywhere (gateway id = llama.cpp `--alias` = the service's
+`vlm.model` field = the boot-script file name, extending the 022c
+"id == script name" convention):
+
+| gateway id (= alias = service `model` = script name) | serves |
+|---|---|
+| `kokon-pup-flux-image-3-klein` | klein (BFL PUP — **renamed** from `kokon-pup`) |
+| `kokon-pup-qwen-image-2.1-t2i` | qwen t2i jobs (PE-T2I — new) |
+| `kokon-pup-qwen-image-2.1-i2i` | qwen image-grounded jobs (PE-I2I — new) |
+
+Rule for future doors: `kokon-pup-<engine-family>[-<mode>]` mirroring
+the engine ids (`kokon-<engine-family>`); the mode suffix appears only
+when one family has more than one door, and the flavor (turbo/full)
+never appears — the same door serves both flavors. The legacy wire
+names (`q35`, `qwen3vl-8b` — artifacts of the 8B-door era) stay as
+*additional* aliases on the klein door through the transition so a
+mixed-state window or an old `.bak` service config can never 404; a
+later cleanup drops them.
 
 ## The models (investigated 2026-11-12, HF API + READMEs)
 
@@ -51,22 +73,24 @@ GGUFs.
 **llama.cpp support on this box: proven.** The Oct-14 llama.cpp tree
 (`529ac893e`, `backends/llama.cpp/`) already ships `src/models/qwen35.cpp`
 (including MTP block loading) and is the very build serving BFL's
-Qwen3.5-9B PUP today (`kokon-pup`, Q4_K_M) — so the architecture, the
-jinja template with the `enable_thinking` switch (the current door
-boots with `--chat-template-kwargs '{"enable_thinking":false}'`), and
-the mmproj path all work on this exact build. The new GGUFs are the
-same architecture; remaining unknowns are file-specific (blockers,
-below), not architectural.
+Qwen3.5-9B PUP today — so the architecture, the jinja template with
+the `enable_thinking` switch (the current door boots with
+`--chat-template-kwargs '{"enable_thinking":false}'`), and the mmproj
+path all work on this exact build. The new GGUFs are the same
+architecture; remaining unknowns are file-specific (blockers, below),
+not architectural.
 
 ## Current state (what changes, and what doesn't)
 
-- **One shared PUP door** `kokon-pup`: BFL PUP Q4_K_M (5.63 GB) +
-  mmproj-F16 (0.92 GB) on the named llama.cpp; aliases `q35` +
-  `qwen3vl-8b`; **member of all three image sets**
-  (`klein: k & p`, `qwen-t: qt & p`, `qwen-f: qf & p`) so a family or
-  flavor switch reloads only the DiT engine, never the sidecar
-  (task-019). Non-thinking door, ctx 8192, image clamp 1024/4096
-  tokens. Boot: `backends/_scripts/serve-kokon-pup.sh` (pure boot).
+- **One shared PUP door** `kokon-pup` (→ `kokon-pup-flux-image-3-klein`
+  after the rename step): BFL PUP Q4_K_M (5.63 GB) + mmproj-F16
+  (0.92 GB) on the named llama.cpp; aliases `q35` + `qwen3vl-8b` (the
+  live service config actually uses `qwen3vl-8b` for **all three**
+  pipelines — the `q35` distinction is stale in the config comment);
+  **member of all three image sets** so a family or flavor switch
+  reloads only the DiT engine, never the sidecar (task-019).
+  Non-thinking door, ctx 8192, image clamp 1024/4096 tokens. Boot:
+  `backends/_scripts/serve-kokon-pup.sh` (pure boot).
 - **Service** (0.12, schema 13): both qwen pipelines carry
   `vlm: {entrypoint: …/upstream/kokon-pup, model: "qwen3vl-8b"}` and
   `promptBundle: pup-qwen` (Kokon's own four prompts: t2i / edit /
@@ -84,41 +108,54 @@ below), not architectural.
   (task-014) → Q4_K_M is the quant class, and **two 9B pups can never
   co-reside with a qwen engine** (files alone ≈ 22.8 GB + KV cache /
   CUDA context → OOM). The two Qwen pups therefore must be **exclusive
-  of each other** behind the qwen engine.
+  of each other** behind the qwen engine — but the BFL door can stay
+  *in* the qwen sets as an unused escape hatch (a set is a constraint,
+  not a resident).
 
 ## Design
 
-**Topology (10 gateway models):** keep `kokon-pup` (BFL, klein's
-native) and add two qwen-native doors, **exclusive per job mode**:
+**Topology (10 gateway models):** the BFL door renamed, plus two
+qwen-native doors, **exclusive per job mode**:
 
-| gateway model | weights | serves (alias) | set membership |
-|---|---|---|---|
-| `kokon-pup` (unchanged) | BFL PUP Q4_K_M + mmproj-F16 | `q35`, `qwen3vl-8b` | `klein: k & p` (unchanged) |
-| `kokon-pup-t2i` (new) | PE-T2I Q4_K_M, **no mmproj** (text-only) | `pe-t2i` | `qwen-t: qt & (pt \| pi)`, `qwen-f: qf & (pt \| pi)` |
-| `kokon-pup-i2i` (new) | PE-I2I Q4_K_M + mmproj-bf16 | `pe-i2i` | same two sets |
+| gateway model | weights | set membership (matrix vars) |
+|---|---|---|
+| `kokon-pup-flux-image-3-klein` (`p`) | BFL PUP Q4_K_M + mmproj-F16 | `klein: k & p` (unchanged); also in the qwen `|`-groups as escape hatch |
+| `kokon-pup-qwen-image-2.1-t2i` (`pt`) | PE-T2I Q4_K_M, **no mmproj** (text-only) | `qwen-t: qt & (p \| pt \| pi)`, `qwen-f: qf & (p \| pt \| pi)` |
+| `kokon-pup-qwen-image-2.1-i2i` (`pi`) | PE-I2I Q4_K_M + mmproj-bf16 | same two sets |
 
-(`pt` / `pi` = the two new vars in the matrix block.) The matrix
-`|`-group already means "exactly one of" (as in `small: cf | cs`):
-a t2i job requests `pe-t2i`, an image-grounded job requests `pe-i2i`;
-whichever the job's VLM call names gets booted, the sibling is
-evicted if resident (FIFO-deferred while it is busy). The engine
-request then forms the pair, exactly as today. **Port map shifts**
-(new IDs sort between `kokon-pup` and `kokon-qwen-…`):
-9100 creative-fast, 9101 creative-slow, 9102 klein, 9103 kokon-pup,
-**9104 pup-i2i, 9105 pup-t2i**, 9106 full, 9107 turbo, 9108/9109 the
-vLLM pair. Harmless by the documented contract (only the gateway knows
-the map; the service talks to `/upstream/<id>`, never a port) — but it
-is a config reload, so it happens **inside a window** and
-`.last-good` gets re-seeded after.
+The matrix `|`-group means "exactly one of": a t2i job requests `pt`,
+an image-grounded job requests `pi`; whichever the job's VLM call names
+gets booted, the siblings are evicted if resident (FIFO-deferred while
+busy). The engine request then forms the pair, exactly as today. The
+group **keeps `p`** through and after the cutover: rollback is then a
+pure *service-config* revert (point the qwen pipelines back at the
+renamed shared door + `pup-qwen` bundle) with **no gateway change** —
+the group is only a coexistence constraint, an unrequested member
+costs zero VRAM. (Dropping `p` from the groups is a possible later
+cleanup, not a requirement.)
+
+**Port map (final, 10 models, v269 alphabetical contract):**
+9100 creative-fast · 9101 creative-slow · 9102
+kokon-flux-image-3-klein · 9103 kokon-pup-flux-image-3-klein · 9104
+kokon-pup-qwen-image-2.1-i2i · 9105 kokon-pup-qwen-image-2.1-t2i ·
+9106 kokon-qwen-image-2.1-full · 9107 kokon-qwen-image-2.1-turbo ·
+9108 qwen3.8-27b · 9109 qwen3.8-27b-vision.
+Two properties worth keeping in mind: the **rename alone shifts no
+ports** (`kokon-pup-flux-image-3-klein` holds exactly the sort slot of
+`kokon-pup`), and the shift that the additive step does cause (full /
+turbo / the vLLM pair each +2) is transparent — the service talks to
+`/upstream/<id>`, never a port, and the vLLM boot scripts take the
+daemon-assigned `${PORT}` arg with the served name as their identity.
 
 **Service (schema 14):** the per-pipeline `vlm` stays the T2I door for
-qwen; add an **optional second endpoint** (name: `vlmVision`) for the
-image-grounded door. `enhance_prompt` picks the client by mode,
-mirroring the existing bundle-key mapping (`engine.rs`):
-Generate → `vlm` (`pe-t2i`); Compose and **every image-bearing mode**
-(Edit, Inpaint, Outpaint, MultiReference, and 0.12's area/Expand) →
-`vlmVision`, **falling back to `vlm` when the pipeline names no
-second door** (stock installs and the klein pipeline stay
+qwen (the explicit `kokon-pup-qwen-image-2.1-t2i` name in both the
+`entrypoint` and the `model` field); add an **optional second endpoint**
+(name: `vlmVision`) for the image-grounded door. `enhance_prompt`
+picks the client by mode, mirroring the existing bundle-key mapping
+(`engine.rs`): Generate → `vlm`; Compose and **every image-bearing
+mode** (Edit, Inpaint, Outpaint, MultiReference, and 0.12's
+area/Expand) → `vlmVision`, **falling back to `vlm` when the pipeline
+names no second door** (stock installs and the klein pipeline stay
 byte-identical — klein keeps one endpoint, its BFL door).
 `absorb_secrets`' key-inheritance (the empty-key-inherits-gateway-key
 fix, `793ed0a`) and the "enhancer available" capability check
@@ -170,11 +207,6 @@ whichever the quality check prefers). Context: the doors get
 `--ctx-size` covering max_new_tokens (16256 / 24000) + the 4096-token
 image budget; KV for a 9B Q4 at 32k is a few hundred MB — fits.
 
-**Rollback:** one config-ladder step. `kokon-pup` stays registered the
-whole time; the qwen pipelines' `vlm` / `vlmVision` point back at it
-(and `promptBundle` back to `pup-qwen`) = today's behavior, exactly.
-Documented in the task's cutover note like `QWEN-ROLLBACK.md`.
-
 ## Build steps
 
 1. **Download + pin** (no GPU needed): `Q4_K_M` of both PE models and
@@ -188,55 +220,88 @@ Documented in the task's cutover note like `QWEN-ROLLBACK.md`.
    mmproj), one token each; confirm the T2I door runs **without** an
    mmproj and rejects an image request loudly; confirm the jinja
    template's `enable_thinking` switch behaves both ways (blockers a/b).
-3. **Boot scripts** `backends/_scripts/serve-kokon-pup-{t2i,i2i}.sh`:
-   clones of `serve-kokon-pup.sh` — pure boot, preflight, exec;
-   differences: model paths, aliases `pe-t2i` / `pe-i2i`, `--mmproj`
-   only on i2i, `enable_thinking` per the A/B, ctx per the token
-   budget, the README sampling row as door defaults, same image
-   clamps (1024/4096) and TTLs (600 s) as the shared door.
-4. **llama-swap** (`_configs/llama-swap.yaml`, in a window): two
-   tenants (caps: t2i `in: [text]`, i2i `in: [text, image]`), matrix
-   sets `qwen-t: qt & (pt|pi)`, `qwen-f: qf & (pt|pi)`, klein
-   unchanged; comments updated (the set table and the port map);
-   `.last-good` re-seeded after the validated reload.
-5. **Service** (repo): schema 14 migration (`vlmVision`), client
+3. **Rename the existing door** — *independent, zero behaviour change;
+   lands before the A/B in its own small window* (the new doors inherit
+   the naming rule from birth, and even a failed A/B leaves the box
+   with the cleaner name):
+   - `backends/_scripts/serve-kokon-pup.sh` →
+     `serve-kokon-pup-flux-image-3-klein.sh` (id == script name);
+     `cmd` in the config updated; aliases become the explicit id + the
+     legacy `q35,qwen3vl-8b` (transition safety, dropped later).
+   - Config-ladder step: model id, matrix var `p`, the description
+     texts and the header comment (port map is unchanged — see
+     property above); `.last-good` re-seeded.
+   - **Service config**: the four `vlm` entrypoints
+     (`models[]` ×3 + `externalEngine.vlm`) get the new
+     `/upstream/kokon-pup-flux-image-3-klein` path and `model` field =
+     the explicit id; drop the stale `kokon-pup` key from
+     `data/external-caps.json` if present (the file is keyed by
+     gateway id; the new key populates lazily on first fetch).
+   - **Repo**: the id appears in test fixtures / doc examples
+     (`src/lib/types.ts`, `src/lib/logic.test.ts`, `config.rs` ×3,
+     `vlm.rs` ×2, `engine.rs` ×5 — mechanical string updates; the
+     `kokon-pup-qwen` fixture is a different, retired-era string and
+     stays), `docs/fresh-box.md` (model table, matrix block,
+     verification checklist), `docs/service-on-prod-box.md` (config
+     seed, two places).
+   - Window: the config reload stops loaded models (standard
+     window), then verify: `/v1/models` on the renamed door lists the
+     explicit id, all three pipelines' Prompt+ path answers through
+     the new id, the matrix journal line, vllm revived canonically,
+     marker last.
+4. **Additive gateway step** (also before the A/B; breaks nothing —
+   the service still requests only `p`): add the two new tenants
+   (caps: t2i `in: [text]`, i2i `in: [text, image]`; pure-boot scripts
+   cloned from the renamed one — model paths, alias = the explicit id,
+   `--mmproj` only on i2i, `enable_thinking` per the A/B, ctx per the
+   token budget, the README sampling row as door defaults, same image
+   clamps and TTLs as today) and widen the sets to
+   `qwen-t: qt & (p | pt | pi)`, `qwen-f: qf & (p | pt | pi)`. The
+   port map shifts to the final 10-line map (above) — transparent, as
+   noted. `.last-good` re-seeded.
+5. **Service code** (repo): schema 14 migration (`vlmVision`), client
    selection by mode in `enhance_prompt`, `absorb_secrets` +
    capability checks extended, native bundle loader + JSON
-   post-processing in `vlm.rs`/`pup.rs` (unit-tested with fake
+   post-processing in `pup.rs` / `vlm.rs` (unit-tested with fake
    bundles/replies — no real prompt bytes in tests, keys and hashes
-   only), mock-gateway harness gains the two tenants. Green:
-   cargo qls-core + qls-service, `npm test`, `cd mcp && npm test`,
-   harness.
+   only), mock-gateway harness: if its config carries a VLM entry,
+   align it with the new names (it currently references only the
+   engine ids). Green: cargo qls-core + qls-service, `npm test`,
+   `cd mcp && npm test`, harness.
 6. **A/B window** (autonomy protocol — job script, watcher,
-   blocking wait last in the launch call; registry-neutralize vllm or
-   YIELD rule as always; vllm revived canonically, marker last):
-   standing set vs the current BFL-Q4 door, same seeds — t2i (a few
-   cases incl. one multilingual), edit (the canary hard edit),
-   compose (multi-reference; both the current two-step and the
-   one-shot native call), area (painted region). **Measure:** enhance
-   latency per mode (thinking on/off), the t2i↔i2i **pup-swap cost**
-   inside a TTL (the new axis this design introduces — task-019
-   removed sidecar reloads for family/flavor switches; mode switches
-   now reload one 5.6 GB door, page-cache-warm), VRAM peak per new
-   pair (must stay inside today's measured pairs' headroom),
+   blocking wait last in the launch call; vllm handled per the yield
+   rule; vllm revived canonically, marker last): temporary service
+   config variants (native doors + native bundle) vs the current
+   (shared door + `pup-qwen`), same seeds — t2i (a few cases incl.
+   one multilingual), edit (the canary hard edit), compose
+   (multi-reference; both the current two-step and the one-shot
+   native call), area (painted region). **Measure:** enhance latency
+   per mode (thinking on/off), the t2i↔i2i **pup-swap cost** inside a
+   TTL (the new axis this design introduces — task-019 removed
+   sidecar reloads for family/flavor switches; mode switches now
+   reload one 5.6 GB door, page-cache-warm), VRAM peak per new pair
+   (must stay inside today's measured pairs' headroom),
    degenerate/JSON-failure rate. The **owner's visual verdict**
    decides adoption (D-QW precedent; the old door stays selectable —
    nothing here forces a default-model change, so the AGENTS
    model-change bar applies to the A/B evidence, not to a DiT swap).
-7. **Cutover** (if adopted): config-ladder step with both qwen
-   pipelines on the native doors + native bundle; one-step rollback
-   note; rebuild + redeploy the service image (bind-mounted shape
-   under `frontends/kokon/`); live regression (t2i + edit + compose
-   through the new doors, `text_generation` capability, Prompt+
-   button visible after a model switch — the 2026-11-12 glitch class).
-   Docs: `docs/fresh-box.md` (model list, matrix block, port map),
-   `docs/engineering-notes.md` (PUP section), this file + STATUS.
-   If **not** adopted: close with the evidence, the box unchanged.
+7. **Cutover** (if adopted): a **pure service-config step** (the
+   gateway already carries all three doors): both qwen pipelines on
+   the native doors + native bundle; rebuild + redeploy the service
+   image (bind-mounted shape under `frontends/kokon/`); live
+   regression (t2i + edit + compose through the new doors,
+   `text_generation` capability, Prompt+ button visible after a model
+   switch — the 2026-11-12 glitch class). Rollback = revert that one
+   config (one step, D-PE8). Docs: `docs/fresh-box.md` (model list,
+   matrix block, final port map), `docs/engineering-notes.md` (PUP
+   section), this file + STATUS. If **not** adopted: close with the
+   evidence; the additive gateway step stays harmless (or reverts
+   with one ladder step), the rename stands.
 
 ## Decisions (pre-logged)
 
-- **D-PE1** — klein keeps the BFL door; it is klein's native PUP.
-  Only the qwen pipelines move.
+- **D-PE1** — klein keeps the BFL door in behaviour; it is klein's
+  native PUP. Only the qwen pipelines change what they call.
 - **D-PE2** — two **exclusive** native doors behind the qwen engine
   (one 9B pup + the DiT pair per set, 24 GB), routed **per job mode**:
   Generate→T2I door, every image-grounded mode→I2I door. Co-residing
@@ -256,11 +321,20 @@ Documented in the task's cutover note like `QWEN-ROLLBACK.md`.
 - **D-PE7** — Q4_K_M is the quant class for both doors (Q8 OOM'd the
   full pair, task-014; prithivMLmods' Q4_K_M = 5.63 GB, same class as
   the BFL door that fits).
-- **D-PE8** — rollback = one config step back to the shared door +
-  `pup-qwen`; `kokon-pup` stays registered throughout.
+- **D-PE8** — rollback = one service-config step back to the shared
+  door + `pup-qwen`; the renamed BFL door stays registered and in the
+  qwen sets throughout, so no gateway work is ever needed to roll
+  back.
 - **D-PE9** — malformed JSON after the retry: keep the raw
   (think-stripped) text with a job note. D-FB hard-fail remains
   reserved for a down endpoint.
+- **D-PE10** — **Naming** (owner, 2026-11-12): one explicit identity
+  per door — `kokon-pup-<engine-family>[-<mode>]` — used as the
+  gateway id, the door's alias, the service `model` field and the
+  boot-script name; the `kokon-pup` rename is an independent
+  zero-behaviour step (build step 3) that lands before the A/B;
+  legacy wire names survive only as extra aliases on the klein door
+  until a cleanup.
 
 ## blockers
 
@@ -289,12 +363,20 @@ proven on this exact llama.cpp build):
 - [ ] Both Q4_K_M GGUFs (+ I2I mmproj-bf16) on the box, sha256-pinned
       with provenance; both boot on the named llama.cpp (1-token
       probes; i2i with an image part); T2I boots mmproj-less.
-- [ ] Matrix sets + port map updated in `llama-swap.yaml` with
-      comments; reload validated in-window; `.last-good` re-seeded;
-      journal matrix line shows the new sets.
+- [ ] **Rename verified** (pre-A/B window): the shared door answers as
+      `kokon-pup-flux-image-3-klein` (alias list includes the legacy
+      names), all four service entrypoints + `model` fields updated,
+      stale caps key dropped, all repo references updated, all three
+      pipelines' Prompt+ path green through the new id, port map
+      unchanged by this step.
+- [ ] **Additive step verified**: two new tenants boot under their
+      explicit ids; sets `qwen-t: qt & (p|pt|pi)` /
+      `qwen-f: qf & (p|pt|pi)` in the journal matrix line; final
+      10-line port map in the config comment; current service
+      behaviour byte-identical through this step.
 - [ ] Schema 14: migration + `vlmVision` inheritance + capability
       check unit-tested; cargo (qls-core + service) / `npm test` /
-      mcp green; mock-gateway harness carries the two new tenants.
+      mcp green; mock-gateway harness aligned.
 - [ ] Native bundle loaded at runtime from the data dir; **zero
       native prompt bytes** in the repo, tests, logs or chat (keys
       and hashes only) — `strings`-style check on the image, as
@@ -302,9 +384,10 @@ proven on this exact llama.cpp build):
 - [ ] A/B window per the autonomy protocol (marker last, vllm
       revived, digest): standing set complete, measurements in the
       digest, owner's visual verdict recorded.
-- [ ] If adopted: cutover live on the box, one-step rollback
-      demonstrated, `docs/fresh-box.md` + `engineering-notes.md` +
-      STATUS current. If not: closed with evidence, box unchanged.
+- [ ] If adopted: cutover live on the box (service-config-only),
+      one-step rollback demonstrated, `docs/fresh-box.md` +
+      `engineering-notes.md` + STATUS current. If not: closed with
+      the evidence; rename + additive step as-is.
 
 ## Related (out of scope, noted)
 
