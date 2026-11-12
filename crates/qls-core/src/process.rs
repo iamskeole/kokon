@@ -1741,6 +1741,7 @@ CPU	Apple M2 Pro
             model_name: model_name.into(),
             sample: serde_json::json!({}),
             vlm: None,
+            vlm_vision: None,
             prompt_bundle: String::new(),
         });
         cfg
