@@ -146,7 +146,12 @@ family it was tuned for, one identity per door) at Q4_K_M — the only quant
 that fits all three image pairs in 24 GB (the Q8 full door's OOM, measured
 2026-11-03, is the constraint) — serving all three families under the
 door's id plus the legacy aliases (`q35`, `qwen3vl-8b`), so a family or
-flavor switch reloads only the engine, never the sidecar.
+flavor switch reloads only the engine, never the sidecar. Task-028 step 4
+registers two more doors on the box — Qwen's own PE fine-tunes, one per job
+mode (`kokon-pup-qwen-image-2.1-t2i` text-only, `kokon-pup-qwen-image-2.1-i2i`
+with mmproj) — and the qwen sets now carry them as the mode-exclusive group
+`(p | pt | pi)`; the service still calls the BFL door until the mode-routed
+cutover lands, so a fresh box behaves exactly as before.
 
 Downloads: follow each directory's `provenance.md` on the reference host
 (source, converter, hash). Verify sha256 after every download; a model is not
@@ -304,10 +309,12 @@ above, and one entry per model (`proxy`, `cmd`, `checkEndpoint`, `ttl`,
 | `creative-slow` | llama.cpp (G4 31B, MTP) | 9101 | `small` |
 | `kokon-flux-image-3-klein` | stock sd-server (FLUX.3 Klein) | 9102 | `klein` |
 | `kokon-pup-flux-image-3-klein` | llama-server (klein's PUP door, three names) | 9103 | **all three image sets** |
-| `kokon-qwen-image-2.1-full` | stock sd-server (Qwen-Image 2.1 full) | 9104 | `qwen-f` |
-| `kokon-qwen-image-2.1-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | 9105 | `qwen-t` |
-| `qwen3.8-27b` | vLLM (text) | 9106 | `vllm` |
-| `qwen3.8-27b-vision` | vLLM (vision tower on; own port, second served name) | 9107 | `vllm` |
+| `kokon-pup-qwen-image-2.1-i2i` | llama-server (Qwen PE-I2I PUP door, Q4_K_M + mmproj) | 9104 | `qwen-t`/`qwen-f` group |
+| `kokon-pup-qwen-image-2.1-t2i` | llama-server (Qwen PE-T2I PUP door, Q4_K_M, text-only) | 9105 | `qwen-t`/`qwen-f` group |
+| `kokon-qwen-image-2.1-full` | stock sd-server (Qwen-Image 2.1 full) | 9106 | `qwen-f` |
+| `kokon-qwen-image-2.1-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | 9107 | `qwen-t` |
+| `qwen3.8-27b` | vLLM (text) | 9108 | `vllm` |
+| `qwen3.8-27b-vision` | vLLM (vision tower on; own port, second served name) | 9109 | `vllm` |
 
 2026-11-06: the three kokon ids were renamed to their boot-script names
 (`kokon-turbo` → `kokon-qwen-image-2.1-turbo`, `kokon-full` →
@@ -320,6 +327,16 @@ door carries the engine family its PUP was tuned for (gateway id ==
 `--alias` == the service's `vlm.model` field == boot-script name, all one);
 still fourth alphabetically, so the port (9103) did not move, and the legacy
 aliases `q35`/`qwen3vl-8b` remain as extra names on the same door.
+2026-11-12 (task-028 step 4, additive): the two Qwen-native PE PUP doors
+(`…-i2i` / `…-t2i` — Q4_K_M GGUFs of `Qwen/Qwen-Image-2.1-PE-*`, the
+fine-tunes Qwen released for this DiT) joined the registry; they sort
+between the BFL door and the qwen engines, so full/turbo and the vLLM pair
+each shifted +2 (9106/9107, 9108/9109) while klein (9102) and the BFL door
+(9103) did not move. The qwen sets widen to `qt & (p | pt | pi)` /
+`qf & (p | pt | pi)` — a mode-exclusive group: exactly one PUP door per
+qwen state (two 9B pups can never co-reside with the engine on 24 GB),
+named by the job's VLM call. The current service still names `p` (the BFL
+door), so behaviour is unchanged until the mode-routed cutover.
 
 **The port contract (a v269 property — nothing to memorize).** The daemon
 assigns the next number from `startPort` to the models **with their IDs
@@ -342,17 +359,19 @@ routing:
       matrix:
         vars:
           k: kokon-flux-image-3-klein
-          p: kokon-pup-flux-image-3-klein # the PUP door (renamed, task-028) — member of all
-          qt: kokon-qwen-image-2.1-turbo   # three image sets (task-019): a
-          qf: kokon-qwen-image-2.1-full    # family or flavor switch
-          v: qwen3.8-27b        # reloads only the engine, never the sidecar
-          vv: qwen3.8-27b-vision
+          p: kokon-pup-flux-image-3-klein # the BFL PUP door (renamed, task-028) — klein's
+          pt: kokon-pup-qwen-image-2.1-t2i   # native PUPs (task-028 step 4); the qwen
+          pi: kokon-pup-qwen-image-2.1-i2i   # sets carry the group (p | pt | pi), one
+          qt: kokon-qwen-image-2.1-turbo     # door per state, named by the job's VLM call
+          qf: kokon-qwen-image-2.1-full
+          v: qwen3.8-27b        # a family or flavor switch still reloads
+          vv: qwen3.8-27b-vision # only the engine, never the running door
           cf: creative-fast
           cs: creative-slow
         sets:
           klein:  "k & p"
-          qwen-t: "qt & p"
-          qwen-f: "qf & p"
+          qwen-t: "qt & (p | pt | pi)"
+          qwen-f: "qf & (p | pt | pi)"
           small:  "cf | cs"
           vllm:   "v | vv"      # the two vLLM variants never coexist
 ```
@@ -383,10 +402,16 @@ never-coexist pair; the `small` set is the other instance of it.) The sets:
   request evicts everything else, vLLM included: the card holds one heavy
   job, the job runs, and the chat model comes back when a request for it
   reclaims the card (warm boot ~60–90 s).
-- `qwen-t` / `qwen-f` — each qwen flavor is its engine plus the *same*
-  shared door. The two flavors never mix (their engine variants share one
-  port anyway), and each evicts everything else **except the door** when
-  requested — the flavor switch is an engine-only reload.
+- `qwen-t` / `qwen-f` — each qwen flavor is its engine plus **one** PUP
+  door from the group `(p | pt | pi)`: the BFL door `p` (what the current
+  service calls) or one of the two Qwen-native PE doors — `pt` for t2i
+  jobs, `pi` for image-grounded jobs (task-028: the PE fine-tunes). The
+  group is a disjunction the solver satisfies with exactly one door per
+  state (the two 9B pups can never co-reside with the engine on 24 GB),
+  so a qwen request evicts everything else **except the door it names** —
+  a family or flavor switch stays an engine-only reload, and a *mode*
+  switch (t2i ↔ i2i) reloads one 5.6 GB door (page-cache-warm after the
+  first). The two flavors never mix.
 - `small: cf | cs` — one creative writer; the two writers never share the
   card (26B + 31B > 24 GB), and a creative request evicts vLLM and any image
   pair too.
@@ -548,10 +573,11 @@ VLM is part of the quality contract, not an optional garnish.
    it took *is* the stop-propagation measurement).
 3. **One job per family** through the service UI (39152): a klein edit and a
    qwen text-to-image. Both must land in the gallery, and the journal must
-   show the matrix decisions at info level, e.g.
-   `matrix: model=kokon-qwen-image-2.1-turbo set=qwen-t dsl="qt & p"
-   evict=[kokon-flux-image-3-klein]
-   target=[kokon-pup kokon-qwen-image-2.1-turbo] cost=2` — that line is the proof the
+   show the matrix decisions, e.g.
+   `matrix: model=kokon-qwen-image-2.1-turbo starting` (info level; at
+   debug level the same line carries `set=`, `dsl="qt & (p | pt | pi)"`,
+   `evict=[…]`, `target=[kokon-pup-flux-image-3-klein kokon-qwen-image-2.1-turbo]` and
+   `cost=…`) — that line is the proof the
    matrix router (not the groups fallback) is what decided, and `… Health
    check passed on http://127.0.0.1:<port>/…` marks each boot. The
    scheduler's own deferral lines are Debug-level: `logLevel: debug` in a

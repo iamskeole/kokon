@@ -311,19 +311,25 @@ gains their entries with the step-4 additive commit (they are not yet
 registered in the gateway, so documenting them as live now would be a
 lie).
 
-**Step 2 — partially done, the rest rides inside a window.** A full
+**Step 2 — done (inside the step-4 window).** A full
 token-generation smoke needs the GPU, and vllm owns the 24 GB card:
 even `llama-cli -ngl 0` dies in this build's CUDA-init
 (`cudaStreamCreateWithFlags` OOM) while vllm is resident, so there is
-no "CPU-only" path on this box to probe with. What *is* proven
+no "CPU-only" path on this box to probe with. What *was* proven
 pre-window: the exact named llama.cpp tree loads the sibling BFL
 Qwen3.5-9B GGUF end to end (the journal's known-good boot), the PE
 files are the same architecture and same gguf reader (blocker a's
 architecture half), and their metadata is valid GGUF. The remaining
-half — one-token boots, mmproj-less T2I, the `enable_thinking` switch
-both ways (blockers b/c) — runs inside the first window that touches
-the PE doors (step 4 or 6), where the card is free and the proof is
-free.
+half ran inside the step-4 window (w028r2e), where the card was free
+and the proof was free — see Step 4 below: both PE doors boot on the
+named tree (1-token 200, page-cached), the T2I door is mmproj-less and
+rejects an image part loudly (HTTP 500, the server-side teeth), the
+`enable_thinking` switch behaves both ways (on: think block + JSON
+contract; off: no think, same contract), and the JSON contract holds
+under the PE system prompt on both doors (text and real-photo input).
+Direct-exec pre-window runs of both boot scripts (under vllm
+residency) already proved the flags parse and the files load (they
+died at the CUDA OOM, exactly the expected signature).
 
 **Step 3 — DONE (the rename window, w028r1d, 2026-11-12 12:34 UTC,
 150 s).** Final state, verified after the marker:
@@ -372,6 +378,90 @@ passed. **The lesson, now baked into every window's P0 audit: check
 the daemon will run them (direct exec, not `sh`).**
 4. **w028r1d: DONE** as above — the audit caught nothing because the
 scripts were finally right, and the proofs all landed.
+
+**Step 4 — DONE (the additive window, w028r2e, 2026-11-12 13:46–13:50
+UTC, 225 s).** Four attempts; four distinct *checker-side* bugs, fixed
+one per attempt (the window design held; the rollback path fired
+cleanly each time, vllm revived <60 s every time, the service was
+never touched). Final state, verified after the marker:
+- Gateway: **10 models** — new tenants `kokon-pup-qwen-image-2.1-t2i`
+  (**9105**) and `kokon-pup-qwen-image-2.1-i2i` (**9104**); alphabetical
+  slots confirmed against the daemon's own `/running` `proxy` and the
+  journal boot lines; live == `.last-good` == staged `w028r2final`
+  (md5 `3e5214d2…`). The qwen sets are now `qt & (p | pt | pi)` /
+  `qf & (p | pt | pi)` — mode-exclusive: one PUP door per qwen state,
+  named by the job's VLM call.
+- Boot scripts: two new pure-boot scripts (`serve-kokon-pup-qwen-
+  image-2.1-{t2i,i2i}.sh`) cloned from the BFL door's shape: the shared-
+  linked `LD_LIBRARY_PATH`, `--reasoning on` (this build's form of the
+  `enable_thinking` switch; the old `--chat-template-kwargs` spelling
+  is deprecated, not invalid), the reference sampling row as defaults
+  (temp 1.0 / top_p 0.95 / top_k 20 — per-request values override on
+  the wire), ctx 20480 (t2i) / 32768 (i2i) per the reference
+  `max_new_tokens`, `--mmproj` on i2i only, the 1024/4096 image clamps
+  on i2i, alias = the explicit id.
+- Contract bundle pinned to the data-dir (D-PE3): `system_prompt.txt`
+  (t2i 10045 B `a77c9a06…`; i2i 18344 B `e378fea6…`),
+  `generation_config.json`, `LICENSE` (byte-identical across both PE
+  models — one sha for both) appended to each `provenance.md`; the
+  GGUFs' embedded chat templates already carry the `enable_thinking`
+  branch (verified in the file strings), so no external template is
+  needed.
+- **Step-2's remaining proofs, all in-window** (the card was free):
+  both PE GGUFs cold-boot on the named Oct-14 llama.cpp (1-token 200;
+  ~2–3 s page-cached after the pre-window reads) and serve their
+  explicit ids — **blocker a resolved**; the T2I door boots mmproj-
+  less and rejects an image part with HTTP 500 `image input is not
+  supported - hint: if this is unexpected, you may need to provide the
+  mmproj` — **blocker b resolved, the routing invariant now has
+  server-side teeth**; `--reasoning off` on the same T2I file
+  (scratch direct-exec boot, port 9190) suppresses the think block
+  (0 chars, 396 completion tokens) and **keeps** the JSON contract —
+  **blocker c resolved, the A/B's off arm works**.
+- **The JSON contract under the PE system prompt** (attached from the
+  pinned data-dir bundle; structural verdicts only, replies stay in
+  `/tmp/w028r2e`): t2i text-only → `{rewritten_prompt: str 2256 chars,
+  wh_ratio}`, think 2486 chars / 980 tokens; i2i with a real
+  klein-generated 1024² photo → `{rewritten_prompt: str 1016 chars,
+  wh_ratio, ratio_follow}` (both ratio fields present — the card's
+  mutual exclusion is at value level, which the step-5 post-processing
+  must honour), think 7247 chars / 1887 tokens. VRAM with the doors
+  resident: t2i 6098 MiB, i2i 7680 MiB — deep inside the 24 GB pair
+  headroom.
+- **Current behaviour byte-identical**: klein t2i with Prompt+ (22 s,
+  PNG 1.3 MB) and turbo t2i with Prompt+ (25 s, PNG 623 KB) ran green
+  through the widened sets (the service still names `p` — the BFL
+  door — so the solver resolved `{qt, p}` / `{k, p}` exactly as before);
+  the service config's md5 is identical before and after
+  (`8b8936ff…`); the active model is back on klein.
+- vllm revived canonically on **9108** (its shifted slot) in 104 s
+  (warm — the weights were page-cached); all kokon ports free at the
+  end; the service and its UI healthy.
+- Docs: `docs/fresh-box.md` — the 10-model table, the additive history
+  note, the `vars`/`sets` blocks, the set-explainer bullets, the PUP
+  section, and the verification checklist (the journal example now
+  matches what v269 actually logs at info level).
+
+**The additive window's four failed attempts (all checker-side — the
+record for the next window-builder).**
+1. **w028r2 (P0):** the PE content check grepped the concatenated
+   full path while the script builds it from a `$M` variable — the
+   r1b lesson again; checks now match dir + file-name parts.
+2. **w028r2b (P0):** `grep 'mmproj'` against the T2I script matched the
+   script's own *comment* ("no mmproj, no vision") — content audits
+   must match **flag lines** (`--mmproj`, `--reasoning`), never bare
+   words the script documents in prose (D-AD3).
+3. **w028r2c (P2):** the contract assertion expected JSON from a
+   *system-promptless* request — a design bug, not a model failure:
+   the JSON envelope is conditioned on the PE fine-tune's
+   `system_prompt.txt`; without it the model answers with a rich
+   plain-text description (which is itself good PE, just not the
+   documented contract). The window now pins the system prompt to the
+   data-dir and attaches it in the contract probes — exactly what the
+   service's bundle will do at runtime in step 5 (D-AD1).
+4. **w028r2d (P2):** the `/running` endpoint exposes the bound URL as
+   the field **`proxy`**, not `address` — the jq path returned null
+   (D-AD2).
 
 ## Decisions (pre-logged)
 
@@ -457,6 +547,36 @@ clobbered boot script, not a naming/routing problem; the daemon's
   and `LD_LIBRARY_PATH=/home/linuxbrew/.linuxbrew/lib` (the built
   binaries link brew's libssl.so.4); the MCP protocol tests inherit
   that for the service they spawn.
+- **D-AD1 (the contract is conditioned on the system prompt,
+  2026-11-12)** — the PE JSON envelope is not a property of the weights
+  alone: without the fine-tune's `system_prompt.txt` the model answers
+  a rich *plain-text* description (still good PE, not the documented
+  contract). Door-level contract proofs must attach the pinned system
+  prompt (read from the data-dir, never printed); at runtime the
+  service's native bundle does the same (step 5).
+- **D-AD2 (the `/running` field is `proxy`, 2026-11-12)** — the daemon's
+  `/running` exposes each loaded model's bound URL as `proxy` (not
+  `address`); window assertions use `.proxy`.
+- **D-AD3 (content audits match flag lines, 2026-11-12)** — boot-script
+  content checks must grep **flag spellings** (`--mmproj`,
+  `--reasoning on|off`, `--temp …`), never bare words: the scripts
+  document their own flags in prose comments (the T2I header says
+  "no mmproj"), so a bare-word grep false-positives on the prose.
+- **D-AD4 (explicit unloads before pair boots, 2026-11-12)** — the
+  window unloads (via `/api/models/unload`) any resident door not in
+  the next pair's set *before* booting the pair, so the card state is
+  deterministic (24 GB: one 9B PUP + one DiT per pair; a second PUP or
+  the old door resident would OOM the boot). Matrix eviction is still
+  proven for the service's own request flow (the klein/turbo jobs);
+  the explicit unload is the window's determinism, not a substitute
+  for the set's correctness.
+- **D-AD5 (the off arm is a scratch boot, 2026-11-12)** — the
+  `enable_thinking` A/B axis is proven by a scratch *direct-exec* boot
+  of the same GGUF on a scratch port (9190) with `--reasoning off`:
+  it is not daemon-managed, so the job owns its full lifecycle (launch,
+  readiness wait, kill, wait-for-exit) and the watcher's cap path clears
+  it too. One 9B PUP + the scratch fit the card simultaneously (~14 GB),
+  so the arm cost no extra window time.
 
 ## blockers
 
@@ -465,15 +585,21 @@ the task (none expected to be show-stoppers — the architecture is
 proven on this exact llama.cpp build):
 
 - **a.** the Oct-14 tree loads *these* GGUFs as-is (gguf metadata
-  version, MTP tensor presence in the prithivMLmods files) — the
-  step-2 smoke answers it; fallback sources exist (lightx2v Q8,
-  Moseyanling) if a file is at odds with the tree.
-- **b.** T2I door without mmproj: confirm the qwen35 model in this
-  tree boots mmproj-less and fails loud on image parts (the routing
-  invariant's server-side teeth).
-- **c.** whether `enable_thinking=false` keeps the JSON contract
-  (the fine-tune may rely on the think prefix) — the step-2 smoke
-  plus the A/B answer it.
+  version, MTP tensor presence in the prithivMLmods files) — **RESOLVED
+  in the w028r2e window: both files load and serve (1-token 200, /v1/
+  models identity); the MTP-block reader was already exercised by the
+  BFL door on the same tree.** No fallback needed.
+- **b.** T2I door without mmproj: **RESOLVED (w028r2e): boots clean,
+  and an image part is rejected with HTTP 500 `image input is not
+  supported - hint: if this is unexpected, you may need to provide the
+  mmproj` — the routing invariant's server-side teeth, in the daemon's
+  own error text.**
+- **c.** whether `enable_thinking=false` keeps the JSON contract: 
+  **RESOLVED (w028r2e): it does — the scratch `--reasoning off` boot
+  produced the same `{rewritten_prompt, wh_ratio}` JSON with the think
+  block absent (396 tokens vs 980); the fine-tune does not rely on the
+  think prefix for the envelope.** The on/off quality question remains
+  for the A/B (D-PE5).
 - **d.** one-shot compose with the native I2I vs two-step — A/B.
 - **e.** decode latency of the 9B Q4 with thinking on the 3090
   (hybrid attention should make it fast; the MTP draft variant is the
@@ -492,11 +618,14 @@ proven on this exact llama.cpp build):
       references updated, all pipelines' Prompt+ path green through
       the new id (klein + turbo jobs in-window), port map unchanged by
       this step.
-- [ ] **Additive step verified**: two new tenants boot under their
-      explicit ids; sets `qwen-t: qt & (p|pt|pi)` /
-      `qwen-f: qf & (p|pt|pi)` in the journal matrix line; final
-      10-line port map in the config comment; current service
-      behaviour byte-identical through this step.
+- [x] **Additive step verified** (w028r2e, 2026-11-12): two new tenants
+      boot under their explicit ids (9105/9104, confirmed via /running
+      proxy + journal); sets `qwen-t: qt & (p|pt|pi)` /
+      `qwen-f: qf & (p|pt|pi)` live in the config and the solver
+      resolved the service's requests against them (klein `{k,p}`, turbo
+      `{qt,p}` — byte-identical behaviour, both jobs green); final
+      10-line port map in the config comment and the docs; the service
+      config is byte-identical before/after.
 - [ ] Schema 14: migration + `vlmVision` inheritance + capability
       check unit-tested; cargo (qls-core + service) / `npm test` /
       mcp green; mock-gateway harness aligned.
