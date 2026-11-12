@@ -26,7 +26,13 @@ pub const DEFAULT_REMOTE_PORT: u16 = 39152;
 /// Schema 10 (2026-10-19): the 8 GB preset's VRAM reserve 1 -> 1.5 GiB (unless set by hand).
 /// Schema 11: additive `externalEngine` (an externally managed inference engine); older files
 /// load with the field unset.
-const SCHEMA_VERSION: u32 = 13;
+/// Schema 13 (2026-11-06, 0.12): additive per-pipeline `vlm` sub-entry + `promptBundle` and the
+/// active engine's own pair.
+/// Schema 14 (2026-11-12, 0.12): additive optional `vlmVision` second VLM endpoint per
+/// pipeline (and on the active engine): image-grounded PUP calls (edit, area, outpaint,
+/// multi-reference, compose) go there when named, falling back to `vlm`; t2i jobs always use
+/// `vlm`. A pipeline that names no second door behaves exactly as before.
+const SCHEMA_VERSION: u32 = 14;
 /// `upscaler_model` value for a plain Lanczos resize (no model).
 pub const LANCZOS: &str = "lanczos";
 /// Upscalers offered in Settings: (file stem, label). Superscale-SP is a setup download, MoSR is
@@ -375,6 +381,11 @@ pub struct ExternalEngine {
     /// The VLM (prompt upsampler) of the active pipeline; None = no upsampler.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub vlm: Option<VlmEndpoint>,
+    /// Second VLM endpoint of the active pipeline: image-grounded jobs (edit, area,
+    /// outpaint, multi-reference, compose) call it instead of `vlm` when named; None =
+    /// every job mode uses `vlm` (the stock and klein pipelines name one door only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vlm_vision: Option<VlmEndpoint>,
     /// Prompt bundle of the active pipeline: a bundled id (a repo asset
     /// directory, [`resolve_prompt_bundle`]) or a path to a folder of prompt
     /// assets. "" = none.
@@ -409,6 +420,11 @@ pub struct ExternalModel {
     /// The VLM (prompt upsampler) of this pipeline; None = no upsampler.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub vlm: Option<VlmEndpoint>,
+    /// Second VLM endpoint of this pipeline: image-grounded jobs (edit, area, outpaint,
+    /// multi-reference, compose) call it instead of `vlm` when named; None = every job
+    /// mode uses `vlm`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vlm_vision: Option<VlmEndpoint>,
     /// Prompt bundle of this pipeline: a bundled id (a repo asset directory,
     /// [`resolve_prompt_bundle`]) or a path to a folder of prompt assets.
     /// "" = none.
@@ -817,6 +833,12 @@ impl AppConfig {
                         // first save writes the new schema.
                         tracing::debug!("config migrated to schema 13 (per-pipeline vlm + prompt bundle)");
                     }
+                    if c.schema_version < 14 {
+                        // Additive: the per-model entries (and the active engine) may name a
+                        // second VLM endpoint, `vlmVision`, for image-grounded jobs; old
+                        // files read with it unset and behave exactly as before.
+                        tracing::debug!("config migrated to schema 14 (vlmVision for image-grounded PUP calls)");
+                    }
                     // The official weights are always available as a profile, built for the
                     // configured folder and preset; the active one stays as it is.
                     c.normalize();
@@ -896,19 +918,30 @@ impl AppConfig {
             if e.vlm.is_none() {
                 e.vlm = f.vlm.clone();
             }
+            // A saved second door is deployment state too: an incoming config that names
+            // none (the stock UI carries no such field) keeps the stored one, the same way
+            // the plain door is kept.
+            if e.vlm_vision.is_none() {
+                e.vlm_vision = f.vlm_vision.clone();
+            }
         }
         for m in &mut self.models {
-            if let (Some(v), Some(fv)) = (
-                m.vlm.as_mut(),
-                from
-                    .models
-                    .iter()
-                    .find(|f| f.model == m.model)
-                    .and_then(|f| f.vlm.as_ref()),
-            ) {
+            let from_m = from.models.iter().find(|f| f.model == m.model);
+            if let (Some(v), Some(fv)) = (m.vlm.as_mut(), from_m.and_then(|f| f.vlm.as_ref())) {
                 if v.api_key.trim().is_empty() && !fv.api_key.trim().is_empty() {
                     v.api_key = fv.api_key.clone();
                 }
+            }
+            // The second door: an incoming name without one keeps the stored endpoint;
+            // a present one inherits the stored key (same rule as the plain door).
+            match (m.vlm_vision.as_mut(), from_m.and_then(|f| f.vlm_vision.as_ref())) {
+                (None, Some(fv)) => m.vlm_vision = Some(fv.clone()),
+                (Some(v), Some(fv)) => {
+                    if v.api_key.trim().is_empty() && !fv.api_key.trim().is_empty() {
+                        v.api_key = fv.api_key.clone();
+                    }
+                }
+                _ => {}
             }
             if m.prompt_bundle.trim().is_empty() {
                 if let Some(f) = from.models.iter().find(|f| f.model == m.model) {
@@ -1910,14 +1943,15 @@ mod tests {
     fn schema_13_adds_vlm_and_prompt_bundle() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config.json");
-        // A schema-12 file with no new keys reads clean and gets the new
-        // schema; the new keys stay out of the saved JSON until set.
+        // A schema-12 file with no new keys reads clean and gets the current
+        // schema (14); the new keys stay out of the saved JSON until set.
         let old = r#"{"schemaVersion":12,"externalEngine":{"gateway":"http://gw","model":"a","modelName":"a.gguf"},
             "models":[{"label":"Klein","model":"kokon-klein","modelName":"klein-Q8_0.gguf"}]}"#;
         std::fs::write(&p, old).unwrap();
         let c = AppConfig::load_from(&p);
-        assert_eq!(c.schema_version, 13);
+        assert_eq!(c.schema_version, SCHEMA_VERSION);
         assert_eq!(c.models[0].vlm, None);
+        assert_eq!(c.models[0].vlm_vision, None);
         assert_eq!(c.models[0].prompt_bundle, "");
         assert_eq!(c.models[0].gateway, None);
         assert_eq!(
@@ -1927,6 +1961,7 @@ mod tests {
         );
         let saved = serde_json::to_string(&c).unwrap();
         assert!(!saved.contains("\"vlm\""), "unset sub-entries stay out of the JSON");
+        assert!(!saved.contains("\"vlmVision\""), "the second door stays out until named");
 
         // Set: the new surface round-trips (per-model and on the active engine).
         let mut c = AppConfig::load_from(&p);
@@ -1957,6 +1992,90 @@ mod tests {
     }
 
     #[test]
+    fn schema_14_adds_vlm_vision_and_migrates_13_files() {
+        // A schema-13 file (vlm set, no vlmVision) reads with the second door
+        // unset and saves as 14; naming the door round-trips it on both levels.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        let old = r#"{"schemaVersion":13,"externalEngine":{"gateway":"http://gw","model":"m","modelName":"m.gguf",
+            "vlm":{"entrypoint":"http://127.0.0.1:8081/upstream/pup","model":"pup"}},
+            "models":[{"label":"T","model":"m","modelName":"m.gguf",
+            "vlm":{"entrypoint":"http://127.0.0.1:8081/upstream/pup","model":"pup"}}]}"#;
+        std::fs::write(&p, old).unwrap();
+        let mut c = AppConfig::load_from(&p);
+        assert_eq!(c.schema_version, SCHEMA_VERSION);
+        assert_eq!(c.models[0].vlm_vision, None);
+        assert_eq!(c.external_engine.as_ref().unwrap().vlm_vision, None);
+        let vision = VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/pup-i2i".into(),
+            model: "pup-i2i".into(),
+            api_key: String::new(),
+        };
+        c.models[0].vlm_vision = Some(vision.clone());
+        c.external_engine.as_mut().unwrap().vlm_vision = Some(vision);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains("\"schemaVersion\":14"), "the first save writes 14");
+        assert!(saved.contains("\"vlmVision\""));
+        std::fs::write(&p, &saved).unwrap();
+        let r = AppConfig::load_from(&p);
+        assert_eq!(r.models[0].vlm_vision.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/pup-i2i");
+        assert_eq!(r.models[0].vlm.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/pup");
+        assert_eq!(r.external_engine.as_ref().unwrap().vlm_vision, r.models[0].vlm_vision);
+    }
+
+    #[test]
+    fn absorb_secrets_keeps_and_inherits_the_vision_door() {
+        // The stock UI carries no vlmVision field: a save or switch that arrives
+        // without one keeps the stored endpoint (an empty-keyed one inherits the
+        // stored key); an explicit incoming one wins.
+        let stored = AppConfig::default();
+        let mut stored = stored;
+        stored.models = vec![ExternalModel {
+            label: "T".into(),
+            sub: None,
+            model: "m-t".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            gateway: None,
+            vlm: Some(VlmEndpoint {
+                entrypoint: "http://127.0.0.1:8081/upstream/door-t2i".into(),
+                model: "door-t2i".into(),
+                api_key: "k1".into(),
+            }),
+            vlm_vision: Some(VlmEndpoint {
+                entrypoint: "http://127.0.0.1:8081/upstream/door-i2i".into(),
+                model: "door-i2i".into(),
+                api_key: "k2".into(),
+            }),
+            prompt_bundle: "b".into(),
+        }];
+        // (1) Incoming without a vision door keeps the stored one, key included.
+        let mut incoming = stored.clone();
+        incoming.models[0].vlm_vision = None;
+        incoming.absorb_secrets(&stored);
+        assert_eq!(incoming.models[0].vlm_vision.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/door-i2i");
+        assert_eq!(incoming.models[0].vlm_vision.as_ref().unwrap().api_key, "k2");
+        // (2) An incoming door with an empty key inherits the stored key.
+        let mut incoming = stored.clone();
+        incoming.models[0].vlm_vision = Some(VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/door-i2i".into(),
+            model: "door-i2i".into(),
+            api_key: String::new(),
+        });
+        incoming.absorb_secrets(&stored);
+        assert_eq!(incoming.models[0].vlm_vision.as_ref().unwrap().api_key, "k2");
+        // (3) An explicit incoming key wins.
+        let mut incoming = stored.clone();
+        incoming.models[0].vlm_vision = Some(VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/door-i2i".into(),
+            model: "door-i2i".into(),
+            api_key: "other".into(),
+        });
+        incoming.absorb_secrets(&stored);
+        assert_eq!(incoming.models[0].vlm_vision.as_ref().unwrap().api_key, "other");
+    }
+
+    #[test]
     fn settings_save_round_trip_keeps_gateway_and_vlm_keys() {
         // The UI never shows the key fields: a settings save carries empty keys and must
         // not wipe the stored ones (the 2026-11-11 box incident; see `absorb_secrets`).
@@ -1972,6 +2091,7 @@ mod tests {
                 model: "q35".into(),
                 api_key: "vlm-key".into(),
             }),
+            vlm_vision: None,
             prompt_bundle: String::new(),
         });
         stored.models = vec![
@@ -1983,6 +2103,7 @@ mod tests {
                 sample: serde_json::json!({}),
                 gateway: None,
                 vlm: stored.external_engine.as_ref().unwrap().vlm.clone(),
+                vlm_vision: None,
                 prompt_bundle: String::new(),
             },
             ExternalModel {
@@ -1993,6 +2114,7 @@ mod tests {
                 sample: serde_json::json!({}),
                 gateway: None,
                 vlm: None,
+                vlm_vision: None,
                 prompt_bundle: String::new(),
             },
         ];
@@ -2037,6 +2159,7 @@ mod tests {
             model_name: "model.gguf".into(),
             sample: serde_json::json!({}),
             vlm: Some(vlm.clone()),
+            vlm_vision: None,
             prompt_bundle: "pup".into(),
         });
         stored.models = vec![
@@ -2048,6 +2171,7 @@ mod tests {
                 sample: serde_json::json!({}),
                 gateway: None,
                 vlm: Some(vlm.clone()),
+                vlm_vision: None,
                 prompt_bundle: "pup".into(),
             },
             ExternalModel {
@@ -2058,6 +2182,7 @@ mod tests {
                 sample: serde_json::json!({}),
                 gateway: None,
                 vlm: None,
+                vlm_vision: None,
                 prompt_bundle: String::new(),
             },
         ];
@@ -2071,6 +2196,7 @@ mod tests {
             model_name: "model.gguf".into(),
             sample: serde_json::json!({}),
             vlm: None,
+            vlm_vision: None,
             prompt_bundle: String::new(),
         });
         incoming.absorb_secrets(&stored);
@@ -2090,6 +2216,7 @@ mod tests {
             model_name: "model.gguf".into(),
             sample: serde_json::json!({}),
             vlm: Some(vlm.clone()),
+            vlm_vision: None,
             prompt_bundle: "pup-qwen".into(),
         });
         let mut to_qwen = cross.clone();
@@ -2100,6 +2227,7 @@ mod tests {
             model_name: "model.gguf".into(),
             sample: serde_json::json!({}),
             vlm: None,
+            vlm_vision: None,
             prompt_bundle: String::new(),
         });
         to_qwen.absorb_secrets(&cross);
@@ -2128,6 +2256,7 @@ mod tests {
             model_name: "model.gguf".into(),
             sample: serde_json::json!({}),
             vlm: None,
+            vlm_vision: None,
             prompt_bundle: "pup".into(),
         });
         assert!(!ext.external_enhancer_configured());
@@ -2147,6 +2276,7 @@ mod tests {
             sample: serde_json::json!({}),
             gateway: None,
             vlm: Some(vlm),
+            vlm_vision: None,
             prompt_bundle: String::new(),
         }];
         assert!(per_model.external_enhancer_configured());
@@ -2169,6 +2299,7 @@ mod tests {
             model_name: "turbo.gguf".into(),
             sample: serde_json::json!({}),
             vlm: None,
+            vlm_vision: None,
             prompt_bundle: String::new(),
         });
         cfg.models = vec![
@@ -2184,6 +2315,7 @@ mod tests {
                     model: "pup".into(),
                     api_key: "pup-key".into(),
                 }),
+                vlm_vision: None,
                 prompt_bundle: "bfl-klein".into(),
             },
             ExternalModel {
@@ -2198,6 +2330,7 @@ mod tests {
                     model: "pup".into(),
                     api_key: String::new(),
                 }),
+                vlm_vision: None,
                 prompt_bundle: "prompts/qwen".into(),
             },
             ExternalModel {
@@ -2208,6 +2341,7 @@ mod tests {
                 sample: serde_json::json!({}),
                 gateway: None,
                 vlm: None,
+                vlm_vision: None,
                 prompt_bundle: String::new(),
             },
         ];
