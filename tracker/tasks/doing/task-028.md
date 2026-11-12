@@ -565,11 +565,14 @@ di-t generate, fast quality):
   18.7 GB — both doors resident alongside the engine, no OOM, no
   mid-job eviction; the klein-pair eviction observed in a stray test
   job is a pre-existing property of that pair, not of these).
-- **Adoption is staged, not done:** the one-step cutover config
-  (`/tmp/w028r3/svc-adopt.json` — schema 14; both qwen pipelines on
-  the native doors + `pup-qwen-native`) is ready to `cp` into
-  `config/config.json` + `docker restart kokon`; the rollback is the
-  window's own restore path (byte-identical pre-window config —
+- **Adoption is staged, not done:** the one-step cutover config —
+  schema 14, both qwen pipelines on the native doors (`vlm` = PE-T2I,
+  `vlmVision` = PE-I2I) + `pup-qwen-native` bundle; klein unchanged —
+  is at **`/home/p/ml/frontends/kokon/config/config.json.adopt-028`**
+  (mode 600; the window copy in `/tmp/w028r3/svc-adopt.json` is
+  byte-identical, md5 `4baa5379…`) and goes live with
+  `cp …adopt-028 config.json && docker restart kokon`; the rollback is
+  the window's own restore path (byte-identical pre-window config —
   demonstrated, md5-verified, after both windows).
 - **Window-ops record (the 8 failures before the DONE, all mine — the
   box was never at fault; vllm cycled 8× through die()-path restores,
@@ -820,8 +823,8 @@ proven on this exact llama.cpp build):
       byte-identical after each.
 - [ ] **The owner's visual verdict on the 7 images** (the review
       prompt; vision-enabled session): then either the **cutover**
-      (one config step + restart — staged at
-      `/tmp/w028r3/svc-adopt.json`) with `fresh-box.md` /
+      (one config step + restart — staged persistently at
+      `/home/p/ml/frontends/kokon/config/config.json.adopt-028`) with `fresh-box.md` /
       `engineering-notes.md` + this file + STATUS updated, or
       **closed with the evidence** (rename + additive step stand as-is;
       the native doors stay registered, unused).
