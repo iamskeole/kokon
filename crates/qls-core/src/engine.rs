@@ -92,6 +92,10 @@ pub struct JobView {
     /// The prompt enhancer's text: partial while `EnhancingPrompt`, then the prompt the image
     /// is made from (`prompt` stays the user's). None when the enhancer did not run or failed.
     pub enhanced_prompt: Option<String>,
+    /// The native upsampler's suggested output ratio (its `wh_ratio`, or the reference it
+    /// follows). Recorded, not authoritative: the user's size selection wins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_ratio: Option<String>,
     /// A scene reading's answer (`GenerationRequest::read_scene`): None while it runs, when it
     /// failed (noted) or for any other job.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -984,6 +988,7 @@ impl Engine {
                 None => request.prompt.clone(),
             },
             enhanced_prompt: None,
+            suggested_ratio: None,
             scene: None,
             client: request.client.clone(),
             plan: None,
@@ -2120,31 +2125,44 @@ impl Engine {
             return Ok(Some(done));
         }
         // Upsampler routing, first match wins: (1) the pipeline's own endpoint
-        // (models[].vlm) — stock engines carry no LLM, so a pipeline whose engine is
+        // (models[].vlm, or its second door vlmVision for image-grounded modes -
+        // schema 14) — stock engines carry no LLM, so a pipeline whose engine is
         // one points here at a sidecar serving the same weights the engine conditions
         // with; (2) the shared externalEngine.vlm — the BFL pipelines' captions come
         // from the committed bundle; (3) the engine's own LLM (bundled engines, and
         // the qwen fork's conditioner, which doubled as its PUP until the stock
         // cutover moved that pipeline to (1)).
+        // The second door: t2i jobs always use the plain door; every image-bearing
+        // mode (edit, area, outpaint, multi-reference, compose) uses the vision
+        // door when the pipeline names one, falling back to the plain door when it
+        // names one door only. Invariant: an image part never goes to a door
+        // without a processor — routing is the guard (and this build's doors
+        // reject vision input without a mmproj, so a routing error fails loud
+        // instead of producing a blind caption).
         // D-FB: a configured VLM that is down is a hard job failure - a model trained on
         // upsampler captions degrades on the user's raw words, so there is no
         // "used as written" fallback for it.
-        let pipeline_vlm = cfg
-            .models
-            .iter()
-            .find(|m| m.model == model)
-            .and_then(|m| m.vlm.as_ref());
+        let pick_vision = mode != ResolvedMode::Generate;
+        let pipeline_model = cfg.models.iter().find(|m| m.model == model);
+        let pipeline_vlm = match (pipeline_model, pick_vision) {
+            (Some(m), true) => m.vlm_vision.as_ref().or(m.vlm.as_ref()),
+            (Some(m), false) => m.vlm.as_ref(),
+            (None, _) => None,
+        };
         // The service's key to the gateway is inherited by any VLM
         // entrypoint that names no key of its own (the one-door topology —
         // every entrypoint sits behind the same keyed gateway).
         let gw_key = cfg.external_engine.as_ref().map(|e| e.api_key.as_str());
         let vlm = match pipeline_vlm {
             Some(v) => Some(crate::vlm::VlmClient::with_inherited_key(v, gw_key)),
-            None if enhancer::bfl_pup(model) => cfg
-                .external_engine
-                .as_ref()
-                .and_then(|e| e.vlm.as_ref())
-                .map(|v| crate::vlm::VlmClient::with_inherited_key(v, gw_key)),
+            None if enhancer::bfl_pup(model) => {
+                let ep = match (cfg.external_engine.as_ref(), pick_vision) {
+                    (Some(e), true) => e.vlm_vision.as_ref().or(e.vlm.as_ref()),
+                    (Some(e), false) => e.vlm.as_ref(),
+                    (None, _) => None,
+                };
+                ep.map(|v| crate::vlm::VlmClient::with_inherited_key(v, gw_key))
+            }
             None => None,
         };
         if vlm.is_none() && !caps.text_generation {
@@ -2217,10 +2235,16 @@ impl Engine {
         let started = Instant::now();
         // A new image from references: each reference is labelled alone first, then the scene is
         // written from the labels without the images (see `enhancer::COMPOSE_SYSTEM_PROMPT`).
+        // The native one-shot style skips the dance: its I2I door is fine-tuned on exactly
+        // this task, so the references go in with the request as one call.
+        let own_present = own.is_some();
         let req = if let Some(r) = own {
             // A painted area or an expansion: its request is made with its own view.
             r
-        } else if mode == ResolvedMode::Compose && !enhancer::bfl_pup(model) {
+        } else if mode == ResolvedMode::Compose
+            && !enhancer::bfl_pup(model)
+            && !bundle.as_ref().is_some_and(|b| b.native && b.compose_one_shot)
+        {
             let mut labels = Vec::with_capacity(images.len());
             for img in images {
                 let lr = enhancer::label_request(img.clone(), prompt, seed, bundle.as_ref());
@@ -2355,6 +2379,76 @@ impl Engine {
                     boxes.as_ref().and_then(|b| enhancer::degenerate_answer(&b.original, &done.text))
                 }
                 Err(_) => None,
+            };
+        }
+        // The native PE contract: these doors answer a reasoning block plus a JSON
+        // envelope (their fine-tune's output format, conditioned on the bundle's
+        // own system prompt), not bare prompt text - so a reply decoded here
+        // before use. Active only for a native bundle that answered through a
+        // VLM: area/Expand requests carry Kokon's own words (not the fine-tune's
+        // contract), so their answers stay raw, and an in-engine reply (no VLM)
+        // never followed the contract to begin with. Out of contract: one warm
+        // retry; a second failure keeps the raw (think-stripped) answer with a
+        // note (D-PE9) - the door ran, D-FB's hard-fail stays for a down one.
+        if bundle.as_ref().is_some_and(|b| b.native) && !own_present && vlm.is_some() {
+            r = match r {
+                Ok(done) => match crate::vlm::decode_native(&done.text) {
+                    Some(nr) => {
+                        if let Some(s) = &nr.suggestion {
+                            self.update(id, |j| j.view.suggested_ratio = Some(s.clone()));
+                        }
+                        tracing::info!(
+                            "prompt enhancer: native reply decoded ({} chars answer -> {} chars prompt)",
+                            done.text.len(),
+                            nr.prompt.len()
+                        );
+                        let mut fixed = done;
+                        fixed.text = nr.prompt;
+                        Ok(fixed)
+                    }
+                    None => {
+                        tracing::info!("prompt enhancer: the native reply was out of contract; retrying once");
+                        let mut retry = req.clone();
+                        retry.sampling.seed += 1;
+                        match vlm.as_ref().expect("the native decode runs only when a VLM answered").chat(&retry, Duration::from_secs(300)).await {
+                            Ok(d2) => match crate::vlm::decode_native(&d2.text) {
+                                Some(nr) => {
+                                    if let Some(s) = &nr.suggestion {
+                                        self.update(id, |j| j.view.suggested_ratio = Some(s.clone()));
+                                    }
+                                    tracing::info!("prompt enhancer: the retry answered in contract");
+                                    let mut fixed = d2;
+                                    fixed.text = nr.prompt;
+                                    Ok(Self::vlm_to_textgen(fixed, retry.sampling.seed))
+                                }
+                                None => {
+                                    // D-PE9: the door ran and answered, just out of
+                                    // contract twice: keep the raw answer, noted.
+                                    self.update(id, |j| {
+                                        j.view.notes.push(
+                                            "The prompt upsampler did not answer in its expected JSON form; its raw answer was used."
+                                                .into(),
+                                        );
+                                    });
+                                    let raw = crate::vlm::strip_think(&d2.text);
+                                    let keep = if raw.trim().is_empty() {
+                                        d2.text.clone()
+                                    } else {
+                                        raw
+                                    };
+                                    let mut kept = d2;
+                                    kept.text = keep;
+                                    Ok(Self::vlm_to_textgen(kept, retry.sampling.seed))
+                                }
+                            },
+                            Err(e) => {
+                                self.update(id, |j| j.view.enhanced_prompt = None);
+                                Err(e)
+                            }
+                        }
+                    }
+                },
+                other => other,
             };
         }
         let failure = match r {
@@ -3746,6 +3840,7 @@ mod tests {
             model_name: "flux3-image-klein-Q8_0.gguf".into(),
             sample: serde_json::json!({}),
             vlm: None,
+            vlm_vision: None,
             prompt_bundle: format!("{}/assets/pup", env!("CARGO_MANIFEST_DIR")),
         });
         std::fs::create_dir_all(cfg.engine_dir()).unwrap();
@@ -4317,6 +4412,7 @@ mod tests {
                 model: "q35".into(),
                 api_key: String::new(),
             }),
+            vlm_vision: None,
             // The committed BFL bundle: an absolute path, so the test needs no deployment
             // data dir. (BFL contract text never appears in this file or its output.)
             prompt_bundle: format!("{}/assets/pup", env!("CARGO_MANIFEST_DIR")),
@@ -4520,6 +4616,7 @@ mod tests {
                 model: "qwen3vl".into(),
                 api_key: String::new(),
             }),
+            vlm_vision: None,
             prompt_bundle: String::new(),
         });
         let out = e
@@ -4575,5 +4672,479 @@ mod tests {
             vseen.try_recv().is_err(),
             "the shared endpoint must not be called when the pipeline has its own"
         );
+    }
+
+    // --- The native PE doors (schema 14) ------------------------------------
+
+    // The model's reasoning-block tags, in escape form (the file's convention).
+    const TH_OPEN: &str = "\u{003c}think\u{003e}";
+    const TH_CLOSE: &str = "\u{003c}/think\u{003e}";
+
+    /// The fine-tune's answer shape: a reasoning block, then the JSON envelope.
+    /// The test stand-ins here are not the contract text.
+    fn native_body(prompt: &str, wh: Option<&str>, follow: Option<&str>) -> String {
+        let mut obj = serde_json::json!({ "rewritten_prompt": prompt });
+        match (wh, follow) {
+            (Some(w), _) => {
+                obj["wh_ratio"] = serde_json::json!(w);
+                if let Some(f) = follow {
+                    obj["ratio_follow"] = serde_json::json!(f);
+                }
+            }
+            (None, Some(f)) => {
+                obj["wh_ratio"] = serde_json::json!("");
+                obj["ratio_follow"] = serde_json::json!(f);
+            }
+            _ => {}
+        }
+        let content = format!("{TH_OPEN} some reasoning {TH_CLOSE} {obj}");
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "reasoning_content": "some reasoning"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 40 }
+        })
+        .to_string()
+    }
+
+    fn write_native_bundle(dir: &std::path::Path, one_shot: bool) {
+        let manifest = serde_json::json!({
+            "family": "qwen-native",
+            "systemPrompts": { "t2i": "t2i/system_prompt.txt", "i2i": "i2i/system_prompt.txt" },
+            "sampling": {
+                "t2i": { "temperature": 1.0, "topP": 0.95, "topK": 20, "maxTokens": 16256 },
+                "i2i": { "temperature": 1.0, "topP": 0.95, "topK": 20, "maxTokens": 24000 }
+            },
+            "composeOneShot": one_shot
+        });
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        std::fs::create_dir_all(dir.join("t2i")).unwrap();
+        std::fs::create_dir_all(dir.join("i2i")).unwrap();
+        std::fs::write(dir.join("t2i").join("system_prompt.txt"), "FAKE-NATIVE-T2I-SP").unwrap();
+        std::fs::write(dir.join("i2i").join("system_prompt.txt"), "FAKE-NATIVE-I2I-SP").unwrap();
+        std::fs::write(dir.join("LICENSE"), "(test) license").unwrap();
+    }
+
+    fn qwen_native_cfg(
+        cfg: AppConfig,
+        t2i_ep: &str,
+        i2i_ep: Option<&str>,
+        bundle: &std::path::Path,
+        one_shot: bool,
+    ) -> AppConfig {
+        let mut cfg = cfg;
+        let mut m = crate::config::ExternalModel {
+            label: "Qwen".into(),
+            sub: None,
+            model: "kokon-qwen".into(),
+            model_name: "qwen-image.gguf".into(),
+            sample: serde_json::json!({}),
+            gateway: None,
+            vlm: Some(crate::config::VlmEndpoint {
+                entrypoint: t2i_ep.into(),
+                model: "pup-t2i".into(),
+                api_key: String::new(),
+            }),
+            vlm_vision: None,
+            prompt_bundle: bundle.to_str().unwrap().into(),
+        };
+        if let Some(i) = i2i_ep {
+            m.vlm_vision = Some(crate::config::VlmEndpoint {
+                entrypoint: i.into(),
+                model: "pup-i2i".into(),
+                api_key: String::new(),
+            });
+        }
+        let _ = one_shot;
+        cfg.models.push(m);
+        cfg
+    }
+
+    #[tokio::test]
+    async fn a_native_pipeline_routes_t2i_and_vision_to_their_doors() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let bdir = tempfile::tempdir().unwrap();
+        write_native_bundle(bdir.path(), false);
+        let (tport, tseen) = crate::vlm::mock_chat(
+            200,
+            &native_body("a decoded red mug prompt", Some("3:2"), None),
+        )
+        .await;
+        let (iport, iseen) = crate::vlm::mock_chat(
+            200,
+            &native_body("a decoded cat edit prompt", None, Some("image1")),
+        )
+        .await;
+        let cfg = qwen_native_cfg(
+            vlm_cfg(AppConfig::default(), "http://127.0.0.1:1/upstream/never"),
+            &format!("http://127.0.0.1:{tport}/upstream/kokon-pup-qwen-image-2.1-t2i"),
+            Some(&format!("http://127.0.0.1:{iport}/upstream/kokon-pup-qwen-image-2.1-i2i")),
+            bdir.path(),
+            false,
+        );
+
+        // Generation goes to the plain (text-only) door and decodes its envelope.
+        let id1 = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a red mug".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out1 = e
+            .enhance_prompt(
+                &id1,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Generate,
+                "a red mug",
+                &[],
+                None,
+                11,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out1.as_deref(), Some("a decoded red mug prompt"));
+        let v1 = e.job(&id1).unwrap();
+        assert_eq!(v1.suggested_ratio.as_deref(), Some("3:2"), "wh_ratio recorded, not enforced");
+        let raw1 = tseen.await.unwrap();
+        assert!(raw1.contains("POST /upstream/kokon-pup-qwen-image-2.1-t2i/v1/chat/completions"));
+        assert!(!raw1.contains("image_url"), "the t2i door gets no image part");
+        let sent1: serde_json::Value = raw1[raw1.find('{').unwrap()..].parse().unwrap();
+        assert_eq!(sent1["model"], "pup-t2i");
+        assert_eq!(sent1["messages"][0]["content"], "FAKE-NATIVE-T2I-SP");
+        assert_eq!(sent1["max_tokens"], 16256, "the manifest's t2i output budget");
+        assert_eq!(sent1["temperature"], 1.0, "the fine-tune's own sampling");
+        assert_eq!(sent1["seed"], 11);
+
+        // An image-grounded mode goes to the vision door instead.
+        let id2 = e
+            .submit(
+                GenerationRequest {
+                    prompt: "add a hat".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out2 = e
+            .enhance_prompt(
+                &id2,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Edit,
+                "add a hat",
+                &["PNG1".to_string()],
+                None,
+                22,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out2.as_deref(), Some("a decoded cat edit prompt"));
+        let v2 = e.job(&id2).unwrap();
+        assert_eq!(
+            v2.suggested_ratio.as_deref(),
+            Some("follows image1"),
+            "ratio_follow recorded as the suggestion"
+        );
+        let raw2 = iseen.await.unwrap();
+        assert!(raw2.contains("POST /upstream/kokon-pup-qwen-image-2.1-i2i/v1/chat/completions"));
+        let sent2: serde_json::Value = raw2[raw2.find('{').unwrap()..].parse().unwrap();
+        assert_eq!(sent2["model"], "pup-i2i");
+        assert_eq!(sent2["messages"][0]["content"], "FAKE-NATIVE-I2I-SP");
+        assert_eq!(sent2["max_tokens"], 24000, "the manifest's i2i output budget");
+        assert_eq!(sent2["messages"][1]["content"][0]["type"], "image_url");
+        // The plain door never saw the image-grounded job.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    #[tokio::test]
+    async fn a_native_pipeline_with_one_door_serves_both_modes_on_it() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let bdir = tempfile::tempdir().unwrap();
+        write_native_bundle(bdir.path(), false);
+        let body_a = native_body("t2i answer", Some("1:1"), None);
+        let body_b = native_body("i2i answer", None, Some("image1"));
+        let (port, mut seen) = crate::vlm::mock_chat_several(200, &[&body_a, &body_b]).await;
+        let cfg = qwen_native_cfg(
+            vlm_cfg(AppConfig::default(), "http://127.0.0.1:1/upstream/never"),
+            &format!("http://127.0.0.1:{port}/upstream/kokon-pup"),
+            None,
+            bdir.path(),
+            false,
+        );
+        let id1 = e
+            .submit(
+                GenerationRequest {
+                    prompt: "a red mug".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out1 = e
+            .enhance_prompt(
+                &id1,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Generate,
+                "a red mug",
+                &[],
+                None,
+                1,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out1.as_deref(), Some("t2i answer"));
+        let id2 = e
+            .submit(
+                GenerationRequest {
+                    prompt: "add a hat".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out2 = e
+            .enhance_prompt(
+                &id2,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Edit,
+                "add a hat",
+                &["PNG1".to_string()],
+                None,
+                2,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out2.as_deref(), Some("i2i answer"));
+        let mut n = 0;
+        while seen.try_recv().is_ok() {
+            n += 1;
+        }
+        assert_eq!(n, 2, "both modes landed on the one door");
+    }
+
+    #[tokio::test]
+    async fn an_out_of_contract_native_answer_is_retried_once_then_kept_raw_with_a_note() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let bdir = tempfile::tempdir().unwrap();
+        write_native_bundle(bdir.path(), false);
+        // The no-system-prompt shape: a rich plain answer in the content field, twice.
+        let prose_a = serde_json::json!({"choices":[{"message":{"content":"A vivid red mug, well lit, on a wooden table","reasoning_content":"thinking"}}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string();
+        let prose_b = serde_json::json!({"choices":[{"message":{"content":"An even more vivid red mug, better lit","reasoning_content":"thinking"}}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string();
+        let (port, mut seen) = crate::vlm::mock_chat_several(200, &[&prose_a, &prose_b]).await;
+        let cfg = qwen_native_cfg(
+            vlm_cfg(AppConfig::default(), "http://127.0.0.1:1/upstream/never"),
+            &format!("http://127.0.0.1:{port}/upstream/kokon-pup"),
+            None,
+            bdir.path(),
+            false,
+        );
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "add a hat".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Edit,
+                "add a hat",
+                &["PNG1".to_string()],
+                None,
+                3,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        // D-PE9: the door ran and answered, just out of contract twice - the
+        // (second) raw answer is kept, with a note; the job does not fail.
+        assert_eq!(out.as_deref(), Some("An even more vivid red mug, better lit"));
+        let v = e.job(&id).unwrap();
+        assert_eq!(v.enhanced_prompt.as_deref(), Some("An even more vivid red mug, better lit"));
+        assert!(
+            v.notes.iter().any(|n| n.contains("expected JSON form")),
+            "the out-of-contract answer is noted: {:?}",
+            v.notes
+        );
+        let mut n = 0;
+        while seen.try_recv().is_ok() {
+            n += 1;
+        }
+        assert_eq!(n, 2, "one answer plus one warm retry, no more");
+    }
+
+    #[tokio::test]
+    async fn a_native_one_shot_compose_calls_the_i2i_door_once_with_the_references() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let bdir = tempfile::tempdir().unwrap();
+        write_native_bundle(bdir.path(), true);
+        let (iport, iseen) = crate::vlm::mock_chat(
+            200,
+            &native_body("a decoded scene from the two references", None, Some("image1")),
+        )
+        .await;
+        let cfg = qwen_native_cfg(
+            vlm_cfg(AppConfig::default(), "http://127.0.0.1:1/upstream/never"),
+            "http://127.0.0.1:1/upstream/never-t2i",
+            Some(&format!("http://127.0.0.1:{iport}/upstream/kokon-pup-qwen-image-2.1-i2i")),
+            bdir.path(),
+            true,
+        );
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "put them together in a studio".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Compose,
+                "put them together in a studio",
+                &["PNGA".to_string(), "PNGB".to_string()],
+                None,
+                4,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_deref(), Some("a decoded scene from the two references"));
+        let raw = iseen.await.unwrap();
+        let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
+        // One call (no per-reference label dance), with both references in it.
+        let parts = sent["messages"][1]["content"].as_array().unwrap();
+        let n_images = parts.iter().filter(|p| p["type"] == "image_url").count();
+        assert_eq!(n_images, 2, "the references ride with the one-shot call");
+        assert_eq!(sent["messages"][0]["content"], "FAKE-NATIVE-I2I-SP");
+    }
+
+    #[tokio::test]
+    async fn a_native_two_step_compose_keeps_the_label_dance_when_one_shot_is_off() {
+        let (e, _dir) = vlm_test_engine().await;
+        let caps = Capabilities {
+            text_generation: true,
+            ..Default::default()
+        };
+        let bdir = tempfile::tempdir().unwrap();
+        write_native_bundle(bdir.path(), false);
+        let label_a = serde_json::json!({"choices":[{"message":{"content":"a ceramic mug with a handle"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}).to_string();
+        let label_b = serde_json::json!({"choices":[{"message":{"content":"a folded paper cup"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}).to_string();
+        let scene = native_body("a studio scene with both objects", Some("1:1"), None);
+        let (port, mut seen) =
+            crate::vlm::mock_chat_several(200, &[&label_a, &label_b, &scene]).await;
+        let cfg = qwen_native_cfg(
+            vlm_cfg(AppConfig::default(), "http://127.0.0.1:1/upstream/never"),
+            "http://127.0.0.1:1/upstream/never-t2i",
+            Some(&format!("http://127.0.0.1:{port}/upstream/kokon-pup-qwen-image-2.1-i2i")),
+            bdir.path(),
+            false,
+        );
+        let id = e
+            .submit(
+                GenerationRequest {
+                    prompt: "put them together in a studio".into(),
+                    enhance: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let out = e
+            .enhance_prompt(
+                &id,
+                &SdcppClient::new(9),
+                &caps,
+                &cfg,
+                "kokon-qwen",
+                ResolvedMode::Compose,
+                "put them together in a studio",
+                &["PNGA".to_string(), "PNGB".to_string()],
+                None,
+                5,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        // The scene step's in-contract answer is decoded like any other.
+        assert_eq!(out.as_deref(), Some("a studio scene with both objects"));
+        // Two label calls (each one reference) plus the scene call: three.
+        let mut n = 0;
+        while seen.try_recv().is_ok() {
+            n += 1;
+        }
+        assert_eq!(n, 3, "the label dance ran: two labels, one scene");
     }
 }

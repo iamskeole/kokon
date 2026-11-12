@@ -140,6 +140,14 @@ pub const MAX_TOKENS: u32 = 1024;
 /// Qwen's recommended sampling for Qwen3-VL (vision-language), used for both prompts.
 pub const SAMPLING: TextSampling = TextSampling { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5, seed: -1 };
 
+/// The Qwen-Image PE fine-tunes' reference output budgets (the fine-tune
+/// READMEs' max_new_tokens, 2026-09-20 release): 16256 for text-to-image,
+/// 24000 for image-conditioned. The service sends them per request for the
+/// native doors (the doors' ctx sizes cover them plus the image budget);
+/// a bundle manifest may override them (see `crate::pup::NativeSampling`).
+pub const NATIVE_MAX_TOKENS_T2I: u32 = 16256;
+pub const NATIVE_MAX_TOKENS_I2I: u32 = 24000;
+
 // --- BFL FLUX.3 Image (Klein) prompt upsampling ------------------------------
 
 /// BFL's FLUX.3 models are trained on their prompt upsampler's captions, so for such models
@@ -320,6 +328,11 @@ pub fn expand_request(sides: &str, prompt: &str, image: String, seed: i64) -> Te
 /// pipeline's loaded Qwen prompt bundle (its `t2i`/`edit`/`compose` prompt), or the
 /// built-in default. BFL-style models do not use this function: their prompts come from the
 /// loaded prompt bundle (see [`crate::pup`]), and the Settings fields tune Qwen only.
+///
+/// A native bundle is the exception to the custom-prompt rule: its prompt is the
+/// fine-tune's own contract (the door's output format is conditioned on it), so it
+/// wins over whatever Settings saved - the saved prompts still apply when the
+/// pipeline runs on the built-in Qwen prompts.
 pub fn system_prompt(
     cfg: &AppConfig,
     mode: ResolvedMode,
@@ -330,11 +343,15 @@ pub fn system_prompt(
         ResolvedMode::Compose => (&cfg.enhancer_compose_prompt, COMPOSE_SYSTEM_PROMPT),
         _ => (&cfg.enhancer_edit_prompt, EDIT_SYSTEM_PROMPT),
     };
-    if custom.trim().is_empty() {
-        bundle
-            .and_then(|b| b.qwen_system(mode))
+    let bundle_sp = bundle.and_then(|b| b.qwen_system(mode));
+    if bundle.is_some_and(|b| b.native) {
+        return bundle_sp
             .unwrap_or(default)
-            .to_string()
+            .trim()
+            .to_string();
+    }
+    if custom.trim().is_empty() {
+        bundle_sp.unwrap_or(default).to_string()
     } else {
         custom.trim().to_string()
     }
@@ -396,10 +413,28 @@ pub fn request(
             }
         }
     } else {
+        // The Qwen path: the built-in defaults, or - for a native bundle - its
+        // manifest's reference row (temp 1.0, top_p 0.95, top_k 20, the fine-
+        // tune's own sampling) with the per-mode output budget, so the door
+        // gets the row it was tuned with, sent explicitly rather than left to
+        // the server default.
+        let (sampling, max_tokens) = match bundle.and_then(|b| b.native_sampling_for(mode)) {
+            Some(row) => (
+                TextSampling {
+                    temperature: row.temperature,
+                    top_p: row.top_p,
+                    top_k: row.top_k,
+                    presence_penalty: 0.0,
+                    seed,
+                },
+                row.max_tokens,
+            ),
+            None => (TextSampling { seed, ..SAMPLING }, MAX_TOKENS),
+        };
         (
             p.to_string(),
-            TextSampling { seed, ..SAMPLING },
-            MAX_TOKENS,
+            sampling,
+            max_tokens,
             system_prompt(cfg, mode, bundle),
         )
     };
