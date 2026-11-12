@@ -612,7 +612,10 @@ Final step (same-day evening) — verdict and adoption. The owner's visual
   Side item on the host, closed per D-PE19: the vision vllm door's encoder
   OOM (17:23/17:25 fatals) — the 1 MP image cap in
   `serve-qwen3.8-27b-vision.sh`, KV budget untouched, proven with the
-  39k-token + 3-image request. Task done; the record moves to `done/`.
+  39k-token + 3-image request. The A/B evidence set (7 images, views,
+  jobs index, digest) is archived at `/home/p/ml/backends/_evidence/w028r3/`
+  (the `/tmp/w028r3` original is ephemeral). Task done; the record moves
+  to `done/`.
 
 ## Decisions (pre-logged)
 
