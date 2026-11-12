@@ -66,6 +66,13 @@ pub struct GenerationRecord {
     pub working_width: u32,
     pub working_height: u32,
     pub model: String,
+    /// In external mode: the gateway tenant the job was sent to (the configured model id,
+    /// e.g. "kokon-flux-image-3-klein"). The engine's own reported name above can be
+    /// ambiguous - different tenants may serve a model file with the same name - so this
+    /// is the identity the picker label and the details panel resolve to. Absent in stock
+    /// mode (and on older records), where the engine name is the only one there is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_model: Option<String>,
     pub sampler: String,
     pub scheduler: Option<String>,
     pub steps: u32,
@@ -113,6 +120,10 @@ impl GenerationRecord {
         if !self.negative_prompt.is_empty() {
             s.push_str(&format!("\nNegative prompt: {}", self.negative_prompt));
         }
+        let model_line = match &self.external_model {
+            Some(e) if !e.trim().is_empty() => format!("{} ({e})", self.model),
+            _ => self.model.clone(),
+        };
         s.push_str(&format!(
             "\nSteps: {}, Sampler: {}, Schedule type: {}, CFG scale: {}, Seed: {}, Size: {}x{}, Model: {}",
             self.steps,
@@ -122,7 +133,7 @@ impl GenerationRecord {
             self.seed,
             self.width,
             self.height,
-            self.model
+            model_line
         ));
         if let Some(st) = self.strength {
             s.push_str(&format!(", Denoising strength: {st}"));
@@ -546,6 +557,7 @@ mod tests {
             working_width: 1024,
             working_height: 1024,
             model: "qwen-image-2.1-UC-Q4_K_M".into(),
+            external_model: None,
             sampler: "euler".into(),
             scheduler: None,
             steps: 30,
@@ -570,6 +582,31 @@ mod tests {
             hidden: false,
             source_type: None,
         }
+    }
+
+    #[test]
+    fn the_record_names_the_gateway_tenant_it_was_sent_to() {
+        // Older records predate the field: they read fine, stay stock-shaped, and their
+        // parameters text is unchanged.
+        let mut old = rec("i", "p", "t");
+        old.model = "model-Q8_0.gguf".into();
+        assert_eq!(old.external_model, None);
+        assert!(serde_json::to_value(&old).unwrap().get("external_model").is_none());
+        assert!(!old.parameters_text().contains("kokon-"));
+
+        // The same reported name with a tenant names the tenant: two box engines both
+        // report "model-Q8_0.gguf", and it is the id, not the name, that tells them apart.
+        old.external_model = Some("kokon-flux-image-3-klein".into());
+        let text = old.parameters_text();
+        assert!(text.contains("Model: model-Q8_0.gguf (kokon-flux-image-3-klein)"), "{text}");
+        let rt: GenerationRecord = serde_json::from_value(serde_json::to_value(&old).unwrap()).unwrap();
+        assert_eq!(rt.external_model.as_deref(), Some("kokon-flux-image-3-klein"));
+
+        // A record deserialized from a pre-field JSON gains the absent field as None.
+        let mut v = serde_json::to_value(&old).unwrap();
+        v.as_object_mut().unwrap().remove("external_model");
+        let from_old: GenerationRecord = serde_json::from_value(v).unwrap();
+        assert_eq!(from_old.external_model, None);
     }
 
     #[test]

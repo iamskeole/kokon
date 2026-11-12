@@ -151,6 +151,7 @@ impl Engine {
                     working_width: img.width(),
                     working_height: img.height(),
                     model: model.clone(),
+                    external_model: None,
                     sampler: "euler".into(),
                     scheduler: None,
                     steps: 8,

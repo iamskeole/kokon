@@ -4,7 +4,7 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, urls } from "../lib/api";
 import {
-  compareBase, composerFromRecord, entryForModel, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, splitBoxTable, upscaleRequest, arcLayout,
+  compareBase, composerFromRecord, entryForGeneration, formatDuration, jobLabel, type JobClock, lutInfo, lutLabel, MAX_UPSCALE_AREA, MAX_UPSCALE_SIDE, MODE_LABEL, pipelineSummary, remainingSeconds, sizeForWidth, splitBoxTable, upscaleRequest, arcLayout,
   upscalerLabel, upscaleTargets, variationRequest, imageName, type LinkKind, type TimelineLink,
 } from "../lib/logic";
 import { canCopyImage, native } from "../lib/native";
@@ -266,6 +266,9 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
   const lut = lutInfo(g);
   const table = splitBoxTable(g.prompt);
   const showBoxes = useStore((s) => s.showBoxes);
+  // The picker label of the model that made it, when the record names it (external mode):
+  // shown with the engine's own reported name, which can be shared by several models.
+  const modelLabel = useStore((s) => (s.external && g ? entryForGeneration(s.models, g)?.label ?? null : null));
   const rows: [string, string][] = lut ? [
     ["Mode", MODE_LABEL[g.mode]],
     ["Size", `${g.width}×${g.height}`],
@@ -282,7 +285,7 @@ export function InfoPanel({ g }: { g: GenerationRecord }) {
     ["Sampler", `${g.sampler}${g.scheduler ? ` / ${g.scheduler}` : ""}`],
     ...(g.strength != null ? ([["Strength", String(g.strength)]] as [string, string][]) : []),
     ...(g.loras?.length ? ([["LoRA", g.loras.map((l) => `${l.name} (${Math.round(l.weight * 100)} %)`).join(", ")]] as [string, string][]) : []),
-    ["Model", g.model],
+    ["Model", modelLabel ? `${modelLabel} (${g.model})` : g.model],
     ["Time", formatDuration(g.duration_ms / 1000)],
     ["Created", new Date(g.created_at).toLocaleString()],
   ];
@@ -989,7 +992,7 @@ function StageFullscreen({ item, session, showOriginal, onClose }: { item: Sessi
   // The model that made the picture: it goes in the viewer's standard hint row.
   const modelLabel = useStore((s) => {
     const g = item.gen;
-    return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
+    return s.external && g ? (entryForGeneration(s.models, g)?.label ?? null) : null;
   });
   const showBoxes = useStore((s) => s.showBoxes);
   const nav = useMemo<ViewerNav>(() => {
@@ -1037,10 +1040,10 @@ export function Stage() {
   const phone = useNarrow();
   const job = useStore((s) => (item?.jobId ? s.jobs[item.jobId] : undefined));
   // External engine mode: the configured model name of the model that made the shown image
-  // (each record carries the engine's own reported model name).
+  // (each record carries the tenant it was sent to, else the engine's reported name).
   const modelLabel = useStore((s) => {
     const g = item?.gen;
-    return s.external && g ? (entryForModel(s.models, g.model)?.label ?? null) : null;
+    return s.external && g ? (entryForGeneration(s.models, g)?.label ?? null) : null;
   });
   const showBoxes = useStore((s) => s.showBoxes);
   const labels = useMemo(() => sessionLabels(session), [session]);

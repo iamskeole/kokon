@@ -1336,6 +1336,7 @@ impl Engine {
             id: id.clone(),
             created_at: now_rfc3339(),
             mode: "lut".into(),
+            // An LUT is a colour transform of an existing image: no engine was asked.
             prompt: String::new(),
             original_prompt: None,
             loras: vec![],
@@ -1346,6 +1347,7 @@ impl Engine {
             working_width: out.width(),
             working_height: out.height(),
             model: String::new(),
+            external_model: None,
             sampler: String::new(),
             scheduler: None,
             steps: 0,
@@ -1420,6 +1422,7 @@ impl Engine {
             id: id.clone(),
             created_at: now_rfc3339(),
             mode: "layers".into(),
+            // The lab composite is assembled by the service: no engine was asked.
             prompt: String::new(),
             original_prompt: None,
             loras: vec![],
@@ -1430,6 +1433,7 @@ impl Engine {
             working_width: out.width(),
             working_height: out.height(),
             model: String::new(),
+            external_model: None,
             sampler: String::new(),
             scheduler: None,
             steps: 0,
@@ -2786,6 +2790,10 @@ impl Engine {
                 .and_then(|_| self.server.capabilities())
                 .and_then(|c| (!c.model.name.is_empty()).then_some(c.model.name.clone()))
                 .unwrap_or_else(|| cfg.profile().model_name()),
+            // ...and, when the engine is external, the tenant it was sent to: the reported
+            // name alone cannot distinguish tenants that serve the same file name
+            // (2026-11-12 box: klein and qwen-full both report "model-Q8_0.gguf").
+            external_model: cfg.external_engine().map(|e| e.model.clone()),
             sampler: rec_sampler,
             scheduler: None,
             steps: rec_steps,

@@ -13,7 +13,7 @@ import {
   planPipeline, remainingSeconds, sizeForWidth, timeAgo, upscaleRequest, upscaleTargets, versionLabels, type JobClock, type Ref,
   neighbourAfterRemoval, pageOutdated, previewIndex, starPromptDue, STAR_PROMPT_AFTER, formatBytes, formatDuration, installItemShort, installItemText, installProgress, installStep, installTimeLeft, timelineLinks, undoTarget, aspectLabel, parseRatio, sizeForRatio, sizeForLongSide, expandToRatio, expandToSize, arcLayout,
   goneVersions, PREVIEW_SIDE, stageFitsPreview, viewerWantsFull,
-  modelRequest, entryForModel, boxRows, appendBoxTable, splitBoxTable, modelSupportsBoxes, modelSupportsInpaint, type BoxRow,
+  modelRequest, entryForModel, entryForGeneration, boxRows, appendBoxTable, splitBoxTable, modelSupportsBoxes, modelSupportsInpaint, type BoxRow,
 } from "./logic";
 import type { GenerationRecord, InstallItem, JobView, LoraItem, Plan } from "./types";
 
@@ -867,6 +867,31 @@ describe("entryForModel", () => {
     expect(entryForModel(models, null)).toBeNull();
   });
   it("is null when there are no models", () => expect(entryForModel([], "m-turbo.gguf")).toBeNull());
+});
+
+describe("entryForGeneration", () => {
+  // The box's two Q8 tenants share the engine-reported name; the tenant id decides.
+  const models = [
+    { label: "Turbo", model: "kokon-turbo", modelName: "m-turbo.gguf" },
+    { label: "Full", model: "kokon-full", modelName: "model-Q8_0.gguf" },
+    { label: "Klein", model: "kokon-klein", modelName: "model-Q8_0.gguf" },
+  ];
+
+  it("prefers the tenant id over the ambiguous reported name", () => {
+    expect(entryForGeneration(models, { external_model: "kokon-klein", model: "model-Q8_0.gguf" })?.label).toBe("Klein");
+    expect(entryForGeneration(models, { external_model: "kokon-full", model: "model-Q8_0.gguf" })?.label).toBe("Full");
+  });
+
+  it("falls back to the reported name when the record carries no tenant or it is not in the picker", () => {
+    expect(entryForGeneration(models, { model: "m-turbo.gguf" })?.label).toBe("Turbo");
+    expect(entryForGeneration(models, { external_model: "gone", model: "model-Q8_0.gguf" })?.label).toBe("Full");
+    expect(entryForGeneration(models, null)).toBeNull();
+    expect(entryForGeneration(models, {})).toBeNull();
+  });
+
+  it("lets a known tenant win over a different reported name", () => {
+    expect(entryForGeneration(models, { external_model: "kokon-full", model: "m-turbo.gguf" })?.label).toBe("Full");
+  });
 });
 
 describe("layout boxes", () => {

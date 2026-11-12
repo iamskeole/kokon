@@ -148,6 +148,9 @@ export interface GenerationRecord {
   working_width: number;
   working_height: number;
   model: string;
+  /** External mode: the gateway tenant the job was sent to (the picker's model id).
+   * The engine's own reported name (`model`) can be shared by several tenants. */
+  external_model?: string | null;
   sampler: string;
   scheduler: string | null;
   steps: number;

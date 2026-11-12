@@ -1221,3 +1221,14 @@ export function entryForModel(models: ExternalModel[], model: string | null | un
   return models.find((m) => m.modelName === model) ?? models.find((m) => stem(m.modelName) === stem(model)) ?? null;
 }
 
+/** The configured model entry that made a generation: the gateway tenant the record was sent
+ * to (its picker id) when the record carries one, else the engine's reported name. The tenant
+ * id is unambiguous; the reported name can be shared by several tenants (two of the box's
+ * engines both report "model-Q8_0.gguf", which once made a klein image read as its neighbour).
+ */
+export function entryForGeneration(models: ExternalModel[], rec: { external_model?: string | null; model?: string | null } | null | undefined): ExternalModel | null {
+  if (!rec) return null;
+  const byId = rec.external_model ? models.find((m) => m.model === rec.external_model) : undefined;
+  return byId ?? entryForModel(models, rec.model);
+}
+
