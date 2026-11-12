@@ -184,6 +184,7 @@ minutes (real inference, benchmarks, release builds) is run by the maintainer: h
 | [docs/engineering-notes.md](docs/engineering-notes.md) | architecture, module map, verified backend facts, engine updates |
 | [docs/platforms.md](docs/platforms.md), [docs/linux.md](docs/linux.md) | per-platform notes; Linux plan and the 0.11 server design |
 | [docs/fresh-box.md](docs/fresh-box.md) | the whole stack on a new machine (fork layout): the pinned gateway + matrix config, the stock engines, the models, the service image |
+| [docs/service-on-prod-box.md](docs/service-on-prod-box.md) | the split deployment: the service + browser UI on the stable box behind nginx, all inference on the accelerator through its one-door gateway — with the paste-able handover prompt, compose/config/nginx references, and the verification checklist |
 | [docs/releasing.md](docs/releasing.md) | publishing a version (maintainer) |
 | [docs/prompting.md](docs/prompting.md), [docs/showcase-prompts.md](docs/showcase-prompts.md) | prompt guide and examples |
 | [marketing/](marketing/) | videos, showcase images, release notes per version |

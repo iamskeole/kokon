@@ -11,6 +11,18 @@ kokon frontend/service the same way has footguns.
 The owner says go, and names the prod box (host/IP, its nginx, and
 whether it terminates TLS — self-signed or real).
 
+**The setup is already written up:** `docs/service-on-prod-box.md`
+(handed over 2026-11-11 with the owner's request for a handover
+prompt) — the paste-able brief, the bind-mounted compose (data dirs
+next to the yaml, chown 1000:1000), the config seed (gateway + vlm
+entrypoint → the accelerator's IP), the nginx values that are
+load-bearing (SSE buffering off, ≥660 s timeouts, 64 m bodies, the
+X-Forwarded headers), the verification checklist, and the receiving
+side of the data migration. Executing the move = this task: pack the
+three volumes on the accelerator (service stopped), ship them, run
+the brief on the prod box, verify, retire the accelerator's volumes
+only when the owner is happy.
+
 ## Why the move is architecturally clean (not a hack)
 
 - The service container already runs `kokon-service --persistent
