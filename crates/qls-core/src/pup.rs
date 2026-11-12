@@ -1,6 +1,6 @@
 //! Prompt bundles for the pipeline VLMs, loaded at runtime from the deployment.
 //!
-//! Two families share this loader:
+//! Three families share this loader:
 //!
 //! - **BFL** (`assets/pup/`): the FLUX.3 Image (Klein) prompt upsampler's system
 //!   prompts, the BFL service request-line formats, the chat template, the
@@ -16,11 +16,22 @@
 //!   defaults in [`crate::enhancer`] (the Qwen path never hard-fails on its
 //!   bundle — see `assets/pup-qwen/README.md`).
 //!
+//! - **Qwen native** (deployment data-dir, e.g. `assets/pup-qwen-native/`): the
+//!   Qwen-Image PE fine-tunes' own `system_prompt.txt` files — Qwen's text under
+//!   the Qwen Research License, so a third-party contract asset exactly like the
+//!   BFL set: the folder lives in the deployment's data dir with a `LICENSE` and
+//!   a `manifest.json` (the system-prompt paths, the reference sampling rows,
+//!   the compose style), and no byte of it is ever committed, echoed into logs,
+//!   tests, chat or docs (keys and hashes only). These doors answer a JSON
+//!   envelope instead of bare prompt text; the decode lives in [`crate::vlm`].
+//!
 //! A pipeline names its bundle in its config (`promptBundle`, schema 13,
 //! [`crate::config::resolve_prompt_bundle`]) and the service loads it at runtime,
 //! per job, so a replacement dropped into that folder applies to the next job.
 
 use std::path::Path;
+
+use serde::Deserialize;
 
 use crate::error::{AppError, ErrorCode};
 use crate::planner::ResolvedMode;
@@ -35,7 +46,8 @@ use crate::planner::ResolvedMode;
 /// falls back to its built-in defaults).
 #[derive(Debug, Clone, Default)]
 pub struct PupBundle {
-    /// Text-to-image system prompt (BFL's caption writer or Qwen's built-in).
+    /// Text-to-image system prompt (BFL's caption writer, Qwen's built-in, or —
+    /// for the native family — the PE-T2I fine-tune's own prompt).
     pub t2i: Option<String>,
     // --- BFL family --------------------------------------------------------
     /// Image-conditioned (edit/combine) system prompt.
@@ -55,6 +67,19 @@ pub struct PupBundle {
     pub compose: Option<String>,
     /// Per-reference label system prompt, step 1 of 2 (`COMPOSE_LABEL_PROMPT`).
     pub compose_label: Option<String>,
+    // --- Qwen native family -----------------------------------------------
+    /// True for the native PE family (the bundle carries a `manifest.json`).
+    pub native: bool,
+    /// The PE-I2I fine-tune's own prompt: every image-grounded mode of the
+    /// native family (edit, multi-reference, and the one-shot compose).
+    pub native_i2i: Option<String>,
+    /// The manifest's sampling row for t2i jobs (None = the reference row).
+    pub native_sampling_t2i: Option<NativeSampling>,
+    /// The manifest's sampling row for image-grounded jobs (None = the reference row).
+    pub native_sampling_i2i: Option<NativeSampling>,
+    /// The native compose style: one call to the I2I door with the references
+    /// (the fine-tune's own task) instead of the two-step label-then-write.
+    pub compose_one_shot: bool,
 }
 
 /// The six BFL prompt assets as owned strings: what the BFL request path needs.
@@ -68,6 +93,31 @@ pub struct BflPrompts {
     pub i2i_bbox: String,
     pub t2i_canvas: String,
     pub i2i_scaffold: String,
+}
+
+/// The sampling row of a native PE door for one mode group: the fine-tune's
+/// reference row (README: do_sample, temp 1.0, top_p 0.95, top_k 20) with the
+/// per-mode output budget (`max_new_tokens` 16256 t2i / 24000 i2i), overridable
+/// per bundle by its manifest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeSampling {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: u32,
+    pub max_tokens: u32,
+}
+
+/// The reference row, as constant: what a manifest without an explicit row means.
+pub fn native_reference_row(mode: crate::planner::ResolvedMode) -> NativeSampling {
+    NativeSampling {
+        temperature: 1.0,
+        top_p: 0.95,
+        top_k: 20,
+        max_tokens: match mode {
+            crate::planner::ResolvedMode::Generate => crate::enhancer::NATIVE_MAX_TOKENS_T2I,
+            _ => crate::enhancer::NATIVE_MAX_TOKENS_I2I,
+        },
+    }
 }
 
 impl PupBundle {
@@ -93,14 +143,41 @@ impl PupBundle {
         })
     }
 
-    /// A Qwen-family system prompt for a mode, if the bundle carries it:
-    /// `t2i` for generation, `compose` for compositions, `edit` for every
-    /// image-grounded mode — the same mapping as [`crate::enhancer::system_prompt`].
+    /// A Qwen-family system prompt for a mode, if the bundle carries it.
+    ///
+    /// Non-native (Kokon's own prompts): `t2i` for generation, `compose` for
+    /// compositions, `edit` for every other image-grounded mode — the same
+    /// mapping as [`crate::enhancer::system_prompt`].
+    ///
+    /// Native (the PE fine-tunes): the PE-T2I prompt for generation and the
+    /// PE-I2I prompt for *every* image-grounded mode — compositions included
+    /// (their one-shot form calls the I2I door with the references; the
+    /// two-step label dance is the non-native path's compensation for a model
+    /// that could not see them). Kokon's own area/Expand words never reach
+    /// this function: those requests carry their own system prompt.
     pub fn qwen_system(&self, mode: ResolvedMode) -> Option<&str> {
+        if self.native {
+            return match mode {
+                ResolvedMode::Generate => self.t2i.as_deref(),
+                _ => self.native_i2i.as_deref(),
+            };
+        }
         match mode {
             ResolvedMode::Generate => self.t2i.as_deref(),
             ResolvedMode::Compose => self.compose.as_deref(),
             _ => self.edit.as_deref(),
+        }
+    }
+
+    /// The native family's sampling row for a mode: the bundle's manifest row,
+    /// else the reference row. None for the other families.
+    pub fn native_sampling_for(&self, mode: ResolvedMode) -> Option<NativeSampling> {
+        if !self.native {
+            return None;
+        }
+        match mode {
+            ResolvedMode::Generate => self.native_sampling_t2i.or(Some(native_reference_row(mode))),
+            _ => self.native_sampling_i2i.or(Some(native_reference_row(mode))),
         }
     }
 
@@ -110,11 +187,151 @@ impl PupBundle {
     }
 }
 
-/// Load a bundle from a bundle folder (its `system_prompts.json`, plus the
-/// BFL family's companion `request_format.json`).
+/// Load a bundle from a bundle folder.
+///
+/// The family is declared: a `manifest.json` makes it the native PE family
+/// (the two `system_prompt.txt` files it names, its sampling rows, its compose
+/// style, and a `LICENSE` in the folder — third-party text ships with its
+/// license); otherwise it is the `system_prompts.json` shape (BFL family with
+/// its BFL marker keys plus the companion `request_format.json`, or the Qwen
+/// family with its optional keys).
 ///
 /// Errors name the folder and the defect; they never carry a prompt byte.
 pub fn load(dir: &Path) -> Result<PupBundle, AppError> {
+    if dir.join("manifest.json").exists() {
+        return load_native(dir);
+    }
+    load_prompt_json(dir)
+}
+
+/// The native PE family: a `manifest.json` plus the system-prompt files it
+/// names and a `LICENSE` in the folder.
+fn load_native(dir: &Path) -> Result<PupBundle, AppError> {
+    let raw = std::fs::read_to_string(dir.join("manifest.json")).map_err(|e| {
+        AppError::new(
+            ErrorCode::InvalidConfig,
+            format!("cannot read the prompt bundle manifest at {}: {e}", dir.display()),
+        )
+    })?;
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Row {
+        temperature: f32,
+        top_p: f32,
+        top_k: u32,
+        max_tokens: u32,
+    }
+    #[derive(Default, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Manifest {
+        family: Option<String>,
+        #[serde(default)]
+        system_prompts: SystemPrompts,
+        #[serde(default)]
+        sampling: SamplingRows,
+        #[serde(default)]
+        compose_one_shot: bool,
+    }
+    #[derive(Default, Deserialize)]
+    struct SystemPrompts {
+        t2i: Option<String>,
+        i2i: Option<String>,
+    }
+    #[derive(Default, Deserialize)]
+    struct SamplingRows {
+        t2i: Option<Row>,
+        i2i: Option<Row>,
+    }
+    let m: Manifest = serde_json::from_str(&raw).map_err(|e| {
+        AppError::new(
+            ErrorCode::InvalidConfig,
+            format!("cannot parse the prompt bundle manifest at {}: {e}", dir.display()),
+        )
+    })?;
+    match m.family.as_deref() {
+        // The only native family this loader knows; a manifest claiming another
+        // is a different deployment's contract, not a misfiled Qwen bundle.
+        Some("qwen-native") => {}
+        other => {
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                format!(
+                    "the prompt bundle at {} is a native manifest of family {:?}, not \"qwen-native\"",
+                    dir.display(),
+                    other
+                ),
+            ))
+        }
+    }
+    let row_to_sampling = |r: &Row| NativeSampling {
+        temperature: r.temperature,
+        top_p: r.top_p,
+        top_k: r.top_k,
+        max_tokens: r.max_tokens,
+    };
+    // The system-prompt files: third-party contract text, read but never echoed.
+    let t2i = native_prompt_file(dir, m.system_prompts.t2i.as_deref().unwrap_or("t2i/system_prompt.txt"), "t2i")?;
+    let i2i = native_prompt_file(dir, m.system_prompts.i2i.as_deref().unwrap_or("i2i/system_prompt.txt"), "i2i")?;
+    // Third-party text ships with its license: a native bundle without one is
+    // incomplete (BFL discipline).
+    if !dir.join("LICENSE").exists() {
+        return Err(AppError::new(
+            ErrorCode::InvalidConfig,
+            format!(
+                "the native prompt bundle at {} has no LICENSE (third-party prompt text ships with its license)",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(PupBundle {
+        t2i: Some(t2i),
+        native_i2i: Some(i2i),
+        native: true,
+        native_sampling_t2i: m.sampling.t2i.as_ref().map(row_to_sampling),
+        native_sampling_i2i: m.sampling.i2i.as_ref().map(row_to_sampling),
+        compose_one_shot: m.compose_one_shot,
+        ..Default::default()
+    })
+}
+
+/// One native system-prompt file: an error naming the file (never the bytes)
+/// when it is absent, unreadable, or empty.
+fn read_native_prompt(dir: &Path, rel: &str) -> Result<Option<String>, AppError> {
+    let p = dir.join(rel);
+    let s = match std::fs::read_to_string(&p) {
+        Ok(s) => s,
+        Err(_) if !p.exists() => return Ok(None),
+        Err(e) => {
+            return Err(AppError::new(
+                ErrorCode::InvalidConfig,
+                format!("cannot read the system prompt {} of the bundle at {}: {e}", rel, dir.display()),
+            ))
+        }
+    };
+    Ok(Some(s))
+}
+
+/// One native system prompt, refusing empty files (an empty prompt is the
+/// absent prompt wearing a file extension).
+fn native_prompt_file(dir: &Path, rel: &str, key: &str) -> Result<String, AppError> {
+    let s = read_native_prompt(dir, rel)?
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorCode::InvalidConfig,
+                format!("the native prompt bundle at {} has no {key} system prompt", dir.display()),
+            )
+        })?;
+    if s.trim().is_empty() {
+        return Err(AppError::new(
+            ErrorCode::InvalidConfig,
+            format!("the native prompt bundle at {} has an empty {key} system prompt", dir.display()),
+        ));
+    }
+    Ok(s)
+}
+
+/// The `system_prompts.json` families (BFL and Qwen), as before schema 14.
+fn load_prompt_json(dir: &Path) -> Result<PupBundle, AppError> {
     let path = dir.join("system_prompts.json");
     let raw = std::fs::read_to_string(&path).map_err(|e| {
         AppError::new(
@@ -367,5 +584,124 @@ mod tests {
         let e = load(dir.path()).unwrap_err();
         assert_eq!(e.code, ErrorCode::InvalidConfig);
         assert!(e.message.contains("'t2i'"), "it names the one mandatory key");
+    }
+
+    // --- Native family (the PE fine-tunes, schema 14) ------------------------
+
+    const FAKE_T2I: &str = "FAKE-T2I-SP (test stand-in, never the contract text)";
+    const FAKE_I2I: &str = "FAKE-I2I-SP (test stand-in, never the contract text)";
+
+    fn write_native_bundle(dir: &std::path::Path, with_sampling: bool, with_license: bool) {
+        let manifest = if with_sampling {
+            r#"{"family":"qwen-native",
+              "systemPrompts":{"t2i":"t2i/system_prompt.txt","i2i":"i2i/system_prompt.txt"},
+              "sampling":{"t2i":{"temperature":1.0,"topP":0.95,"topK":20,"maxTokens":16256},
+                          "i2i":{"temperature":1.0,"topP":0.95,"topK":20,"maxTokens":24000}},
+              "composeOneShot":true}"#
+        } else {
+            r#"{"family":"qwen-native",
+              "systemPrompts":{"t2i":"t2i/system_prompt.txt","i2i":"i2i/system_prompt.txt"},
+              "composeOneShot":false}"#
+        };
+        std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+        std::fs::create_dir_all(dir.join("t2i")).unwrap();
+        std::fs::create_dir_all(dir.join("i2i")).unwrap();
+        std::fs::write(dir.join("t2i").join("system_prompt.txt"), FAKE_T2I).unwrap();
+        std::fs::write(dir.join("i2i").join("system_prompt.txt"), FAKE_I2I).unwrap();
+        if with_license {
+            std::fs::write(dir.join("LICENSE"), "(test) license file").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_native_bundle_loads_and_dispatches_its_prompts_by_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_bundle(dir.path(), true, true);
+        let b = load(dir.path()).expect("the native bundle loads");
+        assert!(b.native, "the manifest declares the native family");
+        assert!(b.bfl().is_err(), "a native bundle is not the BFL family");
+        // Dispatch: generation the T2I prompt, every image-grounded mode (compose
+        // included) the I2I prompt.
+        assert_eq!(b.qwen_system(ResolvedMode::Generate), Some(FAKE_T2I));
+        for m in [
+            ResolvedMode::Edit,
+            ResolvedMode::Inpaint,
+            ResolvedMode::Outpaint,
+            ResolvedMode::MultiReference,
+            ResolvedMode::Compose,
+        ] {
+            assert_eq!(b.qwen_system(m), Some(FAKE_I2I), "{m:?} takes the i2i prompt");
+        }
+        // The prompt text never leaks into an error: hash-pin it instead.
+        assert_eq!(sha(FAKE_T2I), sha(&b.t2i.as_deref().unwrap()));
+        // Sampling: the manifest rows are used as written.
+        let t = b.native_sampling_for(ResolvedMode::Generate).unwrap();
+        assert_eq!((t.temperature, t.top_p, t.top_k, t.max_tokens), (1.0, 0.95, 20, 16256));
+        let i = b.native_sampling_for(ResolvedMode::Edit).unwrap();
+        assert_eq!((i.temperature, i.top_p, i.top_k, i.max_tokens), (1.0, 0.95, 20, 24000));
+        assert_eq!(i.max_tokens, t.max_tokens + 7744, "the i2i row carries the image budget");
+        assert!(b.compose_one_shot, "the manifest's one-shot compose style");
+    }
+
+    #[test]
+    fn a_native_bundle_without_manifest_rows_uses_the_reference_row() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_bundle(dir.path(), false, true);
+        let b = load(dir.path()).unwrap();
+        assert!(!b.compose_one_shot);
+        for m in [ResolvedMode::Generate, ResolvedMode::Edit, ResolvedMode::Compose] {
+            let s = b.native_sampling_for(m).unwrap();
+            assert_eq!((s.temperature, s.top_p, s.top_k), (1.0, 0.95, 20), "{m:?} reference row");
+        }
+        assert!(
+            b.native_sampling_for(ResolvedMode::Edit).unwrap().max_tokens
+                > b.native_sampling_for(ResolvedMode::Generate).unwrap().max_tokens,
+            "the reference i2i row keeps its image-token headroom"
+        );
+    }
+
+    #[test]
+    fn a_native_bundle_without_a_license_is_a_clean_error_naming_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_bundle(dir.path(), true, false);
+        let e = load(dir.path()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidConfig);
+        assert!(e.message.contains("LICENSE"), "it names the missing license file");
+    }
+
+    #[test]
+    fn a_native_manifest_of_another_family_is_a_clean_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_bundle(dir.path(), true, true);
+        std::fs::write(dir.path().join("manifest.json"), r#"{"family":"other"}"#).unwrap();
+        let e = load(dir.path()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidConfig);
+        assert!(e.message.contains("\"other\""), "it names the foreign family: {}", e.message);
+        assert!(!e.message.contains(FAKE_T2I), "no prompt bytes in the error");
+    }
+
+    #[test]
+    fn a_native_bundle_with_an_empty_prompt_file_is_a_clean_error_naming_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        write_native_bundle(dir.path(), true, true);
+        std::fs::write(dir.path().join("t2i").join("system_prompt.txt"), "  ").unwrap();
+        let e = load(dir.path()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidConfig);
+        assert!(e.message.contains("t2i"), "it names the empty prompt");
+    }
+
+    #[test]
+    fn a_manifest_bundle_is_not_treated_as_the_json_families() {
+        // The family is decided by the manifest's presence, not by which
+        // companion file happens to sit next to it.
+        let dir = tempfile::tempdir().unwrap();
+        write_native_bundle(dir.path(), true, true);
+        std::fs::write(
+            dir.path().join("system_prompts.json"),
+            r#"{"t2i":"should not be read"}"#,
+        )
+        .unwrap();
+        let b = load(dir.path()).unwrap();
+        assert_eq!(b.qwen_system(ResolvedMode::Generate), Some(FAKE_T2I));
     }
 }
