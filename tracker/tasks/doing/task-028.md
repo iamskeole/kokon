@@ -298,6 +298,81 @@ image budget; KV for a 9B Q4 at 32k is a few hundred MB — fits.
    evidence; the additive gateway step stays harmless (or reverts
    with one ladder step), the rename stands.
 
+## Progress (2026-11-12)
+
+**Step 1 — done.** Both Q4_K_M GGUFs + the I2I `mmproj-bf16` are on the
+box (`models/gguf/Qwen/Qwen-Image-2.1-PE-{T2I,I2I}/`) with
+`provenance.md` each (source = `prithivMLmods/…-GGUF` @ rev
+e18d4a3e…/55b9c1a3…, upstream = `Qwen/Qwen-Image-2.1-PE-*` 2026-09-20,
+Qwen Research License, sha256 + size recomputed on disk):
+T2I `340feb42…` (5,629,108,864 B), I2I `a5c6cb28…` (5,629,108,864 B),
+mmproj `8dedb71d…` (921,704,608 B). The `docs/fresh-box.md` model list
+gains their entries with the step-4 additive commit (they are not yet
+registered in the gateway, so documenting them as live now would be a
+lie).
+
+**Step 2 — partially done, the rest rides inside a window.** A full
+token-generation smoke needs the GPU, and vllm owns the 24 GB card:
+even `llama-cli -ngl 0` dies in this build's CUDA-init
+(`cudaStreamCreateWithFlags` OOM) while vllm is resident, so there is
+no "CPU-only" path on this box to probe with. What *is* proven
+pre-window: the exact named llama.cpp tree loads the sibling BFL
+Qwen3.5-9B GGUF end to end (the journal's known-good boot), the PE
+files are the same architecture and same gguf reader (blocker a's
+architecture half), and their metadata is valid GGUF. The remaining
+half — one-token boots, mmproj-less T2I, the `enable_thinking` switch
+both ways (blockers b/c) — runs inside the first window that touches
+the PE doors (step 4 or 6), where the card is free and the proof is
+free.
+
+**Step 3 — DONE (the rename window, w028r1d, 2026-11-12 12:34 UTC,
+150 s).** Final state, verified after the marker:
+- Gateway: 8 models; `kokon-pup` → `kokon-pup-flux-image-3-klein` (still
+  4th alphabetically → port **9103 unchanged**); live == `.last-good`
+  == staged `w028r1bfinal` (md5 `414416ab…`).
+- Boot scripts: only `serve-kokon-pup-flux-image-3-klein.sh` remains
+  (the old name removed in the window's success step); `--alias
+  kokon-pup-flux-image-3-klein,q35,qwen3vl-8b` (one identity, legacy
+  names as extras).
+- Service config: all four `vlm` blocks (3 pipelines + externalEngine)
+  on the new entrypoint **and** `model` field = the explicit id.
+- Window proofs: the renamed door's 1-token probe answered 200 (4 s —
+  page-cached) and `/v1/models` lists the id; a klein t2i with Prompt+
+  ran end to end (20 s, PNG back); a turbo t2i with Prompt+ did the
+  same (20 s); unloads clean (card empty); FINAL config (rename kept,
+  vLLM pair re-registered) live and == last-good; vllm back on 9106
+  (36 s, warm) answering the 1-token probe; box chat healthy on the
+  restored runtime.
+- Repo: fixture/doc renames landed (config.rs ×6, vlm.rs ×2, engine.rs
+  ×4, types.ts, logic.test.ts, fresh-box.md ×7, service-on-prod-box.md
+  ×2); the deprecated-era `kokon-pup`/`kokon-pup-qwen` pair in
+  engine.rs (the 0.11 sidecar-routing test) stays as-is on purpose.
+  All suites green: qls-core 379, UI 231, MCP 38 (the protocol tests
+  need a freshly built service — built on this box).
+
+**The incident (record for the next window-builder).** Three of the
+four window attempts failed for reasons the *box* had, not the design:
+1. **w028r1 (500 @ P3):** the live `serve-kokon-pup.sh` had been
+clobbered *before* the window by an earlier failed draft rewrite (wrong
+model dir, no `LD_LIBRARY_PATH`, invalid `--no-cache-reuse`, bare
+`--chat-template-kwargs`) — the daemon's `upstream command exited
+prematurely` was the only symptom. The original bytes were
+unrecoverable; the recipe was **reconstructed from the 10:42
+known-good boot in the daemon journal** (model files, aliases,
+`-t 8`, ctx, clamps, non-thinking boot) and validated by direct exec.
+2. **w028r1b (false FAIL @ P0):** my new content check grepped the
+inlined full path while the script uses an `$M` variable — a checker
+bug, not a script bug. Checks now match dir + file names.
+3. **w028r1c (exec-format-error @ P3):** my sed that derived the
+new-name script replaced **line 1 — the shebang** — with a comment;
+the daemon's `fork/exec` then failed with `exec format error` while my
+`sh script.sh` tests (sh reads the file anyway) and `sh -n` all
+passed. **The lesson, now baked into every window's P0 audit: check
+`head -c 2 == "#!"` on every boot script, and test the scripts the way
+the daemon will run them (direct exec, not `sh`).**
+4. **w028r1d: DONE** as above — the audit caught nothing because the
+scripts were finally right, and the proofs all landed.
+
 ## Decisions (pre-logged)
 
 - **D-PE1** — klein keeps the BFL door in behaviour; it is klein's
@@ -335,6 +410,53 @@ image budget; KV for a 9B Q4 at 32k is a few hundred MB — fits.
   zero-behaviour step (build step 3) that lands before the A/B;
   legacy wire names survive only as extra aliases on the klein door
   until a cleanup.
+- **D-RN1 (drift, 2026-11-12)** — before any window, re-seed
+  `llama-swap.yaml.last-good` from the **live** file when they differ:
+  the live file had an un-reseeded vLLM `env:` block (added after
+  w024) and the last-good was stale; the served, validated file is the
+  one to snapshot and restore.
+- **D-RN2 (window shape, 2026-11-12)** — the rename window uses the
+  three-config pattern: PRE (pre-rename live), WIN (renamed door, vLLM
+  pair **out of the registry** — the daemon's reload kills the loaded
+  vllm and the registry cannot resurrect it, which is exactly the
+  yield-rule-safe way to free the card), FINAL (renamed door, vLLM
+  pair re-registered — the terminal state).
+- **D-RN3 (root cause, 2026-11-12)** — the first window failure was a
+clobbered boot script, not a naming/routing problem; the daemon's
+  `upstream command exited prematurely` means "read the journal's boot
+  lines before touching the registry".
+- **D-RN4 (reconstruction, 2026-11-12)** — the PUP door's recipe is
+  reconstructed from its last known-good boot in the journal + the
+  config comments + the model dir's provenance; the original file bytes
+  are gone. Operational contract proven by the 10:42 journal line set
+  and by direct-exec boot tests.
+- **D-RN5 (library path, 2026-11-12)** — every llama.cpp script for
+  the Oct-14 build sets `LD_LIBRARY_PATH=/home/p/ml/backends/llama.cpp/build/bin`:
+  the binary's baked `RUNPATH` (`…/latest/llama.cpp/…`) predates the
+  tree's move into `backends/` and is dangling; without the env the
+  daemon's exec dies before a flag is parsed.
+- **D-RN6 (flag correctness, 2026-11-12, this build)** —
+  `--chat-template-kwargs` takes a JSON object string
+  (`'{"enable_thinking":false}'`; a bare `k=v` is a parse error),
+  `--no-cache-reuse` does not exist, and the known-good thread count is
+  `-t 8` (16 is the draft's error). The build logs a deprecation for
+  the kwargs spelling (`--reasoning on|off` is the new form) — harmless,
+  re-check at the next tree update.
+- **D-RN7 (two-script state, 2026-11-12)** — after a failed window the
+  box can carry *both* script names; the next window therefore makes no
+  mid-window rename: it starts from both (PRE references the old, WIN/
+  FINAL the new), removes the old on success, removes the new on
+  rollback — each config state has exactly one live script matching it.
+- **D-RN8 (shebang audit, 2026-11-12)** — every window's P0 script audit
+  now checks, per boot script: exec bit, `head -c 2 == "#!"`, syntax
+  (`sh -n` / `bash -n`), plus door-specific content greps — because
+  `sh -n` and `sh script.sh` both pass a shebang-less file while the
+  daemon's `fork/exec` rejects it (`exec format error`).
+- **D-RN9 (this box's test env, 2026-11-12)** — `cargo` on this box
+  needs `OPENSSL_DIR=/home/linuxbrew/.linuxbrew` (no system libssl-dev)
+  and `LD_LIBRARY_PATH=/home/linuxbrew/.linuxbrew/lib` (the built
+  binaries link brew's libssl.so.4); the MCP protocol tests inherit
+  that for the service they spawn.
 
 ## blockers
 
@@ -360,15 +482,16 @@ proven on this exact llama.cpp build):
 
 ## Acceptance criteria
 
-- [ ] Both Q4_K_M GGUFs (+ I2I mmproj-bf16) on the box, sha256-pinned
-      with provenance; both boot on the named llama.cpp (1-token
-      probes; i2i with an image part); T2I boots mmproj-less.
-- [ ] **Rename verified** (pre-A/B window): the shared door answers as
-      `kokon-pup-flux-image-3-klein` (alias list includes the legacy
-      names), all four service entrypoints + `model` fields updated,
-      stale caps key dropped, all repo references updated, all three
-      pipelines' Prompt+ path green through the new id, port map
-      unchanged by this step.
+- [x] Both Q4_K_M GGUFs (+ I2I mmproj-bf16) on the box, sha256-pinned
+      with provenance (step 1, 2026-11-12); the boot/probe half lands
+      with step 4/6 (step 2's rest).
+- [x] **Rename verified** (pre-A/B window w028r1d, 2026-11-12): the
+      shared door answers as `kokon-pup-flux-image-3-klein` (alias list
+      includes the legacy names), all four service entrypoints +
+      `model` fields updated, no stale caps key was present, all repo
+      references updated, all pipelines' Prompt+ path green through
+      the new id (klein + turbo jobs in-window), port map unchanged by
+      this step.
 - [ ] **Additive step verified**: two new tenants boot under their
       explicit ids; sets `qwen-t: qt & (p|pt|pi)` /
       `qwen-f: qf & (p|pt|pi)` in the journal matrix line; final
