@@ -150,8 +150,9 @@ flavor switch reloads only the engine, never the sidecar. Task-028 step 4
 registers two more doors on the box — Qwen's own PE fine-tunes, one per job
 mode (`kokon-pup-qwen-image-2.1-t2i` text-only, `kokon-pup-qwen-image-2.1-i2i`
 with mmproj) — and the qwen sets now carry them as the mode-exclusive group
-`(p | pt | pi)`; the service still calls the BFL door until the mode-routed
-cutover lands, so a fresh box behaves exactly as before.
+`(p | pt | pi)`; the mode-routed cutover has **landed** (task-028 done,
+the owner's ADOPT-NATIVE-ON verdict): the qwen pipelines call the native
+doors (the VLM section below) and klein keeps the BFL door.
 
 Downloads: follow each directory's `provenance.md` on the reference host
 (source, converter, hash). Verify sha256 after every download; a model is not
@@ -335,8 +336,9 @@ each shifted +2 (9106/9107, 9108/9109) while klein (9102) and the BFL door
 (9103) did not move. The qwen sets widen to `qt & (p | pt | pi)` /
 `qf & (p | pt | pi)` — a mode-exclusive group: exactly one PUP door per
 qwen state (two 9B pups can never co-reside with the engine on 24 GB),
-named by the job's VLM call. The current service still names `p` (the BFL
-door), so behaviour is unchanged until the mode-routed cutover.
+named by the job's VLM call. After the cutover the service names `pt`/`pi`
+for the qwen pipelines (PE-T2I / PE-I2I, per job mode) and `p` (the BFL
+door) for klein.
 
 **The port contract (a v269 property — nothing to memorize).** The daemon
 assigns the next number from `startPort` to the models **with their IDs
@@ -546,9 +548,10 @@ VLM entrypoint and the prompt bundle the VLM applies:
   the fine-tune's own `system_prompt.txt` files, a third-party contract
   asset that ships in the data-dir bundle (`assets/pup-qwen-native/`: a
   `manifest.json` plus the two prompt files and a `LICENSE` — never in the
-  repo, never in logs). Until the A/B verdict (task-028 step 6) lands, the
-  qwen pipelines still name the BFL door in `vlm` and no `vlmVision` —
-  adopting is a service-config flip, rollback is the same flip back
+  repo, never in logs). The A/B verdict (task-028 step 6) landed as
+  **ADOPT-NATIVE-ON**: the qwen pipelines name the native doors in `vlm` /
+  `vlmVision` (thinking on); rollback is the same flip back to the shared
+  BFL door
 - prompt bundles: the committed asset bundles under
   `crates/qls-core/assets/` (`pup`, `pup-qwen`), plus the native bundle in
   the deployment's data dir (`assets/pup-qwen-native/`, schema 14); the

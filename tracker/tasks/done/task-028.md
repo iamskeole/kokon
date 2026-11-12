@@ -600,6 +600,20 @@ journal slice, staged `svc-adopt.json`) and the off-arm's in
 `/tmp/w028r3b/` (merged into the set).
 
 
+Final step (same-day evening) — verdict and adoption. The owner's visual
+  review (a vision session): t2i **b > boff > a**, edit **a ≈ b**, compose
+  **b > a**; overall **ADOPT-NATIVE-ON** (D-PE18). Cutover applied: live
+  service config flipped to the staged schema-14 native wiring (md5
+  `4baa5379…` — turbo/full → PE-T2I `9105` + PE-I2I `9104` +
+  `pup-qwen-native`; klein unchanged on the BFL door), the pre-adoption
+  bytes preserved as `config.json.pre028` (md5 `8b8936ff…`, the one-step
+  rollback, D-PE8), `docker restart kokon`, service at rest (no GPU work —
+  the window's arm B had already proven exactly this wiring).
+  Side item on the host, closed per D-PE19: the vision vllm door's encoder
+  OOM (17:23/17:25 fatals) — the 1 MP image cap in
+  `serve-qwen3.8-27b-vision.sh`, KV budget untouched, proven with the
+  39k-token + 3-image request. Task done; the record moves to `done/`.
+
 ## Decisions (pre-logged)
 
 - **D-PE1** — klein keeps the BFL door in behaviour; it is klein's
@@ -759,6 +773,33 @@ clobbered boot script, not a naming/routing problem; the daemon's
   daemon's `/running`, not a VRAM threshold. Empty-card waits stay for
   the full-teardown points (P1, P6, pre-revival).
 
+- **D-PE18** — **Verdict: ADOPT-NATIVE-ON** (owner, visual review of the 7
+  A/B images, 2026-11-12 evening). t2i: b > boff > a. Edit: a ≈ b (no
+  per-mode split requested). Compose: b > a (D-PE6's one-shot, confirmed by
+  eye). Thinking **on** stays the default: D-PE5's open axis resolved in
+  favour of the contract-faithful arm on quality; its 3× tokens / 3.4×
+  enhance time are the accepted cost. Applied as the one-config cutover;
+  the pre-adoption bytes are the rollback.
+
+- **D-PE19** — **Vision-door 1 MP cap (host-side, not this repo; owner:
+  "1 MP first, keep it isolated")** — the user-journal 17:23/17:25
+  EngineCore FATALs (CUDA OOM: 52 MiB against 51.88 MiB free, the process
+  at 23.52 GiB of the 24 GB card) were the vision encoder's *transient*
+  activations: the door boots at ~23.3 GB (15.5 GB weights + the 8.0 GB KV
+  pool pre-reserved), leaving ~0.3 GB, and images up to 4.19 MP peak at
+  several GB. `VLLM_VISION_CPU_OFFLOAD_GB=1` cannot help (at boot it
+  already moves the entire 0.93 GiB offloadable tower to CPU — the journal
+  `uva.py:68` lines — and activations never go to CPU). Fix, one line in
+  `serve-qwen3.8-27b-vision.sh`: `--mm-processor-kwargs longest_edge
+  4194304 → 1048576` (1 MP); the KV budget (`8000M`) deliberately untouched
+  so no pi context settings cascade. Proven on the live door: the 17:23-
+  class request (39,038 tokens + 3 images, one 8.3 MP) → 200, no fatal,
+  VRAM peak 24,038/24,096 MiB; the same request on the 4.19 MP setting
+  failed (500, boot-timing) in the leg A/B. A separate same-evening mode
+  was noted, not fixed: a boot-race OOM when a text↔vision eviction
+  overlaps the next cold boot (daemon-side; candidate for the host OPS
+  notes). The text variant is untouched.
+
 ## blockers
 
 None that block starting. Open questions, resolved in order during
@@ -821,15 +862,20 @@ proven on this exact llama.cpp build):
       mis-routed, D-AD10, and caught by the pixel-identity check);
       measurements in the Progress record above; the box restored
       byte-identical after each.
-- [ ] **The owner's visual verdict on the 7 images** (the review
-      prompt; vision-enabled session): then either the **cutover**
-      (one config step + restart — staged persistently at
-      `/home/p/ml/frontends/kokon/config/config.json.adopt-028`) with `fresh-box.md` /
-      `engineering-notes.md` + this file + STATUS updated, or
-      **closed with the evidence** (rename + additive step stand as-is;
-      the native doors stay registered, unused).
-      Rollback is already demonstrated: both windows' restore path
-      returns the pre-window config byte-identical (D-PE8).
+- [x] **The owner's visual verdict on the 7 images** (the review
+      prompt; vision-enabled session, 2026-11-12 evening): t2i **b > boff > a**
+      (thinking-on native best, thinking-off clearly worse on the same 3:2,
+      BFL clearly last); edit **a ≈ b** (the native's longer prompt buys
+      nothing visible — noted, not split); compose **b > a** (the one-shot
+      richer and faster). Overall: **ADOPT-NATIVE-ON** (D-PE18). The
+      **cutover** was applied the same evening: the staged
+      `/home/p/ml/frontends/kokon/config/config.json.adopt-028` → live `config.json`
+      (schema 14: turbo/full on the native doors + `pup-qwen-native`, klein
+      unchanged), the pre-adoption bytes preserved as `config.json.pre028`
+      (the one-step rollback, D-PE8 — demonstrated twice in the windows),
+      `docker restart kokon`, service at rest with UI + API up. No GPU work
+      was needed: the window's arm B had already run exactly this wiring
+      end-to-end.
 
 ## Related (out of scope, noted)
 
