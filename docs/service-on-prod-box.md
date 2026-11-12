@@ -26,28 +26,33 @@ Owner-supplied values:
   config. Never print it — not in your reply, logs, diffs, or commits.
 - What people type for the UI: <name or this box's IP>, port <n>;
   TLS: <yes — self-signed cert at <path> | no, plain HTTP>.
-- Data location: <path> (default: the directories next to the compose
-  file). Fresh start, or: migrate my existing data (tarball at <path>).
+- Data location: the parent dir <path> that will hold the clone,
+  the compose and the data dirs beside it. Fresh start, or: migrate
+  my existing data (tarball at <path>).
 - Default image model: <kokon-qwen-image-2.1-turbo | kokon-qwen-image-2.1-full | kokon-flux-image-3-klein>.
 
 Do, in order:
 1. Preflight: docker + compose plugin present; ports 39151 and 39152
    free; ~5 GB of disk; NO nvidia runtime needed (and none must be
    reserved — this service uses no GPU in this mode).
-2. git clone https://github.com/iamskeole/kokon.git <dir> — branch
-   main. The build is self-contained (its own Rust/npm toolchain in
-   the image); allow it up to 30 minutes cold.
-3. Build the image: docker build -f docker/Dockerfile -t
+2. git clone https://github.com/iamskeole/kokon.git <parent>/kokon —
+   branch main, into a single parent dir <parent> that will also hold
+   the compose and the data dirs (see the doc's Layout). The build is
+   self-contained (its own Rust/npm toolchain in the image); allow it
+   up to 30 minutes cold.
+3. Build the image, from inside <parent>/kokon/:
+   docker build -f docker/Dockerfile -t
    ghcr.io/iamskeole/kokon:external-engine-0.12.0-<short-commit> .
    (or pull that tag from ghcr instead, if the owner says it is pushed
    and hands you a registry token).
-4. Create <data>/data, <data>/config, <data>/gallery and chown them
-   1000:1000 (the in-container user). Writing them next to the compose
-   file is the point: the owner must be able to see and back them up.
+4. Write <parent>/compose.yaml per the doc, and create
+   <parent>/data, <parent>/config, <parent>/gallery, chowned 1000:1000
+   (the in-container user). The data sits beside the compose on
+   purpose: the owner must be able to see and back it up.
    If migrating: unpack the owner's tarballs into those directories
    first (they carry the gallery, the config, the service token and
    the login password); keep the owner's copy untouched.
-5. Write <data>/config/config.json per the reference in this doc:
+5. Write <parent>/config/config.json per the reference in this doc:
    gateway and vlm entrypoint at http://<accelerator-IP>:8081/upstream
    (the vlm one with /kokon-pup appended), apiKey from the key file,
    the owner's default model, the rest copied from the accelerator's
@@ -79,19 +84,30 @@ Guardrails:
 
 ### Layout
 
+One parent dir holds everything — the pull, the build, the yaml, and
+the real data dirs beside it:
+
 ```
-<data>/
-  compose.yaml      # next to the data, on purpose
-  data/             # -> /data    gallery.db, service token, lab models, logs
-  config/           # -> /config  config.json (gateway address + key)
-  gallery/          # -> /gallery saved images, dated folders
+/home/<user>/kokon/      ← one parent dir (or /srv/kokon, your call)
+  kokon/                 ← git clone of the fork (pull and build happen here)
+  compose.yaml           ← the service container
+  data/                  # → /data    gallery DB, service token, lab models, logs
+  config/                # → /config  config.json (gateway address + key)
+  gallery/               # → /gallery saved images, dated folders
 ```
 
-Bind mounts (not named volumes) so the data is a directory the owner
-can see, back up and move — the whole point. Create the directories
-before first start and `chown 1000:1000` them (the container runs as
-uid 1000; a directory docker creates on your behalf comes out
-root-owned and the service cannot write it).
+The bind mounts are `./data`, `./config`, `./gallery` — relative to
+the compose file — so the data is visible, back-up-able and movable,
+and never hidden in Docker's volume store. Create the three dirs
+before first start and `chown 1000:1000` them (the in-container user;
+a dir docker creates on your behalf comes out root-owned and the
+service cannot write it).
+
+Dev-box variant (how the accelerator is shaped): the clone stays at
+its canonical dev home (this box: `/home/p/code/iamskeole/kokon`,
+where the repo and its tracker live) and the deploy dir
+(`/home/p/ml/frontends/kokon/`) holds the compose + the three data
+dirs. Same shape; the clone just isn't nested.
 
 ### compose.yaml
 

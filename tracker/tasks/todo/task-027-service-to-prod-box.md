@@ -6,6 +6,31 @@ one-door `:8081` with an OpenAI-compatible API) so that the accelerator
 can be taken down for OS/CUDA/driver work. He asked whether moving the
 kokon frontend/service the same way has footguns.
 
+## Status (2026-11-12)
+
+**Dev-box half DONE (this box).** The deployment at
+`/home/p/ml/frontends/kokon/` moved from named volumes to the
+bind-mounted shape (compose + `data/ config/ gallery/` beside it, the
+clone staying at its dev home `/home/p/code/iamskeole/kokon`).
+Carried over: the service token (`service-token`; `service.json` is
+re-created on boot), the login password + sessions (`remote-auth.json`,
+`remote-sessions.json`), the capability cache, the lab models
+(257 MB) and the config with its backups. Fresh: the gallery (the
+owner: the old images were test assets, not worth keeping). Verified:
+old token accepted, door 404/401, both lab models installed, clean
+boot, no GPU reservation needed. The old named volumes
+(`kokon_kokon-*`) are kept as rollback until the owner says delete.
+
+**Prod-box half PENDING — needs access to the stable box.** The
+accelerator has no ssh path to it (no config, unidentifiable
+known_hosts), so the agent here cannot run that half. The owner
+supplies either (a) an agent session on the stable box to receive the
+paste-able prompt in `docs/service-on-prod-box.md`, or (b) ssh access
+(the accelerator's `~/.ssh/id_ed25519.pub` in the box's
+`authorized_keys`) so this agent can do it end-to-end; plus the box's
+name/IP, nginx layout and TLS-or-not. The fresh start there needs no
+data migration (the owner dropped the test assets).
+
 ## Trigger (when this stops being parked)
 
 The owner says go, and names the prod box (host/IP, its nginx, and
