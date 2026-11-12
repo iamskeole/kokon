@@ -510,7 +510,10 @@ record for the next window-builder).**
   harness config aligned.
 - **Tests:** qls-core **399 passed / 0 failed / 1 ignored** (was 379;
   +20 across config/pup/vlm/engine), UI 231, MCP 35+3 skipped, external-
-  engine harness 16/16. **Image + deploy:** built
+  engine harness 16/16. Host fact: on this box `cargo test` needs
+  `OPENSSL_DIR=/home/linuxbrew/.linuxbrew` and `LD_LIBRARY_PATH=/home/
+  linuxbrew/.linuxbrew/lib` (linuxbrew's openssl 4.1); a bare run in a
+  fresh shell dies in `openssl-sys` — an environment fact, not code. **Image + deploy:** built
   `ghcr.io/iamskeole/kokon:external-engine-0.12.0-fedbcb5`, container
   recreated, service at rest (`stopped`/not owned), live config still
   schema 13 with byte-identical md5 (`8b8936ff…`) — the native doors
