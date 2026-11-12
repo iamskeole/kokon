@@ -302,6 +302,11 @@ svg { display: block; flex: none; }
 .prompt-text { flex: 1; min-height: 0; overflow: auto; scrollbar-width: none; display: flex; flex-direction: column; white-space: pre-wrap; user-select: text; color: var(--text); font-size: clamp(14px, min(4.2cqw, 5.5cqh), 22px); line-height: 1.5; letter-spacing: -0.005em; text-shadow: 0 1px 18px color-mix(in srgb, var(--bg, #000) 70%, transparent); }
 .prompt-flow { margin: auto 0; }
 .prompt-stage .btn.ghost { align-self: center; }
+/* The upsampler's own shape read: small, quiet, never in the way (a suggestion, the user's size wins). */
+.ratio-hint { align-self: center; color: var(--text-3); font-size: 11px; letter-spacing: 0.02em; opacity: 0.8; }
+@container pending (max-height: 520px) or (max-width: 380px) {
+  .ratio-hint { display: none; }
+}
 .enhanced-label { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 12px; letter-spacing: 0.02em; }
 /* each word arrives out of a soft blur */
 .prompt-text .w { animation: word-in 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both; }

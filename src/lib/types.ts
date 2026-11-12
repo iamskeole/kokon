@@ -229,6 +229,9 @@ export interface JobView {
   prompt: string;
   /** The prompt enhancer's text: growing while "enhancing_prompt", then the prompt in use. */
   enhanced_prompt?: string | null;
+  /** The prompt upsampler's suggested output shape (its own size read of the task),
+   * recorded on the job; the user's size selection stays in charge. */
+  suggested_ratio?: string | null;
   /** A scene reading's answer (`read_scene`); missing when it failed (see `notes`). */
   scene?: SceneReading;
   plan: Plan | null;
@@ -375,6 +378,9 @@ export interface ExternalEngine {
   sample?: Record<string, unknown>;
   /** The VLM (prompt upsampler) of the active pipeline; absent = no upsampler. */
   vlm?: VlmEndpoint;
+  /** The second VLM endpoint: image-grounded jobs call it instead of `vlm` when named;
+   * absent = every job mode uses `vlm`. */
+  vlmVision?: VlmEndpoint;
   /** Prompt bundle of the active pipeline (a bundled id or a path); "" = none. */
   promptBundle?: string;
 }
@@ -394,6 +400,9 @@ export interface ExternalModel {
   gateway?: string;
   /** The VLM (prompt upsampler) of this pipeline; absent = no upsampler. */
   vlm?: VlmEndpoint;
+  /** The second VLM endpoint of this pipeline (image-grounded jobs); absent = every
+   * job mode uses `vlm`. */
+  vlmVision?: VlmEndpoint;
   /** Prompt bundle of this pipeline (a bundled id or a path); "" = none. */
   promptBundle?: string;
 }

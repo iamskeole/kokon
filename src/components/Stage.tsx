@@ -105,6 +105,7 @@ function Pending({ job, item, labels }: { job: JobView; item: SessionItem; label
             withImage={!!src || item.request?.mode === "compose"}
             budget={job.plan?.estimated_seconds || null}
             card={card}
+            suggestion={job.suggested_ratio ?? null}
             onCancel={() => cancelJob(job.id)}
             onGone={() => {
               card.promptGone = true;
@@ -168,7 +169,7 @@ function ProgressPhase({ job, title, pct, clock, card }: { job: JobView; title: 
  * model writes it in a second or two and the image starts right away, so the text keeps
  * appearing while the image is made: reading it fills the wait. It never runs ahead of the text
  * that has arrived. */
-function PromptPhase(props: { title: string; text: string; streaming: boolean; withImage: boolean; budget: number | null; card: CardMemory; onCancel: () => void; onGone: () => void }) {
+function PromptPhase(props: { title: string; text: string; streaming: boolean; withImage: boolean; budget: number | null; card: CardMemory; suggestion: string | null; onCancel: () => void; onGone: () => void }) {
   const { text, streaming } = props;
   const shown = useTypewriter(text, streaming, props.budget, props.card);
   // Words already on screen when the card came back don't fade in again.
@@ -210,6 +211,11 @@ function PromptPhase(props: { title: string; text: string; streaming: boolean; w
           {writing && text && <i className="caret" />}
         </div>
       </div>
+      {!writing && props.suggestion && (
+        <span className="ratio-hint" title="The prompt upsampler's read of the output shape; your size selection stays in charge.">
+          Suggested shape: {props.suggestion}
+        </span>
+      )}
       <button className="btn ghost" onClick={props.onCancel} title="Cancel">
         <Square size={12} /> Stop
       </button>
