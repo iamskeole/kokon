@@ -532,11 +532,28 @@ VLM entrypoint and the prompt bundle the VLM applies:
   this same door in external mode: the service sends the area/expand request
   (Kokon's own prompts, the image included) to the pipeline's VLM, and its
   answer becomes the prompt the image job runs on (in default mode the same
-  request shape goes to the in-engine LLM instead)
+  request shape goes to the in-engine LLM instead). **Schema 14** (task-028
+  step 5) adds an optional second door, `vlmVision`, to `externalEngine` and
+  each `models[]` entry: t2i jobs keep calling `vlm`, and every
+  image-grounded mode (edit, area, outpaint, multi-reference, compose) calls
+  `vlmVision` when named — an image part never goes to a door without a
+  processor, routing is the guard. The qwen doors are the PE fine-tunes
+  (`kokon-pup-qwen-image-2.1-t2i` text-only, `kokon-pup-qwen-image-2.1-i2i`
+  with its mmproj): their answers are a reasoning block plus a JSON envelope
+  (`rewritten_prompt` and a size suggestion the job view records without
+  letting it win the size argument), decoded in `vlm.rs`, with one warm
+  retry out of contract and the raw answer kept, noted. Their prompt text is
+  the fine-tune's own `system_prompt.txt` files, a third-party contract
+  asset that ships in the data-dir bundle (`assets/pup-qwen-native/`: a
+  `manifest.json` plus the two prompt files and a `LICENSE` — never in the
+  repo, never in logs). Until the A/B verdict (task-028 step 6) lands, the
+  qwen pipelines still name the BFL door in `vlm` and no `vlmVision` —
+  adopting is a service-config flip, rollback is the same flip back
 - prompt bundles: the committed asset bundles under
-  `crates/qls-core/assets/` (`pup`, `pup-qwen`); the service copies them into
-  the container's `/data/assets/` and reads them per job, so a dropped-in
-  replacement applies to the next job
+  `crates/qls-core/assets/` (`pup`, `pup-qwen`), plus the native bundle in
+  the deployment's data dir (`assets/pup-qwen-native/`, schema 14); the
+  service copies the repo assets into the container's `/data/assets/` and
+  reads them per job, so a dropped-in replacement applies to the next job
 
 0.12 adds two CPU-only ONNX models to the service (zero VRAM, zero engine
 interaction — identical in both modes): the **BiRefNet-lite** quick cut-out

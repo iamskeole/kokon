@@ -97,6 +97,21 @@ to it over HTTP.
   diagnose failures there, not in Kokon's.
 - In this mode "no model loaded" is the resting state: opening the UI starts nothing, and
   the settings' models tab says the model is managed outside Kokon.
+- Prompt upsampling over the gateway (schema 13+, 0.12): each pipeline names its VLM
+  entrypoint (a sidecar behind the same gateway) and its prompt bundle; the sidecar
+  answers a whole turn, the answer replaces the user's prompt for the image job, and a
+  down sidecar hard-fails the job (no silent raw-prompt fallback). Schema 14 adds the
+  optional second door `vlmVision`: t2i jobs call `vlm`, every image-grounded mode calls
+  `vlmVision` when named (routing is the guard — an image part never reaches a
+  text-only door), and the `pup-qwen-native` bundle (a data-dir bundle: a
+  `manifest.json`, the fine-tunes' own `system_prompt.txt` files, a `LICENSE`) switches
+  the qwen path to the PE doors, whose answers are a reasoning block plus a JSON
+  envelope (`rewritten_prompt`, a size suggestion); `vlm.rs` decodes it, retries once
+  out of contract, and keeps the raw (think-stripped) answer with a note on a second
+  miss. Measured on this box's 24 GB card (task-028, window w028r2e): the PE-T2I door
+  (Q4_K_M, no mmproj) holds 6.1 GB and the PE-I2I door (Q4_K_M + mmproj-bf16) 7.7 GB
+  at context, so exactly one fits beside either qwen engine, and the JSON contract
+  holds with the fine-tune's system prompt attached, thinking on or off.
 
 ## Platforms and engines
 

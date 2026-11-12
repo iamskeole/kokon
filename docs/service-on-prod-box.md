@@ -144,7 +144,7 @@ without a restart; it is stored as an Argon2id hash in
 
 ```json
 {
-  "schemaVersion": 13,
+  "schemaVersion": 14,
   "servicePort": 39151,
   "setupComplete": true,
   "externalEngine": {
@@ -163,8 +163,13 @@ without a restart; it is stored as an Argon2id hash in
 }
 ```
 
+(Schema 13 files load as-is and save as 14. Schema 14 adds the optional
+second VLM door `vlmVision` — the image-grounded modes' upsampler; a config
+without it routes every mode to `vlm`, as above.)
+
 When migrating, copy the accelerator's current values verbatim
-(`model`, `modelName`, `sample`, `promptBundle`) and change only the
+(`model`, `modelName`, `sample`, `promptBundle`, `vlm`, `vlmVision`) and
+change only the
 two `127.0.0.1` addresses to the accelerator's IP. Model ids and
 gguf names as the accelerator's gateway knows them:
 

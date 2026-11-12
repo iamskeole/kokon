@@ -13,7 +13,7 @@ mkdir -p "$D/data" "$D/config"
 cp "$(cd "$(dirname "$0")" && pwd)/mock_gateway.py" "$D/mock_gateway.py"
 cat > "$D/config/config.json" <<EOF
 {
-  "schemaVersion": 13,
+  "schemaVersion": 14,
   "servicePort": $PORT,
   "serverPort": 39900,
   "setupComplete": true,
