@@ -40,9 +40,10 @@ Do, in order:
    the compose and the data dirs (see the doc's Layout). The build is
    self-contained (its own Rust/npm toolchain in the image); allow it
    up to 30 minutes cold.
-3. Build the image, from inside <parent>/kokon/:
+3. Build the image, from inside <parent>/kokon/ (current one: 9f4eafb;
+   if the fork's main has moved on since, use its short commit instead):
    docker build -f docker/Dockerfile -t
-   ghcr.io/iamskeole/kokon:external-engine-0.12.0-<short-commit> .
+   ghcr.io/iamskeole/kokon:external-engine-0.12.0-9f4eafb .
    (or pull that tag from ghcr instead, if the owner says it is pushed
    and hands you a registry token).
 4. Write <parent>/compose.yaml per the doc, and create
@@ -123,7 +124,7 @@ dirs. Same shape; the clone just isn't nested.
 # front), 39151 = token API (127.0.0.1 only: the MCP on this box).
 services:
   kokon:
-    image: ghcr.io/iamskeole/kokon:external-engine-0.12.0-<short-commit>
+    image: ghcr.io/iamskeole/kokon:external-engine-0.12.0-9f4eafb
     container_name: kokon
     restart: unless-stopped
     network_mode: host
