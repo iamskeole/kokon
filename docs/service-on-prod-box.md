@@ -261,3 +261,30 @@ is loopback-only by design) — the MCP lives where the service lives.
 - **Two users today share one password and one gallery.** Per-user
   accounts and galleries is tracker task-026 — it slots into exactly
   this topology when it happens.
+
+### Dev on the accelerator, prod on this box — the workflow
+
+- **Code flows one way only:** dev box (the accelerator, where the
+  repo lives) → the fork on GitHub → this box (`git pull` + rebuild +
+  recreate). This box is a **consumer** of the fork, never a source:
+  nobody edits code here, and you never pull code from here. If a
+  change is needed, it is committed from the dev box (or any machine
+  that pushes to the fork) and lands here on the next update.
+- **Data lives here, and stays here.** The gallery, config and token
+  in the data dirs beside the compose file are the family's actual
+  state; they are written by this service in normal use. They do not
+  "sync back" — a copy of the images to the dev box, when wanted
+  (backup, analysis), is an explicit directory copy, and the dev box's
+  own service data (its test images) is disposable.
+- **A live dev instance can run alongside prod.** The gateway is a
+  shared, multi-client door by design (it already serves Open WebUI,
+  phones and this UI at once), so a service running on the dev box
+  talks to the same `:8081` with the same key, using its own data
+  dirs and config. A dev generation while the family is using prod
+  plays the ordinary eviction dance — no new failure mode. The dev
+  instance is disposable: spin it up to try a build, throw its data
+  away when done.
+- **Real-model validation happens on the dev box**, where the engines
+  are (the GPU windows per the autonomy protocol). What gets deployed
+  here is a commit that already ran against the real models — this
+  box never experiments with a model it hasn't been proven on.
