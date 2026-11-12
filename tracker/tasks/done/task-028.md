@@ -779,7 +779,33 @@ clobbered boot script, not a naming/routing problem; the daemon's
   eye). Thinking **on** stays the default: D-PE5's open axis resolved in
   favour of the contract-faithful arm on quality; its 3× tokens / 3.4×
   enhance time are the accepted cost. Applied as the one-config cutover;
-  the pre-adoption bytes are the rollback.
+  the pre-adoption bytes are the rollback. **Re-validated by three
+  independent vision passes (owner's meta-run, 2026-11-12 late evening):**
+  all three unanimous that BFL's a-t2i is the most faithful t2i image and
+  that thinking-on b-t2i over-elaborates (the same five unrequested props
+  each), while 2/3 recommended thinking **off** for the T2I door; the owner
+  re-read the tie-breaking set (b/a/boff t2i + the edit pair) and could not
+  separate them reliably — aesthetic "taste" for the thinking-on scene,
+  BFL's adherence edge not worth a third-party door, the hat-on-notebook
+  not a disqualifier. **Tie-break rule adopted: when neither the owner's
+  eye nor three model eyes can separate the arms, follow the model maker's
+  operating point** — for these fine-tunes that means thinking *enabled*
+  (it is their trained mode: the published row says "thinking enabled", the
+  think block precedes the JSON contract; the off arm is a suppression, not
+  a maker-blessed variant). Verified against the two HF repos (frozen at
+  the 2026-09-20 release): the maker's recommendation for each PE model
+  lives in that repo's **README usage recipe** — thinking enabled in the
+  template, do_sample, temp 1.0, top_p 0.95, top_k 20, max_new_tokens
+  16256 (T2I) / 24000 (I2I) — a single documented mode, **no off variant
+  and no separate off sampling** (unlike the Qwen3 LLM family docs, which
+  the owner was remembering); the repos' `generation_config.json` files
+  are minimal (no sampling) and the provenance files now cite the READMEs
+  as the row's source (pinned copies byte-identical to live). The boot
+  flags and the bundle manifest match that row exactly, and the A/B
+  on/off arms ran it identically (only the reasoning flag differed), so
+  the verdict above is a clean reading of thinking alone. Thinking-on
+  confirmed on both doors; the one-line `--reasoning on→off` flip stays the
+  documented escape hatch if future t2i jobs read as cluttered.
 
 - **D-PE19** — **Vision-door 1 MP cap (host-side, not this repo; owner:
   "1 MP first, keep it isolated")** — the user-journal 17:23/17:25
