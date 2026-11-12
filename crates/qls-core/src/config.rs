@@ -876,6 +876,26 @@ impl AppConfig {
             if e.api_key.trim().is_empty() && !f.api_key.trim().is_empty() {
                 e.api_key = f.api_key.clone();
             }
+            // (3) A bundle the UI does not carry must not be wiped the way the keys
+            // were: a save or switch that arrives with an empty promptBundle keeps
+            // the stored one - but only within the same model family: a qwen-family
+            // bundle on a BFL pipeline would silently write the wrong captions, so
+            // across families the empty value stands (the job then fails
+            // explicitly instead). An explicit non-empty bundle always wins (a
+            // picker entry carries its own).
+            let same_family = crate::enhancer::bfl_pup(&f.model) == crate::enhancer::bfl_pup(&e.model);
+            if same_family && e.prompt_bundle.trim().is_empty() && !f.prompt_bundle.trim().is_empty() {
+                e.prompt_bundle = f.prompt_bundle.clone();
+            }
+            // (4) The VLM is deployment-level on this topology (one PUP behind the
+            // same gateway door serves every pipeline), and the 0.12 picker entries
+            // carry no vlm field at all: a switch that arrives without one inherits
+            // the stored endpoint instead of silently leaving the new model without
+            // an enhancer (2026-11-12 box: switching to a BFL model dropped the
+            // shared VLM and the Prompt+ switch disappeared with it).
+            if e.vlm.is_none() {
+                e.vlm = f.vlm.clone();
+            }
         }
         for m in &mut self.models {
             if let (Some(v), Some(fv)) = (
@@ -890,7 +910,29 @@ impl AppConfig {
                     v.api_key = fv.api_key.clone();
                 }
             }
+            if m.prompt_bundle.trim().is_empty() {
+                if let Some(f) = from.models.iter().find(|f| f.model == m.model) {
+                    if !f.prompt_bundle.trim().is_empty() {
+                        m.prompt_bundle = f.prompt_bundle.clone();
+                    }
+                }
+            }
         }
+    }
+
+    /// Whether the active pipeline has a prompt enhancer this service can use: a
+    /// pipeline-specific endpoint (models[].vlm), or - for a BFL pipeline - the
+    /// shared externalEngine.vlm: the same two sources the job's upsample routing
+    /// picks between (engine.rs). A stock engine reports its own text endpoint via
+    /// capabilities; a stock engine behind the gateway has none, so there the VLM
+    /// is the enhancer, and it is what the UI's Prompt+ switch is keyed on (the
+    /// `text_generation` field of /status).
+    pub fn external_enhancer_configured(&self) -> bool {
+        let Some(e) = self.external_engine.as_ref() else {
+            return false;
+        };
+        self.models.iter().any(|m| m.model == e.model && m.vlm.is_some())
+            || (crate::enhancer::bfl_pup(&e.model) && e.vlm.is_some())
     }
 
     /// Base URL of the inference engine's API: the external gateway when configured,
@@ -1974,6 +2016,140 @@ mod tests {
         none.external_engine = None;
         none.absorb_secrets(&stored);
         assert_eq!(none.external_engine, None);
+    }
+
+    #[test]
+    fn model_switch_inherits_shared_vlm_and_keeps_same_family_bundle() {
+        // 2026-11-12 box: the picker replaces the active externalEngine wholesale.
+        // A BFL entry that carries neither a vlm nor a bundle must inherit the
+        // stored VLM (deployment-level) and a same-family bundle, and the
+        // enhancer must stay "configured" so the UI's Prompt+ switch stays there.
+        let vlm = VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/pup".into(),
+            model: "q35".into(),
+            api_key: String::new(),
+        };
+        let mut stored = AppConfig::default();
+        stored.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            api_key: "gw-key".into(),
+            model: "m-klein-a".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: Some(vlm.clone()),
+            prompt_bundle: "pup".into(),
+        });
+        stored.models = vec![
+            ExternalModel {
+                label: "Klein".into(),
+                sub: None,
+                model: "m-klein-a".into(),
+                model_name: "model.gguf".into(),
+                sample: serde_json::json!({}),
+                gateway: None,
+                vlm: Some(vlm.clone()),
+                prompt_bundle: "pup".into(),
+            },
+            ExternalModel {
+                label: "Klein B".into(),
+                sub: None,
+                model: "m-klein-b".into(),
+                model_name: "model.gguf".into(),
+                sample: serde_json::json!({}),
+                gateway: None,
+                vlm: None,
+                prompt_bundle: String::new(),
+            },
+        ];
+
+        // Switch to the entry that carries neither: VLM and bundle are inherited.
+        let mut incoming = stored.clone();
+        incoming.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            api_key: "gw-key".into(),
+            model: "m-klein-b".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: String::new(),
+        });
+        incoming.absorb_secrets(&stored);
+        let e = incoming.external_engine.as_ref().unwrap();
+        assert_eq!(e.vlm.as_ref().unwrap().model, "q35");
+        assert_eq!(e.prompt_bundle, "pup");
+        assert!(incoming.external_enhancer_configured());
+
+        // A cross-family switch must not drag the other family's bundle over:
+        // the empty value stands and the job fails explicitly instead of
+        // writing wrong captions.
+        let mut cross = stored.clone();
+        cross.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            api_key: "gw-key".into(),
+            model: "m-qwen".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: Some(vlm.clone()),
+            prompt_bundle: "pup-qwen".into(),
+        });
+        let mut to_qwen = cross.clone();
+        to_qwen.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            api_key: "gw-key".into(),
+            model: "m-klein-a".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: String::new(),
+        });
+        to_qwen.absorb_secrets(&cross);
+        let e = to_qwen.external_engine.as_ref().unwrap();
+        assert_eq!(e.prompt_bundle, String::new());
+        assert_eq!(e.vlm.as_ref().unwrap().model, "q35");
+    }
+
+    #[test]
+    fn external_enhancer_configured_follows_the_job_routing() {
+        // Mirrors the job path (engine.rs): a per-model vlm, or a shared vlm for
+        // a BFL model, makes the enhancer available; anything else is not.
+        let vlm = VlmEndpoint {
+            entrypoint: "http://127.0.0.1:8081/upstream/pup".into(),
+            model: "q35".into(),
+            api_key: String::new(),
+        };
+        let mut stock = AppConfig::default();
+        assert!(!stock.external_enhancer_configured());
+
+        let mut ext = stock.clone();
+        ext.external_engine = Some(ExternalEngine {
+            gateway: "http://127.0.0.1:8081/upstream".into(),
+            api_key: String::new(),
+            model: "m-klein".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            vlm: None,
+            prompt_bundle: "pup".into(),
+        });
+        assert!(!ext.external_enhancer_configured());
+
+        ext.external_engine.as_mut().unwrap().vlm = Some(vlm.clone());
+        assert!(ext.external_enhancer_configured());
+
+        // A non-BFL model is reached through its own per-model vlm instead.
+        let mut per_model = ext.clone();
+        per_model.external_engine.as_mut().unwrap().model = "m-other".into();
+        per_model.external_engine.as_mut().unwrap().vlm = None;
+        per_model.models = vec![ExternalModel {
+            label: "Other".into(),
+            sub: None,
+            model: "m-other".into(),
+            model_name: "model.gguf".into(),
+            sample: serde_json::json!({}),
+            gateway: None,
+            vlm: Some(vlm),
+            prompt_bundle: String::new(),
+        }];
+        assert!(per_model.external_enhancer_configured());
     }
 
     #[test]

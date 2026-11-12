@@ -270,7 +270,14 @@ async fn status(State(s): St) -> Json<Value> {
             "samplers": srv.capabilities.as_ref().map(|c| c.samplers.clone()).unwrap_or_default(),
             "schedulers": srv.capabilities.as_ref().map(|c| c.schedulers.clone()).unwrap_or_default(),
             "upscale": srv.capabilities.as_ref().map(|c| c.upscale),
-            "text_generation": srv.capabilities.as_ref().map(|c| c.text_generation),
+            // In external mode the stock engine has no text endpoint: the configured VLM is
+            // the enhancer and it is what the UI's Prompt+ switch is keyed on. The engine's
+            // own report stands in every other case (the stock path is untouched).
+            "text_generation": if cfg.external_enhancer_configured() {
+                Some(true)
+            } else {
+                srv.capabilities.as_ref().map(|c| c.text_generation)
+            },
         },
         "upscaler": { "model": cfg.upscaler().map(|u| u.0).unwrap_or_else(|| cfg.upscaler_model.clone()), "available": cfg.upscaler_file().is_some() },
         "engine": { "release": catalog::engine_tag(), "update_needed": engine_update },
