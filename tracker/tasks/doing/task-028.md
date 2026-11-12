@@ -463,6 +463,137 @@ record for the next window-builder).**
    the field **`proxy`**, not `address` — the jq path returned null
    (D-AD2).
 
+**Step 5 — DONE (schema 14 service code, 2026-11-12, six commits, all
+  suites green).**
+
+- **`ae971a8` — config: schema 14 (`vlmVision`).** Optional second VLM
+  endpoint on `ExternalEngine` and each `ExternalModel` (skipped in
+  serialization when absent); schema-13 files load as-is and save as 14
+  on first write; `absorb_secrets` keeps / inherits the vision key like
+  the plain one. Tests: the 13→14 migration round-trip, key
+  keep/inherit/explicit scenarios, all existing literals updated.
+- **`c94eea0` — pup: the native bundle family.** `PupBundle` gains the
+  native shape (`native`, `native_i2i`, per-mode reference sampling,
+  `compose_one_shot`); `load()` dispatches on `manifest.json`
+  (`family: "qwen-native"`, both `system_prompt.txt` files present and
+  non-empty, `LICENSE` present — the Qwen Research License asset,
+  data-dir only); `qwen_system` serves T2I for Generate and I2I for
+  every image-grounded mode; the bundle's native system prompt **wins
+  over a user-saved custom prompt** (D-PE11 — the fine-tune's output
+  format is conditioned on it), and the per-mode sampling row is the
+  reference row (16256 / 24000 max tokens) when the manifest omits one.
+- **`8638545` — vlm: the native reply decode.** `decode_native` splits
+  think + JSON envelope (`rewritten_prompt` mandatory; `wh_ratio` /
+  `ratio_follow` mutually exclusive at value level, the w028r2e finding),
+  `strip_think` loops (the fine-tune can emit several blocks), the
+  decoder tolerates a trailing fragment past the closing brace, and the
+  reasoning field is counted, not concatenated. Multi-request mock for
+  the retry path.
+- **`27e73da` — engine: mode-routed native upsampling.**
+  `enhance_prompt` picks the door per mode (D-PE2: Generate → the
+  pipeline's `vlm`; every image-grounded mode → `vlmVision`, falling
+  back to `vlm` when one door only is named); a native bundle that
+  answered through a VLM gets the decode (success → clean prompt +
+  `suggested_ratio` on the view; out-of-contract → one warm retry; a
+  second failure keeps the raw think-stripped text with a note —
+  D-PE9; a *down* door still hard-fails per D-FB); `compose_one_shot`
+  collapses the two-step label dance into one I2I call (D-PE13).
+- **`593227c` — ui: the suggested-shape hint.** `suggested_ratio` on
+  the job view (skipped when absent) surfaces as a quiet
+  "Suggested shape: 3:2" line after the writing phase (D-PE12 —
+  recorded, never enforced; the planner keeps size authority). Hidden
+  in the compact pending container.
+- **`fedbcb5` — docs:** the schema-14 surface in `fresh-box.md` (the
+  `vlmVision` routing rule, the native doors, the decode/retry, the
+  one-step adopt/rollback), `service-on-prod-box.md` (seed config 14,
+  migration note), `engineering-notes.md` (the measured door VRAM),
+  harness config aligned.
+- **Tests:** qls-core **399 passed / 0 failed / 1 ignored** (was 379;
+  +20 across config/pup/vlm/engine), UI 231, MCP 35+3 skipped, external-
+  engine harness 16/16. **Image + deploy:** built
+  `ghcr.io/iamskeole/kokon:external-engine-0.12.0-fedbcb5`, container
+  recreated, service at rest (`stopped`/not owned), live config still
+  schema 13 with byte-identical md5 (`8b8936ff…`) — the native doors
+  are wired only by the step-6 cutover, so the box's behaviour is
+  unchanged until the owner adopts. The data-dir native bundle
+  (`data/assets/pup-qwen-native/`: manifest, both system prompts, the
+  Qwen LICENSE, provenance) was created for the window; a strings-style
+  check (24-char mid-line fragments, file-based, zero hits) confirmed
+  **no native prompt byte in the image or the committed bundles** —
+  the text lives in the deployment data dir only (D-PE3, the
+  acceptance criterion's `strings` check, done per window P0 since).
+
+**Step 6 — A/B window DONE (w028r3, 2026-11-12 16:25–16:31 UTC, 317 s;
+plus w028r3b, 16:43–16:46, 150 s, for the real thinking-off arm).**
+Seven jobs, same prompt/seed (1234) per mode across arms; the window
+left the box exactly as it found it (the cutover is the staged flip,
+below). Measurements (wall time per job = door boot + enhance +
+di-t generate, fast quality):
+
+| arm | door + bundle | t2i | edit | compose |
+|---|---|---|---|---|
+| A — the box as it stood | BFL door + `pup-qwen` | 27 s (232 tok / 7.2 s, 1158 ch) | 18 s (120 tok / 2.5 s, 562 ch) | 28 s (3 calls: 2 labels + scene 195 tok / 6.9 s, 1041 ch) |
+| B — native, thinking ON | PE-T2I / PE-I2I + `pup-qwen-native` | 41 s (1303 tok / 21.2 s, 2820→2777 ch, ratio **3:2**) | 45 s (1701 tok / 28.1 s, 1110→1040 ch, follows **<image1>**) | 57 s (**1 call**, 2507 tok / 33.3 s, 1391→1321 ch, follows **<image2>**) |
+| B-off — native, thinking OFF (w028r3b, scratch :9190) | PE-T2I + native bundle | 24 s (441 tok / 6.2 s, 2149→2106 ch, ratio **3:2**) | — | — |
+
+- **The native path is clean end to end**: 7/7 jobs decoded in contract
+  on the first call (no retry, no D-PE9 fallback note, no think leak in
+  any view, no errors); the I2I door served both images-grounded modes
+  through the service's VLM client (base64 parts) without issue.
+- **D-PE6 decided by evidence, pending owner confirmation:** the
+  one-shot native I2I compose (1 call, 33 s, 2507 tokens) beat the
+  two-step (3 calls, ~11 s of VLM time, 1041-ch output) on both time
+  and prompt richness; the two-step path remains the `false` arm in the
+  manifest for rollback.
+- **D-PE5 data (on vs off, same door, same seed):** thinking ON = 3×
+  more tokens, 3.4× the enhance time, a 31 % longer prompt, identical
+  ratio suggestion (3:2). Both are contract-faithful. The quality
+  question (longer prompt → better image?) goes to the owner's visual
+  verdict on `b-t2i.png` vs `boff-t2i.png`.
+- **Determinism check (validates the whole A/B):** the main window's
+  first "B-off" job (mis-routed to the BFL door, D-AD10) produced an
+  image **pixel-identical** to arm A's (max channel diff 0; only PNG
+  metadata bytes differed) — same seed + same prompt + same DiT ⇒
+  identical pixels, so the a-vs-b image difference (mean 54.8/255)
+  is purely the upsampler's prompt, and the review can be read as a
+  prompt-quality verdict.
+- **VRAM:** peak 24096 MiB was vllm at P0; the window pairs stayed
+  inside the measured headroom (turbo+T2I ≈ 17.4, turbo+I2I ≈
+  18.7 GB — both doors resident alongside the engine, no OOM, no
+  mid-job eviction; the klein-pair eviction observed in a stray test
+  job is a pre-existing property of that pair, not of these).
+- **Adoption is staged, not done:** the one-step cutover config
+  (`/tmp/w028r3/svc-adopt.json` — schema 14; both qwen pipelines on
+  the native doors + `pup-qwen-native`) is ready to `cp` into
+  `config/config.json` + `docker restart kokon`; the rollback is the
+  window's own restore path (byte-identical pre-window config —
+  demonstrated, md5-verified, after both windows).
+- **Window-ops record (the 8 failures before the DONE, all mine — the
+  box was never at fault; vllm cycled 8× through die()-path restores,
+  each self-recovering in <3 min; every cycle noted in
+  `/tmp/w028r3-run8`/`/tmp/w028r3*` job logs):** the sampler `$( )`
+  deadlock (D-AD8); the tag-vs-digest image check; a blank line in the
+  fragment file matching everything in `grep -f`; the identical-swap
+  reload (D-AD7); the yield false-positive on a *dying* daemon-stopped
+  vllm (fixed with a 90 s observation loop: a dying process exits, a
+  respawn reappears in `/running`, a human's stays alive); the inverted
+  `|| die` on the yield's no-yield return; the `KAUTH`-as-variable
+  header (D-AD11); the host-path image refs (D-AD9); the
+  `modelName`-is-a-filename check (the engine health check compares
+  the engine's reported file name, not the display name); the
+  empty-card wait mid-window (D-AD12); the `models[]`-outrank (D-AD10).
+
+**State at handover (2026-11-12 16:50 UTC):** gateway live ==
+`.last-good` == the 10-model registry (md5 `3e5214d2…`); vllm ready on
+9108 (its daemon-assigned port — 18020 has not existed since task-022;
+wait-marker's 18020 probe is stale and can be updated); the kokon
+service at rest with the pre-window config byte-identical (`8b8936ff…`)
+on the schema-14 image (`fedbcb5`); the evidence set in
+`/tmp/w028r3/` (7 images, 7 views, `jobs-index.jsonl`, `digest.json`,
+journal slice, staged `svc-adopt.json`) and the off-arm's in
+`/tmp/w028r3b/` (merged into the set).
+
+
 ## Decisions (pre-logged)
 
 - **D-PE1** — klein keeps the BFL door in behaviour; it is klein's
@@ -577,6 +708,50 @@ clobbered boot script, not a naming/routing problem; the daemon's
   readiness wait, kill, wait-for-exit) and the watcher's cap path clears
   it too. One 9B PUP + the scratch fit the card simultaneously (~14 GB),
   so the arm cost no extra window time.
+- **D-AD6 (launch hygiene, 2026-11-12)** — create the workdir *before*
+  redirecting the job's output into it, and never a broad `pkill -f`
+  (exact pids / process groups); a `pkill` pattern matching the job's
+  own cmdline or a bystander's (the owner's `watch -n 1 nvidia-smi`
+  processes appeared in every audit) is how windows kill the wrong
+  thing.
+- **D-AD7 (an identical config swap still reloads, 2026-11-12)** — the
+  daemon's `-watch-config` reloads on any file change, and a reload
+  stops and reboots every loaded model: a restore path that swaps in a
+  config equal to the live one (every pre-P1 failure) cycled the
+  owner's vllm twice in ten minutes for nothing. Every swap in the
+  window/die/watcher paths is now md5-gated (skip when live == target).
+- **D-AD8 (a backgrounded child inside `$( )` deadlocks the script,
+  2026-11-12)** — `SAMPLER=$( { loop; } & echo $! )` never returned:
+  the backgrounded sampler holds the substitution's pipe open, so the
+  read side blocks until the loop exits (the window sat 12 minutes at
+  that line with the card untouched). Background loops are plain
+  `( … ) &` subshells; `$!` directly.
+- **D-AD9 (image references are the service's forms, 2026-11-12)** —
+  job bodies name images `input:<id>` / `gen:<id>` (or container
+  paths): the service runs in a container where the data dir is
+  `/data`, so a host path in `images` fails the job at load time
+  (the 7th launch's a-edit).
+- **D-AD10 (`models[].vlm` outranks `externalEngine.vlm`, 2026-11-12)**
+  — the routing priority is the pipeline's own endpoints first: a
+  config that stages a sidecar change only on `externalEngine` is
+  silently overridden by the pipeline's `models[]` entry (the main
+  window's first "thinking-off" job ran the BFL door + `pup-qwen`
+  instead of the scratch — its result was pixel-identical to arm A,
+  which is how it was caught). Off-arm configs must set the models[]
+  entry.
+- **D-AD11 (a function name is not a header value, 2026-11-12)** —
+  `-H "$KAUTH"` with `KAUTH` a *function* sends the function's source
+  as the Authorization header; the service answers with an empty body
+  (no JSON error) and a naive submit loop retries into the timeout.
+  Headers are built as plain strings (`"Authorization: Bearer $TOK"`);
+  an empty response body from the service means "check my own request",
+  not "service down".
+- **D-AD12 (wait for the door, not for the card, mid-window,
+  2026-11-12)** — after unloading a sidecar *while the engine stays
+  resident* (the b-t2i → b-edit transition), the card cannot go empty
+  (the engine is ~11 GB): the wait is the model's absence from the
+  daemon's `/running`, not a VRAM threshold. Empty-card waits stay for
+  the full-teardown points (P1, P6, pre-revival).
 
 ## blockers
 
@@ -626,20 +801,29 @@ proven on this exact llama.cpp build):
       `{qt,p}` — byte-identical behaviour, both jobs green); final
       10-line port map in the config comment and the docs; the service
       config is byte-identical before/after.
-- [ ] Schema 14: migration + `vlmVision` inheritance + capability
-      check unit-tested; cargo (qls-core + service) / `npm test` /
-      mcp green; mock-gateway harness aligned.
-- [ ] Native bundle loaded at runtime from the data dir; **zero
-      native prompt bytes** in the repo, tests, logs or chat (keys
-      and hashes only) — `strings`-style check on the image, as
-      task-007 did for BFL.
-- [ ] A/B window per the autonomy protocol (marker last, vllm
-      revived, digest): standing set complete, measurements in the
-      digest, owner's visual verdict recorded.
-- [ ] If adopted: cutover live on the box (service-config-only),
-      one-step rollback demonstrated, `docs/fresh-box.md` +
-      `engineering-notes.md` + STATUS current. If not: closed with
-      the evidence; rename + additive step as-is.
+- [x] Schema 14: migration + `vlmVision` inheritance + capability
+      check unit-tested; cargo (qls-core 399 / service) / `npm test`
+      (231) / mcp (35+3) green; mock-gateway harness aligned (16/16)
+      — step 5, `ae971a8…fedbcb5`, deployed as the `fedbcb5` image.
+- [x] Native bundle loaded at runtime from the data dir (all 7 A/B
+      jobs ran on it); **zero native prompt bytes** in the image or
+      committed bundles — the fragment check (mid-line 24-char slices,
+      file-based, 0 hits) runs in every window's P0 (step 5/6).
+- [x] A/B window per the autonomy protocol (marker last, vllm revived
+      canonically, digest): w028r3 (arms A + B, 6 jobs) and w028r3b
+      (the real thinking-off arm — the main window's first off-job was
+      mis-routed, D-AD10, and caught by the pixel-identity check);
+      measurements in the Progress record above; the box restored
+      byte-identical after each.
+- [ ] **The owner's visual verdict on the 7 images** (the review
+      prompt; vision-enabled session): then either the **cutover**
+      (one config step + restart — staged at
+      `/tmp/w028r3/svc-adopt.json`) with `fresh-box.md` /
+      `engineering-notes.md` + this file + STATUS updated, or
+      **closed with the evidence** (rename + additive step stand as-is;
+      the native doors stay registered, unused).
+      Rollback is already demonstrated: both windows' restore path
+      returns the pre-window config byte-identical (D-PE8).
 
 ## Related (out of scope, noted)
 
