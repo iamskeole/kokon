@@ -356,7 +356,7 @@ export interface AppConfig {
 
 /** A VLM (prompt upsampler) the service calls: an OpenAI-compatible chat endpoint. */
 export interface VlmEndpoint {
-  /** Base URL of the OpenAI-compatible chat API, e.g. "http://127.0.0.1:8081/upstream/kokon-pup". */
+  /** Base URL of the OpenAI-compatible chat API, e.g. "http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein". */
   entrypoint: string;
   /** The model id sent in each request body. */
   model: string;

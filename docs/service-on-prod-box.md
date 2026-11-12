@@ -55,7 +55,7 @@ Do, in order:
    the login password); keep the owner's copy untouched.
 5. Write <parent>/config/config.json per the reference in this doc:
    gateway and vlm entrypoint at http://<accelerator-IP>:8081/upstream
-   (the vlm one with /kokon-pup appended), apiKey from the key file,
+   (the vlm one with /kokon-pup-flux-image-3-klein appended), apiKey from the key file,
    the owner's default model, the rest copied from the accelerator's
    current config when migrating (or the doc's template when fresh).
 6. docker compose up -d with the compose from the doc. If this is a
@@ -154,8 +154,8 @@ without a restart; it is stored as an Argon2id hash in
     "modelName": "<that model's gguf name>",
     "sample": { "cfg": 1, "clear_sigmas": true, "sampler": "euler", "steps": 40 },
     "vlm": {
-      "entrypoint": "http://<accelerator-IP>:8081/upstream/kokon-pup",
-      "model": "qwen3vl-8b",
+      "entrypoint": "http://<accelerator-IP>:8081/upstream/kokon-pup-flux-image-3-klein",
+      "model": "kokon-pup-flux-image-3-klein",
       "apiKey": "<same key>"
     },
     "promptBundle": "pup-qwen"

@@ -340,7 +340,7 @@ impl ModelProfile {
 #[serde(rename_all = "camelCase")]
 pub struct VlmEndpoint {
     /// Base URL of the OpenAI-compatible chat API, e.g.
-    /// `http://127.0.0.1:8081/upstream/kokon-pup`.
+    /// `http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein`.
     pub entrypoint: String,
     /// The model id sent in each request body.
     pub model: String,
@@ -1932,7 +1932,7 @@ mod tests {
         let mut c = AppConfig::load_from(&p);
         c.models[0].gateway = Some("http://other-gw".into());
         c.models[0].vlm = Some(VlmEndpoint {
-            entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+            entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein".into(),
             model: "q35".into(),
             api_key: "key-1".into(),
         });
@@ -1944,7 +1944,7 @@ mod tests {
         let mut r = AppConfig::load_from(&p);
         let m = &r.models[0];
         assert_eq!(m.gateway.as_deref(), Some("http://other-gw"));
-        assert_eq!(m.vlm.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/kokon-pup");
+        assert_eq!(m.vlm.as_ref().unwrap().entrypoint, "http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein");
         assert_eq!(m.vlm.as_ref().unwrap().api_key, "key-1");
         assert_eq!(m.prompt_bundle, "bfl-klein");
         assert_eq!(r.external_engine.as_ref().unwrap().vlm, m.vlm);
@@ -2180,7 +2180,7 @@ mod tests {
                 sample: serde_json::json!({"steps": 16}),
                 gateway: Some("http://10.0.0.2:8081".into()),
                 vlm: Some(VlmEndpoint {
-                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein".into(),
                     model: "pup".into(),
                     api_key: "pup-key".into(),
                 }),
@@ -2194,7 +2194,7 @@ mod tests {
                 sample: serde_json::json!({"steps": 20}),
                 gateway: None,
                 vlm: Some(VlmEndpoint {
-                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup".into(),
+                    entrypoint: "http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein".into(),
                     model: "pup".into(),
                     api_key: String::new(),
                 }),
@@ -2222,7 +2222,7 @@ mod tests {
             Some(v) => (v.entrypoint.as_str(), v.model.as_str(), v.api_key.as_str()),
             None => panic!("klein pipeline has no VLM"),
         };
-        assert_eq!((e, m, k), ("http://127.0.0.1:8081/upstream/kokon-pup", "pup", "pup-key"));
+        assert_eq!((e, m, k), ("http://127.0.0.1:8081/upstream/kokon-pup-flux-image-3-klein", "pup", "pup-key"));
         assert_eq!(cfg.models[1].vlm.as_ref().unwrap().api_key, "", "keyless sidecar");
         assert_eq!(cfg.models[2].vlm, None);
 

@@ -140,12 +140,13 @@ It has its own assigned port, but the two share the card: the set
 `vllm: "v | vv"` (§3) keeps them mutually exclusive — one process at a
 time, a request for either evicting the other.
 
-The PUP fine-tune runs as **one shared sidecar door** (task-019) at Q4_K_M —
-the only quant that fits all three image pairs in 24 GB (the Q8 full door's
-OOM, measured 2026-11-03, is the constraint) — serving all three families
-under two names (the klein entry's name and the `qwen3vl-8b` alias the qwen
-entries use), so a family or flavor switch reloads only the engine, never the
-sidecar.
+The PUP fine-tune runs as **one sidecar door** (task-019; renamed in
+task-028 to `kokon-pup-flux-image-3-klein` — the door carries the engine
+family it was tuned for, one identity per door) at Q4_K_M — the only quant
+that fits all three image pairs in 24 GB (the Q8 full door's OOM, measured
+2026-11-03, is the constraint) — serving all three families under the
+door's id plus the legacy aliases (`q35`, `qwen3vl-8b`), so a family or
+flavor switch reloads only the engine, never the sidecar.
 
 Downloads: follow each directory's `provenance.md` on the reference host
 (source, converter, hash). Verify sha256 after every download; a model is not
@@ -210,14 +211,16 @@ cmake --build build --config Release -j12 --target llama-server
 ```
 
 The PUP sidecar is a plain `llama-server` (OpenAI-compatible, with vision).
-Since task-019 it is **one shared door** (`serve-kokon-pup.sh`): the BFL PUP
-fine-tune at Q4_K_M + mmproj-F16 on its `$1` port (daemon-assigned), `--ctx-size 8192`, thinking
+The door is `serve-kokon-pup-flux-image-3-klein.sh` (task-028: renamed from
+the shared `kokon-pup` — one identity per door): the BFL PUP fine-tune at
+Q4_K_M + mmproj-F16 on its `$1` port (daemon-assigned), `--ctx-size 8192`, thinking
 off (`--jinja --chat-template-kwargs '{"enable_thinking":false}'`), image
 clamps `--image-min-tokens 1024 --image-max-tokens 4096` (the processor is
 patch-16/merge-2 — one visual token per 32×32 px; the fine-tune's mmproj
 metadata carries no pixel limits, so these flags set the window), default
-sampling = the base model's official non-thinking general row, and two
-`--alias` names so the single process answers both client families. The
+sampling = the base model's official non-thinking general row, and the
+`--alias` names — the door's id plus the legacy `q35`/`qwen3vl-8b` — so the
+single process answers every client family. The
 creative writers (`serve-g4-meromero-v2-26b.sh` / `-31b.sh`) are the same
 binary, each taking its daemon-assigned port as `$1` (9100/9101 on this box
 — the alphabetical contract in the gateway section).
@@ -300,7 +303,7 @@ above, and one entry per model (`proxy`, `cmd`, `checkEndpoint`, `ttl`,
 | `creative-fast` | llama.cpp (G4 26B, MTP) | 9100 | `small` |
 | `creative-slow` | llama.cpp (G4 31B, MTP) | 9101 | `small` |
 | `kokon-flux-image-3-klein` | stock sd-server (FLUX.3 Klein) | 9102 | `klein` |
-| `kokon-pup` | llama-server (the shared PUP door, two names) | 9103 | **all three image sets** |
+| `kokon-pup-flux-image-3-klein` | llama-server (klein's PUP door, three names) | 9103 | **all three image sets** |
 | `kokon-qwen-image-2.1-full` | stock sd-server (Qwen-Image 2.1 full) | 9104 | `qwen-f` |
 | `kokon-qwen-image-2.1-turbo` | stock sd-server (Qwen-Image 2.1 Turbo) | 9105 | `qwen-t` |
 | `qwen3.8-27b` | vLLM (text) | 9106 | `vllm` |
@@ -312,6 +315,11 @@ above, and one entry per model (`proxy`, `cmd`, `checkEndpoint`, `ttl`,
 `kokon-pup` already matched) so registry id == script name. The
 alphabetical map shifted with the rename: klein 9103→9102, pup 9104→9103,
 full 9102→9104; turbo's 9105 and the vLLM pair's 9106/9107 did not move.
+2026-11-12 (task-028): `kokon-pup` → `kokon-pup-flux-image-3-klein` — the
+door carries the engine family its PUP was tuned for (gateway id ==
+`--alias` == the service's `vlm.model` field == boot-script name, all one);
+still fourth alphabetically, so the port (9103) did not move, and the legacy
+aliases `q35`/`qwen3vl-8b` remain as extra names on the same door.
 
 **The port contract (a v269 property — nothing to memorize).** The daemon
 assigns the next number from `startPort` to the models **with their IDs
@@ -334,7 +342,7 @@ routing:
       matrix:
         vars:
           k: kokon-flux-image-3-klein
-          p: kokon-pup          # the ONE shared PUP door — member of all
+          p: kokon-pup-flux-image-3-klein # the PUP door (renamed, task-028) — member of all
           qt: kokon-qwen-image-2.1-turbo   # three image sets (task-019): a
           qf: kokon-qwen-image-2.1-full    # family or flavor switch
           v: qwen3.8-27b        # reloads only the engine, never the sidecar
@@ -489,10 +497,13 @@ VLM entrypoint and the prompt bundle the VLM applies:
   the service config's `models[]` and `externalEngine.model` carry the same
   ids; the `gateway` base plus the `model` id *is* the engine URL the
   service's client calls)
-- VLM: the single shared door `kokon-pup` (one llama-server process,
-  Q4_K_M, two `--alias` names): the klein entry speaks the alias `q35`, the
-  qwen entries `qwen3vl-8b` — a family or flavor switch reloads only the
-  engine, never the door (task-019). In 0.12 the area/Expand Prompt+ rides
+- VLM: the PUP door `kokon-pup-flux-image-3-klein` (one llama-server
+  process, the BFL PUP at Q4_K_M, the door's id as primary `--alias` plus
+  the legacy `q35`/`qwen3vl-8b` names): every entry — klein and both qwen
+  flavors — speaks the same id in its `vlm` block (task-028: one identity
+  per door; task-019 made it the single shared process) — a family or
+  flavor switch reloads only the engine, never the door. In 0.12 the
+  area/Expand Prompt+ rides
   this same door in external mode: the service sends the area/expand request
   (Kokon's own prompts, the image included) to the pipeline's VLM, and its
   answer becomes the prompt the image job runs on (in default mode the same
@@ -549,8 +560,8 @@ VLM is part of the quality contract, not an optional garnish.
 4. **Idle unload**: after 600 s (kokon models) / 300 s (creative writers)
    without requests the assigned ports go quiet (TTL); the next request
    re-boots on the same number (warm, page-cached).
-5. **The shared door** (task-019): `GET /upstream/kokon-pup/v1/models` lists
-   both alias names; a klein job and a qwen job back-to-back keep the
+5. **The PUP door** (task-019, renamed task-028): `GET /upstream/kokon-pup-flux-image-3-klein/v1/models`
+   lists the door's three names (the id plus the legacy aliases); a klein job and a qwen job back-to-back keep the
    **same** sidecar pid resident — the journal shows
    `evict=[kokon-flux-image-3-klein]` and
    `evict=[kokon-qwen-image-2.1-turbo]` (the engines only), never the door.

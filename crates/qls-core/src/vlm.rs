@@ -300,7 +300,7 @@ mod tests {
 
     fn endpoint(port: u16, key: &str) -> VlmEndpoint {
         VlmEndpoint {
-            entrypoint: format!("http://127.0.0.1:{port}/upstream/kokon-pup"),
+            entrypoint: format!("http://127.0.0.1:{port}/upstream/kokon-pup-flux-image-3-klein"),
             model: "q35".into(),
             api_key: key.to_string(),
         }
@@ -317,7 +317,7 @@ mod tests {
         assert_eq!((reply.prompt_tokens, reply.completion_tokens), (1047, 12));
 
         let raw = seen.await.unwrap();
-        assert!(raw.contains("POST /upstream/kokon-pup/v1/chat/completions"));
+        assert!(raw.contains("POST /upstream/kokon-pup-flux-image-3-klein/v1/chat/completions"));
         assert!(!raw.to_ascii_lowercase().contains("authorization"), "keyless: no auth header");
         let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
         assert_eq!(sent["model"], "q35");

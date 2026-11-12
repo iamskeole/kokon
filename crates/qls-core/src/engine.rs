@@ -4344,7 +4344,7 @@ mod tests {
             .id;
         let body = r#"{"choices":[{"message":{"content":"a black cat, studio light"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8}}"#;
         let (port, seen) = crate::vlm::mock_chat(200, body).await;
-        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{port}/upstream/kokon-pup"));
+        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{port}/upstream/kokon-pup-flux-image-3-klein"));
         let images = vec!["PNG1".to_string()];
         let out = e
             .enhance_prompt(
@@ -4366,7 +4366,7 @@ mod tests {
         assert_eq!(out.as_deref(), Some("a black cat, studio light"));
         // The upsampler turn went to the sidecar, not to the engine.
         let raw = seen.await.unwrap();
-        assert!(raw.contains("POST /upstream/kokon-pup/v1/chat/completions"), "{raw}");
+        assert!(raw.contains("POST /upstream/kokon-pup-flux-image-3-klein/v1/chat/completions"), "{raw}");
         let sent: serde_json::Value = raw[raw.find('{').unwrap()..].parse().unwrap();
         assert_eq!(sent["model"], "q35");
         assert_eq!(sent["max_tokens"], 3584, "the BFL output budget");
@@ -4398,7 +4398,7 @@ mod tests {
             .unwrap()
             .id;
         // Port 9 never listens.
-        let cfg = vlm_cfg(AppConfig::default(), "http://127.0.0.1:9/upstream/kokon-pup");
+        let cfg = vlm_cfg(AppConfig::default(), "http://127.0.0.1:9/upstream/kokon-pup-flux-image-3-klein");
         let err = e
             .enhance_prompt(
                 &id,
@@ -4450,7 +4450,7 @@ mod tests {
         let (port, _seen) = fake_text_server(vec![QWEN_CAPTION]).await;
         let (vport, mut vseen) =
             crate::vlm::mock_chat(200, r#"{"choices":[{"message":{"content":"SHOULD-NOT-APPEAR"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#).await;
-        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{vport}/upstream/kokon-pup"));
+        let cfg = vlm_cfg(AppConfig::default(), &format!("http://127.0.0.1:{vport}/upstream/kokon-pup-flux-image-3-klein"));
         let out = e
             .enhance_prompt(
                 &id,
