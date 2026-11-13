@@ -238,7 +238,7 @@ async fn no_login_without_a_password() {
     let r = login(&a, "anything at all").await;
     assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, "forbidden"));
     let s = send(&a, "GET", "/api/v1/auth/session", &[], None).await;
-    assert_eq!(s.body, json!({ "signed_in": false, "password_set": false }));
+    assert_eq!(s.body, json!({ "signed_in": false, "user": null, "password_set": false, "multi_user": false }));
 }
 
 #[tokio::test]
@@ -298,7 +298,7 @@ async fn a_browser_gets_the_ui_api_but_no_paths_on_the_server() {
         StatusCode::OK
     );
     let s = send(&a, "GET", "/api/v1/auth/session", &[c], None).await;
-    assert_eq!(s.body, json!({ "signed_in": true, "password_set": true }));
+    assert_eq!(s.body, json!({ "signed_in": true, "user": null, "password_set": true, "multi_user": false }));
     for (m, p, body) in [
         (
             "POST",
@@ -835,4 +835,229 @@ async fn the_secure_cookie_matches_the_tls_the_proxy_says() {
     assert_eq!(r.status, StatusCode::OK);
     let set = r.headers[header::SET_COOKIE].to_str().unwrap();
     assert!(!set.contains("Secure"), "{set}");
+}
+
+// ---------------------------------------------------------------------------------------
+// Multi-user (D-MU1..D-MU12): named accounts see only their own rows; the operator sees all
+
+/// A named account's login: its name and its own password.
+async fn named_sign_in(app: &Router, name: &str, password: &str) -> String {
+    let r = send(
+        app,
+        "POST",
+        "/api/v1/auth/login",
+        &[CSRF],
+        Some(json!({ "password": password, "username": name })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    r.headers[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+fn fake_row(id: &str, user: Option<&str>) -> qls_core::store::GenerationRecord {
+    serde_json::from_value(json!({
+        "id": id, "created_at": "t", "mode": "generate", "prompt": "p", "negative_prompt": "",
+        "seed": 1, "width": 8, "height": 8, "working_width": 32, "working_height": 32,
+        "model": "m", "sampler": "euler", "scheduler": null, "steps": 1, "cfg": 6.0, "strength": null,
+        "quality": "fast", "resolution": "auto", "references": [], "mask_input_id": null, "outpaint": null,
+        "file_path": format!("/outside-the-gallery/{id}.png"), "favorite": false, "parent_id": null,
+        "duration_ms": 1, "notes": [], "app_version": "1", "backend_version": null, "client": null,
+        "user": user.map(str::to_owned)
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn named_accounts_see_only_their_own_rows() {
+    let f = fixture(true);
+    let a = app(&f, true, "192.168.1.50");
+    // The token only works on the loopback listener, where the desktop app and the scripts sit.
+    let tl = app(&f, false, "127.0.0.1");
+    let token = format!("Bearer {}", f.state.token);
+    let t = ("authorization", token.as_str());
+
+    // The operator (token) turns the gate on and creates two accounts.
+    assert_eq!(
+        send(&tl, "POST", "/api/v1/users/enable", &[t, CSRF], Some(json!({ "on": true }))).await.status,
+        StatusCode::OK
+    );
+    for (name, pw) in [("alice", "alice's pass 1"), ("bob", "bob's pass 2")] {
+        let r = send(
+            &tl,
+            "POST",
+            "/api/v1/users",
+            &[t, CSRF],
+            Some(json!({ "name": name, "password": pw })),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+        assert_eq!(r.body["name"], name);
+    }
+    let bob_id = send(&tl, "GET", "/api/v1/users", &[t], None)
+        .await
+        .body["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["name"] == "bob")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Three rows: one per owner, one the operator's (no owner, as before accounts).
+    let rows = [
+        fake_row("row-alice", Some("alice")),
+        fake_row("row-bob", Some("bob")),
+        fake_row("row-mine", None),
+    ];
+    for r in &rows {
+        f.state.engine.store.insert_generation(r).unwrap();
+    }
+
+    // Named logins: each gets a session that says who they are.
+    let alice_cookie = named_sign_in(&a, "alice", "alice's pass 1").await;
+    let alice = ("cookie", alice_cookie.as_str());
+    let bob_cookie = named_sign_in(&a, "bob", "bob's pass 2").await;
+    let bob = ("cookie", bob_cookie.as_str());
+    let s = send(&a, "GET", "/api/v1/auth/session", &[alice], None).await;
+    assert_eq!(
+        s.body,
+        json!({ "signed_in": true, "user": "alice", "password_set": true, "multi_user": true })
+    );
+    // The shared password still signs in the operator (no name), as before.
+    let op_cookie = sign_in(&a).await;
+    let op = ("cookie", op_cookie.as_str());
+    let s = send(&a, "GET", "/api/v1/auth/session", &[op], None).await;
+    assert_eq!(s.body["user"], json!(null));
+    assert_eq!(s.body["multi_user"], json!(true));
+
+    // Wrong name, wrong password: distinct messages, same 401 (D-MU4).
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/login",
+        &[CSRF],
+        Some(json!({ "password": "nope", "username": "alice" })),
+    )
+    .await;
+    assert_eq!((r.status, r.body["error"]["message"].as_str().unwrap()), (StatusCode::UNAUTHORIZED, "Wrong password."));
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/login",
+        &[CSRF],
+        Some(json!({ "password": "nope", "username": "ghost" })),
+    )
+    .await;
+    assert_eq!((r.status, r.body["error"]["message"].as_str().unwrap()), (StatusCode::UNAUTHORIZED, "Unknown name."));
+
+    // Each account lists its own row only, whatever filter it asks for.
+    let g = send(&a, "GET", "/api/v1/gallery", &[alice], None).await;
+    assert_eq!(g.body["total"], 1);
+    assert_eq!(g.body["items"][0]["id"], "row-alice");
+    let g = send(&a, "GET", "/api/v1/gallery?user=bob", &[alice], None).await;
+    assert_eq!(g.body["total"], 1, "a named account cannot widen its list");
+    assert_eq!(g.body["items"][0]["id"], "row-alice");
+    let g = send(&a, "GET", "/api/v1/gallery", &[bob], None).await;
+    assert_eq!(g.body["items"][0]["id"], "row-bob");
+
+    // Another account's row is unknown, like a deleted one (no existence leak).
+    for (m, p, body) in [
+        ("GET", "/api/v1/gallery/row-bob", None),
+        ("PATCH", "/api/v1/gallery/row-bob", Some(json!({ "favorite": true }))),
+        ("DELETE", "/api/v1/gallery/row-bob", None),
+        ("GET", "/api/v1/gallery/row-bob/image", None),
+        ("GET", "/api/v1/gallery/row-bob/thumb", None),
+        ("GET", "/api/v1/gallery/row-bob/preview", None),
+    ] {
+        let r = send(&a, m, p, &[alice, CSRF], body).await;
+        assert_eq!((r.status, r.code()), (StatusCode::NOT_FOUND, "not_found"), "{m} {p}");
+    }
+    // Its own row is fully readable.
+    assert_eq!(
+        send(&a, "GET", "/api/v1/gallery/row-alice", &[alice], None).await.status,
+        StatusCode::OK
+    );
+    // A plan referring to another account's image: unknown source (the same rule `submit`
+    // applies; a real job is checked by the external-engine harness, which has a model).
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/plan",
+        &[alice, CSRF],
+        Some(json!({ "prompt": "x", "mode": "edit", "images": ["gen:row-bob"] })),
+    )
+    .await;
+    assert_eq!((r.status, r.code()), (StatusCode::NOT_FOUND, "not_found"), "{:?}", r.body);
+
+    // The operator sees all three and can narrow.
+    let g = send(&a, "GET", "/api/v1/gallery", &[op], None).await;
+    assert_eq!(g.body["total"], 3);
+    for (param, want) in [("user=alice", 1), ("user=bob", 1), ("user=me", 1), ("user=all", 3)] {
+        let g = send(&a, "GET", &format!("/api/v1/gallery?{param}").as_str(), &[op], None).await;
+        assert_eq!(g.body["total"], want, "{param}");
+    }
+    assert_eq!(
+        send(&a, "GET", "/api/v1/gallery/row-bob", &[op], None).await.status,
+        StatusCode::OK
+    );
+
+    // User management is the operator's (D-MU7): a named account gets a 403, not a list.
+    let r = send(&a, "GET", "/api/v1/users", &[alice], None).await;
+    assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, "forbidden"));
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/users/enable",
+        &[alice, CSRF],
+        Some(json!({ "on": true })),
+    )
+    .await;
+    assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, "forbidden"));
+
+    // Deleting bob takes his row and his session; alice and the operator are untouched.
+    let r = send(&tl, "DELETE", &format!("/api/v1/users/{bob_id}").as_str(), &[t, CSRF], None).await;
+    assert_eq!(r.body, json!({ "deleted": "bob", "rows_removed": 1 }));
+    assert_eq!(
+        send(&a, "GET", "/api/v1/auth/session", &[bob], None).await.body["signed_in"],
+        false
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/gallery", &[op], None).await.body["total"],
+        2
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/gallery", &[alice], None).await.body["total"],
+        1
+    );
+
+    // The gate off: named logins are refused, named sessions end, the operator keeps its own.
+    assert_eq!(
+        send(&tl, "POST", "/api/v1/users/enable", &[t, CSRF], Some(json!({ "on": false }))).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/auth/session", &[alice], None).await.body["signed_in"],
+        false
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/auth/session", &[op], None).await.body["signed_in"],
+        true
+    );
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/auth/login",
+        &[CSRF],
+        Some(json!({ "password": "alice's pass 1", "username": "alice" })),
+    )
+    .await;
+    assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, "forbidden"));
 }

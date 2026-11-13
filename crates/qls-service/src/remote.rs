@@ -21,19 +21,51 @@ use axum::{
 };
 use qls_core::{
     error::{AppError, ErrorCode},
-    remote::{self, Limiter, SESSION_COOKIE, SESSION_TTL, Sessions},
+    remote::{self, Limiter, SessionOwner, SESSION_COOKIE, SESSION_TTL, Sessions},
+    store::GenerationRecord,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::AppState;
 
-/// Who is calling: the token (desktop app, MCP, scripts on this computer) or a browser
-/// signed in with the password.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Who is calling: the token (desktop app, MCP, scripts on this computer) or a signed-in
+/// browser. A browser is the operator (the shared password, no name) or a named account (the
+/// `users` table): same doors, different gallery.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
     Local,
-    Browser,
+    Operator,
+    User(String),
+}
+
+impl Caller {
+    /// The `users` table's name, for a named account.
+    pub fn user(&self) -> Option<&str> {
+        match self {
+            Caller::User(u) => Some(u),
+            _ => None,
+        }
+    }
+
+    /// A signed-in browser (either kind) — the old `Browser`.
+    pub fn is_browser(&self) -> bool {
+        matches!(self, Caller::Operator | Caller::User(_))
+    }
+
+    /// A named account meets only its own rows; anything else is a 404, as if not there
+    /// (no existence leak, D-MU5). The operator and the token meet everything.
+    pub fn ensure_sees(&self, rec: &GenerationRecord) -> Result<(), AppError> {
+        if let Some(u) = self.user()
+            && rec.user.as_deref() != Some(u)
+        {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "That image is no longer in the gallery.",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Header a browser adds to every request that changes something. Another site cannot send
@@ -124,6 +156,13 @@ impl RemoteState {
             .ok();
         self.end_sessions();
         Ok(())
+    }
+
+    /// Ends the sessions of one named user (their password changed or the account went);
+    /// everyone else stays signed in.
+    pub fn end_user_sessions(&self, name: &str) {
+        self.sessions.remove_user(name);
+        self.epoch.send_modify(|e| *e += 1);
     }
 
     pub fn clear_password(&self) -> Result<(), AppError> {
@@ -219,10 +258,12 @@ pub fn status_json(state: &AppState) -> Value {
     let r = &state.remote;
     let listening = r.listener.lock().unwrap().as_ref().map(|l| l.port);
     let url = listening.and_then(|p| lan_address().map(|ip| format!("http://{ip}:{p}")));
+    let users = state.engine.store.list_users().ok().map(|u| u.len()).unwrap_or(0);
     json!({
         "enabled": cfg.remote_access || r.forced, "forced": r.forced, "port": cfg.remote_port,
         "password_set": r.password_set(), "listening": listening.is_some(), "url": url,
         "error": r.error.lock().unwrap().clone(), "min_password_chars": remote::MIN_PASSWORD_CHARS,
+        "multi_user": cfg.multi_user, "users": users,
     })
 }
 
@@ -238,9 +279,9 @@ fn cookie_value(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-/// A signed-in browser (valid session cookie).
-pub fn browser_session(state: &AppState, headers: &HeaderMap) -> bool {
-    cookie_value(headers).is_some_and(|id| state.remote.sessions.valid(&id, SystemTime::now()))
+/// A signed-in browser: who it is (the operator or a named account; `None` = not signed in).
+pub fn session_owner(state: &AppState, headers: &HeaderMap) -> Option<SessionOwner> {
+    cookie_value(headers).and_then(|id| state.remote.sessions.owner_of(&id, SystemTime::now()))
 }
 
 /// The direct TCP peer (`ConnectInfo`, or the mock in tests).
@@ -313,23 +354,39 @@ fn err(code: ErrorCode, msg: &str) -> Response {
         .into_response()
 }
 
-/// `GET /api/v1/auth/session`: whether this browser is signed in and a password exists.
+/// `GET /api/v1/auth/session`: whether this browser is signed in, who it is (a named
+/// account's name, if any), a password exists, and whether named accounts are on (the login
+/// form shows its name field only when they are).
 pub async fn session(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
+    let owner = session_owner(&s, &headers);
     Json(
-        json!({ "signed_in": browser_session(&s, &headers), "password_set": s.remote.password_set() }),
+        json!({
+            "signed_in": owner.is_some(),
+            "user": owner.as_ref().and_then(|o| match o {
+                SessionOwner::Named(n) => Some(n.clone()),
+                SessionOwner::Operator => None,
+            }),
+            "password_set": s.remote.password_set(),
+            "multi_user": s.engine.config().multi_user,
+        }),
     )
 }
 
 #[derive(Deserialize)]
 pub struct LoginBody {
     password: String,
+    /// The account's name. Present (and multi-user on): a named account signs in with the
+    /// password it was created with. Absent: the shared password (the operator), as before.
+    #[serde(default)]
+    username: Option<String>,
 }
 
-/// `POST /api/v1/auth/login`: the password for a session cookie. 5 wrong passwords in a row
-/// from one address lock it (1 min, doubling up to 15); a locked address gets 429 whatever
-/// it sends, so the lock tells nothing about the password. Behind a reverse proxy on the
-/// private network the address is what the proxy reports (`X-Forwarded-For`), and the
-/// cookie carries `Secure` when the proxy says the connection was TLS.
+/// `POST /api/v1/auth/login`: a password for a session cookie. With a name, the named
+/// account's own password (multi-user on); without, the shared one. 5 wrong passwords in a
+    /// row from one address lock it (1 min, doubling up to 15); a locked address gets 429
+    /// whatever it sends, so the lock tells nothing about the password. Behind a reverse proxy
+    /// on the private network the address is what the proxy reports (`X-Forwarded-For`), and
+    /// the cookie carries `Secure` when the proxy says the connection was TLS.
 pub async fn login(State(s): State<Arc<AppState>>, req: Request) -> Response {
     if !has_csrf_header(req.headers()) {
         return err(
@@ -343,36 +400,86 @@ pub async fn login(State(s): State<Arc<AppState>>, req: Request) -> Response {
         Ok(b) => b,
         Err(_) => return err(ErrorCode::InvalidInput, "The request was too large."),
     };
-    let Ok(body) = serde_json::from_slice::<LoginBody>(&bytes) else {
+    let Ok(mut body) = serde_json::from_slice::<LoginBody>(&bytes) else {
         return err(
             ErrorCode::InvalidInput,
-            "Send the password as JSON: {\"password\": \"...\"}.",
+            "Send the password as JSON: {\"password\": \"...\"} (named accounts: {\"password\": \"...\", \"username\": \"...\"}).",
         );
     };
-    let Some(hash) = s.remote.hash() else {
+    let password = std::mem::take(&mut body.password);
+    let named = body
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_owned);
+    // With multi-user off a name is refused outright (D-MU3): the stock login is password-only.
+    if named.is_some() && !s.engine.config().multi_user {
         return err(
             ErrorCode::Forbidden,
-            "No password is set. Set one in Kokon on the computer it runs on.",
+            "Named accounts are not enabled on this service.",
         );
-    };
+    }
+    // A locked address gets 429 whatever it sends, before any verification (the lock tells
+    // nothing about the credentials).
     if let Err(wait) = s.remote.limiter.check(ip, Instant::now()) {
         return locked(wait);
     }
-    let ok = tokio::task::spawn_blocking(move || remote::verify(&hash, &body.password))
-        .await
-        .unwrap_or(false);
+    let (ok, unknown_name) = match &named {
+        // A named account: its name, then its own password (the users table). The per-IP
+        // limiter caps name enumeration at five strikes per lockout (D-MU4).
+        Some(name) => {
+            let s1 = s.clone();
+            let name1 = name.clone();
+            let unknown = tokio::task::spawn_blocking(move || {
+                !s1.engine.store.user_by_name(&name1).ok().flatten().is_some()
+            })
+            .await
+            .unwrap_or(true);
+            let s2 = s.clone();
+            let name2 = name.clone();
+            let ok = !unknown
+                && tokio::task::spawn_blocking(move || s2.engine.store.verify_user_password(&name2, &password))
+                    .await
+                    .unwrap_or(false);
+            (ok, unknown)
+        }
+        // The shared password (the operator), as before.
+        None => {
+            let Some(hash) = s.remote.hash() else {
+                return err(
+                    ErrorCode::Forbidden,
+                    "No password is set. Set one in Kokon on the computer it runs on.",
+                );
+            };
+            let ok = tokio::task::spawn_blocking(move || remote::verify(&hash, &password))
+                .await
+                .unwrap_or(false);
+            (ok, false)
+        }
+    };
     if !ok {
         let wait = s.remote.limiter.fail(ip, Instant::now());
-        tracing::warn!("wrong password from {ip}");
+        tracing::warn!(
+            "login refused from {ip} ({})",
+            if unknown_name { "unknown name" } else { "wrong password" }
+        );
         if wait > 0 {
             tracing::warn!("{ip} waits {wait} s after too many wrong passwords");
             return locked(wait);
         }
-        return err(ErrorCode::LoginRequired, "Wrong password.");
+        return err(
+            ErrorCode::LoginRequired,
+            if unknown_name { "Unknown name." } else { "Wrong password." },
+        );
     }
     s.remote.limiter.succeed(ip);
-    let id = s.remote.sessions.create(SystemTime::now());
-    tracing::info!("browser signed in from {ip}");
+    let who = named.as_deref().unwrap_or("the operator").to_string();
+    let id = match named {
+        Some(n) => s.remote.sessions.create_for(Some(n.as_str()), SystemTime::now()),
+        None => s.remote.sessions.create(SystemTime::now()),
+    };
+    tracing::info!("browser signed in from {ip} as {who}");
     let secure = if over_tls { "; Secure" } else { "" };
     let cookie = format!(
         "{SESSION_COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict{secure}; Max-Age={}",

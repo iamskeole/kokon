@@ -30,7 +30,7 @@ use qls_core::{
     paths,
     planner::{GenerationRequest, InpaintAction, Mode, OutpaintSpec, Quality, UpscaleMethod, UpscaleSpec},
     projects::Project,
-    store::{GenerationRecord, ListQuery},
+    store::{GenerationRecord, ListQuery, OwnerFilter},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -139,6 +139,10 @@ pub fn router(state: Arc<AppState>, lan: bool) -> Router {
         .route("/shutdown", post(shutdown))
         .route("/remote", get(remote_status).post(remote_set))
         .route("/remote/password", post(remote_password).delete(remote_password_clear))
+        .route("/users", get(users_list).post(users_create))
+        .route("/users/enable", post(users_enable))
+        .route("/users/{id}", delete(users_delete))
+        .route("/users/{id}/password", post(users_password))
         .layer(middleware::from_fn_with_state(ctx.clone(), auth))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024));
     let uploads = Router::new()
@@ -224,7 +228,7 @@ async fn auth(State(c): State<AuthCtx>, mut req: Request, next: Next) -> Respons
         // the model loaded for as long as an MCP client stayed connected.
         return next.run(req).await;
     }
-    if web::browser_session(s, req.headers()) {
+    if let Some(owner) = web::session_owner(s, req.headers()) {
         let path = req.uri().path();
         let path = path.strip_prefix("/api/v1").unwrap_or(path);
         if !qls_core::remote::browser_allowed(req.method().as_str(), path) {
@@ -233,7 +237,11 @@ async fn auth(State(c): State<AuthCtx>, mut req: Request, next: Next) -> Respons
         if !matches!(*req.method(), Method::GET | Method::HEAD) && !web::has_csrf_header(req.headers()) {
             return ApiError(AppError::new(ErrorCode::Forbidden, "Requests from other sites are not allowed.")).into_response();
         }
-        req.extensions_mut().insert(Caller::Browser);
+        let caller = match owner {
+            qls_core::remote::SessionOwner::Operator => Caller::Operator,
+            qls_core::remote::SessionOwner::Named(n) => Caller::User(n),
+        };
+        req.extensions_mut().insert(caller);
         return next.run(req).await;
     }
     ApiError(AppError::new(ErrorCode::LoginRequired, "Sign in with the password (scripts on this computer: the API token in service.json).")).into_response()
@@ -636,7 +644,7 @@ async fn enhancer_defaults() -> Json<Value> {
 }
 
 async fn put_config(State(s): St, Extension(caller): Extension<Caller>, Json(mut cfg): Json<AppConfig>) -> ApiResult<Json<Value>> {
-    if caller == Caller::Browser {
+    if caller.is_browser() {
         cfg.keep_computer_settings(&s.engine.config());
     }
     let restart = s.engine.set_config(cfg)?;
@@ -817,25 +825,47 @@ fn workspace_path(w: Option<&str>) -> Result<Option<PathBuf>, AppError> {
 }
 
 async fn create_job(State(s): St, Extension(caller): Extension<Caller>, Json(mut b): Json<JobBody>) -> ApiResult<(StatusCode, Json<JobView>)> {
-    if caller == Caller::Browser {
+    if caller.is_browser() {
         qls_core::remote::stored_sources_only(&b.request, b.workspace.as_deref())?;
         // Browser jobs outlive the desktop window (`client_left` cancels "ui" jobs).
         b.request.client = Some("web".into());
+        // Multi-user (D-MU6): the job belongs to the signed-in account; the engine scopes it
+        // (its folder, its gen: references, who hears it).
+        b.request.user = caller.user().map(str::to_owned);
     }
     let ws = workspace_path(b.workspace.as_deref())?;
     let j = s.engine.submit(b.request, ws)?;
     Ok((StatusCode::ACCEPTED, Json(j)))
 }
 
-async fn list_jobs(State(s): St) -> Json<Vec<JobView>> {
-    Json(s.engine.jobs())
+async fn list_jobs(State(s): St, Extension(caller): Extension<Caller>) -> Json<Vec<JobView>> {
+    // Multi-user (D-MU6): a named account sees its own jobs; the operator and the token see all.
+    let jobs = s.engine.jobs();
+    Json(match caller.user() {
+        Some(u) => jobs.into_iter().filter(|j| j.user.as_deref() == Some(u)).collect(),
+        None => jobs,
+    })
 }
 
-async fn get_job(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<JobView>> {
-    Ok(Json(s.engine.job(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?))
+/// Multi-user (D-MU6): the caller may only touch jobs that are theirs; another account's
+/// job is unknown, like another account's image (no existence leak).
+fn own_job(caller: &Caller, j: &JobView) -> Result<JobView, AppError> {
+    if let Some(u) = caller.user()
+        && j.user.as_deref() != Some(u)
+    {
+        return Err(AppError::new(ErrorCode::NotFound, "Unknown job."));
+    }
+    Ok(j.clone())
 }
 
-async fn cancel_job(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<JobView>> {
+async fn get_job(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<JobView>> {
+    let j = s.engine.job(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?;
+    Ok(Json(own_job(&caller, &j)?))
+}
+
+async fn cancel_job(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<JobView>> {
+    let j = s.engine.job(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?;
+    own_job(&caller, &j)?;
     Ok(Json(s.engine.cancel(&id)?))
 }
 
@@ -857,7 +887,9 @@ async fn wait_for(s: &AppState, id: &str, timeout: Duration) -> Result<JobView, 
 }
 
 /// Long-poll until the job finishes or `timeout` seconds pass (default 60, max 600).
-async fn wait_job(State(s): St, AxPath(id): AxPath<String>, Query(q): Query<WaitQ>) -> ApiResult<Json<JobView>> {
+async fn wait_job(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>, Query(q): Query<WaitQ>) -> ApiResult<Json<JobView>> {
+    let j = s.engine.job(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown job."))?;
+    own_job(&caller, &j)?;
     Ok(Json(wait_for(&s, &id, Duration::from_secs(q.timeout.unwrap_or(60).min(600))).await?))
 }
 
@@ -959,9 +991,12 @@ struct PlanBody {
 }
 
 /// Dry run: resolved mode, working/output size and notes for the current inputs.
-async fn plan(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<PlanBody>) -> ApiResult<Json<Value>> {
-    if caller == Caller::Browser {
+async fn plan(State(s): St, Extension(caller): Extension<Caller>, Json(mut b): Json<PlanBody>) -> ApiResult<Json<Value>> {
+    if caller.is_browser() {
         qls_core::remote::stored_sources_only(&b.request, b.workspace.as_deref())?;
+        // Multi-user (D-MU8): a named account previews with its own name, so the same
+        // ownership check as at submit applies.
+        b.request.user = caller.user().map(str::to_owned);
     }
     let engine = s.engine.clone();
     let ws = workspace_path(b.workspace.as_deref())?;
@@ -1006,7 +1041,20 @@ fn source_size(engine: &qls_core::engine::Engine, src: &str, ws: Option<&Path>) 
 
 async fn events(State(s): St, Extension(caller): Extension<Caller>) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = s.engine.events.subscribe();
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| r.ok()).map(|ev| Ok(SseEvent::default().json_data(ev).unwrap_or_default()));
+    let user = caller.user().map(str::to_owned);
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(|r| r.ok())
+        // Multi-user (D-MU6): a named account hears only its own jobs (the others exist,
+        // just not for it — like its gallery rows); gallery events pass through (the UI
+        // refetches its own scoped list).
+        .filter(move |ev| match &user {
+            Some(u) => matches!(
+                ev,
+                qls_core::engine::Event::Job { job } if job.user.as_deref() == Some(u.as_str())
+            ),
+            None => true,
+        })
+        .map(|ev| Ok(SseEvent::default().json_data(ev).unwrap_or_default()));
     // Streams end when the service shuts down (an open browser tab would otherwise hold the
     // graceful shutdown, and with it an app update), and a browser's with its session (new
     // password, access turned off).
@@ -1014,7 +1062,7 @@ async fn events(State(s): St, Extension(caller): Extension<Caller>) -> Sse<impl 
     let st = s.clone();
     let ended = async move {
         let session_ended = async {
-            if caller == Caller::Browser {
+            if caller.is_browser() {
                 let _ = epoch.changed().await;
             } else {
                 std::future::pending::<()>().await;
@@ -1185,9 +1233,10 @@ fn default_intensity() -> f32 {
 }
 
 /// Saves the image with the LUT applied as a new version (the source is kept).
-async fn luts_apply(State(s): St, AxPath(name): AxPath<String>, Json(b): Json<LutApplyBody>) -> ApiResult<Json<Value>> {
+async fn luts_apply(State(s): St, Extension(caller): Extension<Caller>, AxPath(name): AxPath<String>, Json(b): Json<LutApplyBody>) -> ApiResult<Json<Value>> {
+    let user = caller.user().map(str::to_owned);
     let engine = s.engine.clone();
-    let rec = tokio::task::spawn_blocking(move || engine.apply_lut(&b.source, &name, b.intensity, b.private)).await.map_err(AppError::internal)??;
+    let rec = tokio::task::spawn_blocking(move || engine.apply_lut(&b.source, &name, b.intensity, b.private, user.as_deref())).await.map_err(AppError::internal)??;
     Ok(Json(serde_json::to_value(rec).unwrap()))
 }
 
@@ -1224,13 +1273,24 @@ async fn input_preview(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Re
 // Gallery
 // ---------------------------------------------------------------------------------------
 
-async fn gallery_list(State(s): St, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
-    let (items, total) = s.engine.store.list_generations(&q)?;
+/// The list, scoped to the caller (D-MU5): a named account only its own rows; the operator
+/// and the token everything, optionally narrowed by `?user=` (`all` = everyone, `me` = the
+/// ownerless rows, else a name).
+async fn gallery_list(State(s): St, Extension(caller): Extension<Caller>, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
+    let owner = match (&caller, q.user.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
+        (Caller::User(u), _) => OwnerFilter::User(u.clone()),
+        (_, Some("all")) | (_, None) => OwnerFilter::All,
+        (_, Some("me")) => OwnerFilter::Own,
+        (_, Some(name)) => OwnerFilter::User(name.to_string()),
+    };
+    let (items, total) = s.engine.store.list_generations(&q, &owner)?;
     Ok(Json(json!({ "items": items, "total": total })))
 }
 
-async fn gallery_get(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<GenerationRecord>> {
-    Ok(Json(s.engine.gen_store(&id).get_generation(&id)?))
+async fn gallery_get(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<GenerationRecord>> {
+    let rec = s.engine.gen_store(&id).get_generation(&id)?;
+    caller.ensure_sees(&rec)?;
+    Ok(Json(rec))
 }
 
 #[derive(Deserialize)]
@@ -1241,8 +1301,9 @@ struct PatchBody {
     hidden: Option<bool>,
 }
 
-async fn gallery_patch(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<PatchBody>) -> ApiResult<Json<GenerationRecord>> {
+async fn gallery_patch(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>, Json(b): Json<PatchBody>) -> ApiResult<Json<GenerationRecord>> {
     let store = s.engine.gen_store(&id);
+    caller.ensure_sees(&store.get_generation(&id)?)?;
     if let Some(f) = b.favorite {
         store.set_favorite(&id, f)?;
         let _ = s.engine.events.send(qls_core::engine::Event::Gallery { id: id.clone(), change: "updated" });
@@ -1266,44 +1327,52 @@ struct LayersBody {
 }
 
 /// The layers lab's image, saved to the gallery (its steps are hidden there).
-async fn gallery_save_layers(State(s): St, Json(b): Json<LayersBody>) -> ApiResult<Json<GenerationRecord>> {
+async fn gallery_save_layers(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<LayersBody>) -> ApiResult<Json<GenerationRecord>> {
+    let user = caller.user().map(str::to_owned);
     let engine = s.engine.clone();
-    let rec = tokio::task::spawn_blocking(move || engine.save_layers(&b.image, b.from.as_deref(), b.private)).await.map_err(AppError::internal)??;
+    let rec = tokio::task::spawn_blocking(move || engine.save_layers(&b.image, b.from.as_deref(), b.private, user.as_deref())).await.map_err(AppError::internal)??;
     Ok(Json(rec))
 }
 
-async fn gallery_delete(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
+async fn gallery_delete(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
+    let store = s.engine.gen_store(&id);
+    caller.ensure_sees(&store.get_generation(&id)?)?;
     let out = s.engine.output_root(&id);
-    s.engine.gen_store(&id).delete_generation(&id, &out)?;
+    store.delete_generation(&id, &out)?;
     let _ = s.engine.events.send(qls_core::engine::Event::Gallery { id: id.clone(), change: "deleted" });
     Ok(Json(json!({ "deleted": id })))
 }
 
-async fn gallery_image(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Response> {
+async fn gallery_image(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Response> {
     let r = s.engine.gen_store(&id).get_generation(&id)?;
+    caller.ensure_sees(&r)?;
     serve_file(Path::new(&r.file_path), None).await
 }
 
 /// The result before the upscaler enlarged it, when it was kept.
-async fn gallery_original(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Response> {
+async fn gallery_original(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Response> {
     let r = s.engine.gen_store(&id).get_generation(&id)?;
+    caller.ensure_sees(&r)?;
     let p = r.pipeline.and_then(|p| p.original_path).ok_or_else(|| AppError::new(ErrorCode::NotFound, "This image has no pre-upscale original."))?;
     serve_file(Path::new(&p), Some("image/png")).await
 }
 
-async fn gallery_thumb(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Response> {
+async fn gallery_thumb(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Response> {
     let store = s.engine.gen_store(&id);
     let p = store.thumb_path(&id);
     if !p.is_file() {
         let r = store.get_generation(&id)?;
+        caller.ensure_sees(&r)?;
         return serve_file(Path::new(&r.file_path), None).await;
     }
+    caller.ensure_sees(&store.get_generation(&id)?)?;
     serve_file(&p, Some("image/jpeg")).await
 }
 
-async fn gallery_preview(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Response> {
+async fn gallery_preview(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Response> {
     let store = s.engine.gen_store(&id);
     let r = store.get_generation(&id)?;
+    caller.ensure_sees(&r)?;
     serve_preview(PathBuf::from(&r.file_path), store.preview_path(&id)).await
 }
 
@@ -1319,8 +1388,9 @@ struct ExportBody {
 
 /// "Save as" from the desktop app (path chosen in the native dialog, which already
 /// confirmed any overwrite). Format follows the extension.
-async fn gallery_export(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<ExportBody>) -> ApiResult<Json<Value>> {
+async fn gallery_export(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>, Json(b): Json<ExportBody>) -> ApiResult<Json<Value>> {
     let rec = s.engine.gen_store(&id).get_generation(&id)?;
+    caller.ensure_sees(&rec)?;
     let saved = tokio::task::spawn_blocking(move || -> Result<PathBuf, AppError> {
         let mut target = paths::normalize(&b.path, None)?;
         let ext = target.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
@@ -1454,7 +1524,7 @@ async fn heartbeat(State(s): St, Extension(caller): Extension<Caller>, Json(b): 
     // A browser holds its lease by heartbeat only, and never as the desktop window.
     let (kind, pid) = match caller {
         Caller::Local => (b.kind.unwrap_or_else(|| "client".into()), b.pid),
-        Caller::Browser => ("web".to_string(), None),
+        Caller::Operator | Caller::User(_) => ("web".to_string(), None),
     };
     s.leases.lock().unwrap().insert(b.client_id.chars().take(80).collect(), Lease { kind, last_seen: Instant::now(), pid });
     *s.exit_deadline.lock().unwrap() = None;
@@ -1522,6 +1592,104 @@ async fn remote_password_clear(State(s): St) -> ApiResult<Json<Value>> {
     s.engine.set_remote(false, port)?;
     web::sync_listener(&s);
     Ok(Json(web::status_json(&s)))
+}
+
+// ---------------------------------------------------------------------------------------
+// Users (multi-user, D-MU7): the operator or the token manage the named accounts
+// ---------------------------------------------------------------------------------------
+
+fn require_operator(caller: &Caller) -> ApiResult<()> {
+    if matches!(caller, Caller::User(_)) {
+        return Err(
+            AppError::new(
+                ErrorCode::Forbidden,
+                "Named accounts cannot manage the people list.",
+            )
+            .into(),
+        );
+    }
+    Ok(())
+}
+
+/// `GET /api/v1/users`: the named accounts (names only; no hashes, ever) and the gate.
+async fn users_list(State(s): St, Extension(caller): Extension<Caller>) -> ApiResult<Json<Value>> {
+    require_operator(&caller)?;
+    let st = s.engine.store.clone();
+    let users = tokio::task::spawn_blocking(move || st.list_users()).await.map_err(AppError::internal)??;
+    Ok(Json(json!({ "users": users, "multi_user": s.engine.config().multi_user })))
+}
+
+#[derive(Deserialize)]
+struct UserBody {
+    name: String,
+    password: String,
+}
+
+/// `POST /api/v1/users {name, password}`: a new named account (D-MU7). The name is what the
+/// person signs in with and owns their gallery folder; it is unique, case-insensitively.
+async fn users_create(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<UserBody>) -> ApiResult<Json<Value>> {
+    require_operator(&caller)?;
+    let st = s.engine.store.clone();
+    let u = tokio::task::spawn_blocking(move || st.create_user(&b.name, &b.password))
+        .await
+        .map_err(AppError::internal)??;
+    tracing::info!("user account created: {}", u.name);
+    Ok(Json(serde_json::to_value(&u).unwrap()))
+}
+
+#[derive(Deserialize)]
+struct EnableBody {
+    on: bool,
+}
+
+/// `POST /api/v1/users/enable {on}`: the gate (D-MU3). On, browsers may sign in by name;
+/// off, named logins are refused and the named sessions end (the operator keeps its own).
+async fn users_enable(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<EnableBody>) -> ApiResult<Json<Value>> {
+    require_operator(&caller)?;
+    s.engine.set_multi_user(b.on)?;
+    if !b.on {
+        s.remote.sessions.clear_named();
+        s.remote.epoch.send_modify(|e| *e += 1);
+    }
+    tracing::info!("multi-user turned {}", if b.on { "on" } else { "off" });
+    Ok(Json(json!({ "enabled": b.on })))
+}
+
+/// `DELETE /api/v1/users/{id}` (D-MU7): the account and everything it owns — its gallery
+/// rows and their files, its sessions. There is no rename: the sessions store the name.
+async fn users_delete(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
+    require_operator(&caller)?;
+    let st = s.engine.store.clone();
+    let out = s.engine.config().output_dir.clone();
+    let (u, n) = tokio::task::spawn_blocking(move || {
+        let u = st.delete_user(&id)?;
+        let n = st.delete_user_rows(&u.name, &out)?;
+        Ok::<_, AppError>((u, n))
+    })
+    .await
+    .map_err(AppError::internal)??;
+    s.remote.end_user_sessions(&u.name);
+    tracing::info!("user account deleted: {} ({} gallery rows)", u.name, n);
+    Ok(Json(json!({ "deleted": u.name, "rows_removed": n })))
+}
+
+/// `POST /api/v1/users/{id}/password {password}` (D-MU7): reset; the user's sessions end.
+async fn users_password(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>, Json(b): Json<PasswordBody>) -> ApiResult<Json<Value>> {
+    require_operator(&caller)?;
+    let st = s.engine.store.clone();
+    let name = tokio::task::spawn_blocking(move || {
+        st.set_user_password(&id, &b.password)?;
+        Ok::<_, AppError>(
+            st.user_by_id(&id)?
+                .ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown user."))?
+                .name,
+        )
+    })
+    .await
+    .map_err(AppError::internal)??;
+    s.remote.end_user_sessions(&name);
+    tracing::info!("user password reset: {name}");
+    Ok(Json(json!({ "reset": name })))
 }
 
 async fn shutdown(State(s): St) -> Json<Value> {
