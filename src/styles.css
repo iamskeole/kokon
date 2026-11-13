@@ -501,7 +501,7 @@ svg { display: block; flex: none; }
 /* People (the multi-user settings): the add-account form carries two inputs, so its text and
    its fields stack at every width; the per-user rows stack on a phone, where name, date and two
    buttons no longer fit in one line (the fixed-width inputs used to squeeze the text to a
-   narrow column and clip the row).
+   narrow column and clip the row). */
 .people-form { align-items: flex-start; flex-wrap: wrap; }
 .people-form > .setting-card-text { flex-basis: 100%; }
 .people-row-fields { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
