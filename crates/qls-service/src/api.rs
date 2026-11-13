@@ -1044,15 +1044,20 @@ async fn events(State(s): St, Extension(caller): Extension<Caller>) -> Sse<impl 
     let user = caller.user().map(str::to_owned);
     let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
         .filter_map(|r| r.ok())
-        // Multi-user (D-MU6): a named account hears only its own jobs (the others exist,
-        // just not for it — like its gallery rows); gallery events pass through (the UI
-        // refetches its own scoped list).
-        .filter(move |ev| match &user {
-            Some(u) => matches!(
-                ev,
-                qls_core::engine::Event::Job { job } if job.user.as_deref() == Some(u.as_str())
-            ),
-            None => true,
+        // Multi-user (D-MU6/D-MU13): a named account hears only its own jobs and its own
+        // project news (so a second device of the same account live-updates); everything
+        // else is the shared list's, which the machine and the operator hear.
+        .filter(move |ev| {
+            let Some(u) = &user else {
+                return true;
+            };
+            match ev {
+                qls_core::engine::Event::Job { job } => job.user.as_deref() == Some(u.as_str()),
+                qls_core::engine::Event::Projects { user: pu, .. } => {
+                    pu.as_deref() == Some(u.as_str())
+                }
+                _ => false,
+            }
         })
         .map(|ev| Ok(SseEvent::default().json_data(ev).unwrap_or_default()));
     // Streams end when the service shuts down (an open browser tab would otherwise hold the
@@ -1424,20 +1429,23 @@ async fn gallery_export(State(s): St, Extension(caller): Extension<Caller>, AxPa
     Ok(Json(json!({ "path": saved })))
 }
 
-/// Adds the bundled example projects (first launch, or Settings) and lists them.
-async fn projects_list(State(s): St) -> Json<Value> {
-    Json(json!({ "projects": s.engine.projects.list() }))
+/// The projects this caller sees (D-MU13: a named account only its own; the machine and the
+/// operator the whole shared list).
+async fn projects_list(State(s): St, Extension(caller): Extension<Caller>) -> Json<Value> {
+    Json(json!({ "projects": s.engine.projects.list_for(caller.user()) }))
 }
 
-async fn projects_get(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
-    let p = s.engine.projects.get(&id).ok_or_else(|| AppError::new(ErrorCode::NotFound, "No such project."))?;
+async fn projects_get(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
+    let p = s.engine.projects.get_for(&id, caller.user()).ok_or_else(|| AppError::new(ErrorCode::NotFound, "No such project."))?;
     Ok(Json(serde_json::to_value(p).unwrap()))
 }
 
-/// Every version's record in one answer (a browser opening the project).
-async fn projects_records(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
+/// Every version's record in one answer (a browser opening the project); a named caller gets
+/// only the rows it owns (D-MU13).
+async fn projects_records(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let r = tokio::task::spawn_blocking(move || engine.project_records(&id)).await.map_err(AppError::internal)?;
+    let user = caller.user().map(str::to_owned);
+    let r = tokio::task::spawn_blocking(move || engine.project_records(&id, user.as_deref())).await.map_err(AppError::internal)?;
     let r = r.ok_or_else(|| AppError::new(ErrorCode::NotFound, "No such project."))?;
     Ok(Json(serde_json::to_value(r).unwrap()))
 }
@@ -1450,18 +1458,20 @@ struct ProjectPut {
     known: HashSet<String>,
 }
 
-/// Saves a device's copy of a project; answers with the merged one.
-async fn projects_put(State(s): St, AxPath(id): AxPath<String>, Json(b): Json<ProjectPut>) -> ApiResult<Json<Value>> {
+/// Saves a device's copy of a project as its caller (D-MU13); answers with the merged one.
+async fn projects_put(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>, Json(b): Json<ProjectPut>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let (p, change) = tokio::task::spawn_blocking(move || engine.projects.put(&id, b.project, &b.known)).await.map_err(AppError::internal)??;
+    let user = caller.user().map(str::to_owned);
+    let (p, change) = tokio::task::spawn_blocking(move || engine.projects.put(&id, b.project, &b.known, user.as_deref())).await.map_err(AppError::internal)??;
     s.engine.emit_projects(vec![change]);
     Ok(Json(serde_json::to_value(p).unwrap()))
 }
 
-async fn projects_delete(State(s): St, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
+async fn projects_delete(State(s): St, Extension(caller): Extension<Caller>, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
     let key = id.clone();
-    let change = tokio::task::spawn_blocking(move || engine.projects.delete(&key, qls_core::engine::now_ms())).await.map_err(AppError::internal)??;
+    let user = caller.user().map(str::to_owned);
+    let change = tokio::task::spawn_blocking(move || engine.projects.delete(&key, qls_core::engine::now_ms(), user.as_deref())).await.map_err(AppError::internal)??;
     s.engine.emit_projects(vec![change]);
     Ok(Json(json!({ "deleted": id })))
 }
@@ -1471,18 +1481,23 @@ struct ProjectImport {
     projects: Vec<Project>,
 }
 
-/// A device's project list from before 0.11 (its browser storage), merged in once.
-async fn projects_import(State(s): St, Json(b): Json<ProjectImport>) -> ApiResult<Json<Value>> {
+/// A device's project list from before 0.11 (its browser storage), merged in once — as its
+/// caller (D-MU13).
+async fn projects_import(State(s): St, Extension(caller): Extension<Caller>, Json(b): Json<ProjectImport>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let changes = tokio::task::spawn_blocking(move || engine.projects.import(b.projects)).await.map_err(AppError::internal)??;
+    let user = caller.user().map(str::to_owned);
+    let changes = tokio::task::spawn_blocking(move || engine.projects.import(b.projects, user.as_deref())).await.map_err(AppError::internal)??;
     let n = changes.len();
     s.engine.emit_projects(changes);
-    Ok(Json(json!({ "changed": n, "projects": s.engine.projects.list() })))
+    Ok(Json(json!({ "changed": n, "projects": s.engine.projects.list_for(caller.user()) })))
 }
 
-async fn install_examples(State(s): St) -> ApiResult<Json<Value>> {
+/// Adds the bundled example projects (first launch, or Settings); a named account's tour
+/// seeds its own rows (D-MU13).
+async fn install_examples(State(s): St, Extension(caller): Extension<Caller>) -> ApiResult<Json<Value>> {
     let engine = s.engine.clone();
-    let projects = tokio::task::spawn_blocking(move || engine.install_examples()).await.map_err(AppError::internal)??;
+    let user = caller.user().map(str::to_owned);
+    let projects = tokio::task::spawn_blocking(move || engine.install_examples(user.as_deref())).await.map_err(AppError::internal)??;
     Ok(Json(json!({ "projects": projects })))
 }
 
@@ -1668,9 +1683,18 @@ async fn users_delete(State(s): St, Extension(caller): Extension<Caller>, AxPath
     })
     .await
     .map_err(AppError::internal)??;
+    let name = u.name.clone();
+    // The account's projects go with it (D-MU13): they reference its rows, and the shared
+    // list would otherwise grow a ghost owner the operator has to sweep by hand.
+    let engine = s.engine.clone();
+    let changes = tokio::task::spawn_blocking(move || engine.projects.delete_user_projects(&name))
+        .await
+        .map_err(AppError::internal)??;
+    let projects_removed = changes.len();
+    s.engine.emit_projects(changes);
     s.remote.end_user_sessions(&u.name);
-    tracing::info!("user account deleted: {} ({} gallery rows)", u.name, n);
-    Ok(Json(json!({ "deleted": u.name, "rows_removed": n })))
+    tracing::info!("user account deleted: {} ({} gallery rows, {} projects)", u.name, n, projects_removed);
+    Ok(Json(json!({ "deleted": u.name, "rows_removed": n, "projects_removed": projects_removed })))
 }
 
 /// `POST /api/v1/users/{id}/password {password}` (D-MU7): reset; the user's sessions end.

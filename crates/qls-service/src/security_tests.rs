@@ -1024,7 +1024,7 @@ async fn named_accounts_see_only_their_own_rows() {
 
     // Deleting bob takes his row and his session; alice and the operator are untouched.
     let r = send(&tl, "DELETE", &format!("/api/v1/users/{bob_id}").as_str(), &[t, CSRF], None).await;
-    assert_eq!(r.body, json!({ "deleted": "bob", "rows_removed": 1 }));
+    assert_eq!(r.body, json!({ "deleted": "bob", "rows_removed": 1, "projects_removed": 0 }));
     assert_eq!(
         send(&a, "GET", "/api/v1/auth/session", &[bob], None).await.body["signed_in"],
         false
@@ -1060,4 +1060,194 @@ async fn named_accounts_see_only_their_own_rows() {
     )
     .await;
     assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, "forbidden"));
+}
+
+/// A project as a browser sends it (the UI's shape).
+fn proj(id: &str) -> Value {
+    json!({
+        "meta": { "id": id, "title": id, "updatedAt": 1.0, "cover": null, "count": 1 },
+        "items": [ { "key": "k", "kind": "gen", "genId": "g-none" } ],
+        "selected": "k", "rev": 0
+    })
+}
+
+#[tokio::test]
+async fn projects_are_per_user() {
+    let f = fixture(true);
+    let a = app(&f, true, "192.168.1.50");
+    let tl = app(&f, false, "127.0.0.1");
+    let token = format!("Bearer {}", f.state.token);
+    let t = ("authorization", token.as_str());
+
+    // The operator opens the gate and creates two accounts (the row test's setup).
+    assert_eq!(
+        send(&tl, "POST", "/api/v1/users/enable", &[t, CSRF], Some(json!({ "on": true }))).await.status,
+        StatusCode::OK
+    );
+    for (name, pw) in [("alice", "alice's pass 1"), ("bob", "bob's pass 2")] {
+        let r = send(
+            &tl,
+            "POST",
+            "/api/v1/users",
+            &[t, CSRF],
+            Some(json!({ "name": name, "password": pw })),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    }
+    let alice_cookie = named_sign_in(&a, "alice", "alice's pass 1").await;
+    let alice = ("cookie", alice_cookie.as_str());
+    let bob_cookie = named_sign_in(&a, "bob", "bob's pass 2").await;
+    let bob = ("cookie", bob_cookie.as_str());
+    let op_cookie = sign_in(&a).await;
+    let op = ("cookie", op_cookie.as_str());
+
+    // One shared project (the machine's list, as before accounts) and one per account.
+    for (h, id) in [(t, "shared"), (alice, "alice-p"), (bob, "bob-p")] {
+        let r = send(
+            if h.0 == "authorization" { &tl } else { &a },
+            "PUT",
+            &format!("/api/v1/projects/{id}"),
+            &[h, CSRF],
+            Some(json!({ "project": proj(id), "known": [] })),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    }
+
+    // Each account lists exactly its own; the machine and the operator see all three.
+    for (h, want) in [(alice, 1), (bob, 1), (op, 3)] {
+        let g = send(&a, "GET", "/api/v1/projects", &[h], None).await;
+        assert_eq!(g.body["projects"].as_array().unwrap().len(), want, "{h:?}");
+    }
+    let g = send(&a, "GET", "/api/v1/projects", &[alice], None).await;
+    assert_eq!(g.body["projects"][0]["meta"]["id"], "alice-p");
+    let g = send(&tl, "GET", "/api/v1/projects", &[t], None).await;
+    assert_eq!(g.body["projects"].as_array().unwrap().len(), 3);
+
+    // Shared, another's and absent are one and the same absence (no existence leak).
+    for id in ["shared", "bob-p", "ghost"] {
+        let r = send(&a, "GET", &format!("/api/v1/projects/{id}"), &[alice], None).await;
+        assert_eq!((r.status, r.code()), (StatusCode::NOT_FOUND, "not_found"), "{id}");
+    }
+    assert_eq!(
+        send(&a, "GET", "/api/v1/projects/alice-p", &[alice], None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/projects/shared", &[op], None).await.status,
+        StatusCode::OK
+    );
+
+    // A named account writes and deletes nothing that is not its own; the ownership is
+    // never in the request body to claim.
+    for (m, pth) in [
+        ("PUT", "/api/v1/projects/shared"),
+        ("PUT", "/api/v1/projects/bob-p"),
+        ("DELETE", "/api/v1/projects/shared"),
+        ("DELETE", "/api/v1/projects/bob-p"),
+    ] {
+        let body = if m == "PUT" { Some(json!({ "project": proj("shared"), "known": [] })) } else { None };
+        let r = send(&a, m, pth, &[alice, CSRF], body).await;
+        assert_eq!((r.status, r.code()), (StatusCode::NOT_FOUND, "not_found"), "{m} {pth}");
+    }
+    // Its own it edits and deletes; the operator merges into it and the owner is kept.
+    assert_eq!(
+        send(&a, "PUT", "/api/v1/projects/alice-p", &[alice, CSRF], Some(json!({ "project": proj("alice-p"), "known": [] })))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&a, "PUT", "/api/v1/projects/alice-p", &[op, CSRF], Some(json!({ "project": proj("alice-p"), "known": [] })))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let g = send(&a, "GET", "/api/v1/projects", &[alice], None).await;
+    assert_eq!(g.body["projects"][0]["meta"]["id"], "alice-p", "the operator's merge keeps the owner");
+    assert_eq!(
+        send(&a, "DELETE", "/api/v1/projects/bob-p", &[bob, CSRF], None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&a, "GET", "/api/v1/projects/bob-p", &[bob], None).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    // The first-launch import is namespaced: alice merges into her project and creates
+    // her new one, and leaves the shared list and another's untouched.
+    let r = send(
+        &a,
+        "POST",
+        "/api/v1/projects/import",
+        &[alice, CSRF],
+        Some(json!({ "projects": [ proj("shared"), proj("bob-p"), proj("alice-new") ] })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["changed"], 1, "{:?}", r.body);
+    let g = send(&tl, "GET", "/api/v1/projects", &[t], None).await;
+    let ids: Vec<&str> = g.body["projects"].as_array().unwrap().iter()
+        .map(|x| x["meta"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    assert!(ids.contains(&"alice-new"));
+    assert!(ids.contains(&"shared"));
+
+    // Records: a named caller gets only the rows it owns — its items are a
+    // client-controlled list of references; the operator gets all of them.
+    for r in [fake_row("g-alice", Some("alice")), fake_row("g-shared", None)] {
+        f.state.engine.store.insert_generation(&r).unwrap();
+    }
+    let recs = json!({
+        "meta": { "id": "alice-rec", "title": "t", "updatedAt": 1.0, "cover": null, "count": 2 },
+        "items": [
+            { "key": "a", "kind": "gen", "genId": "g-alice" },
+            { "key": "s", "kind": "gen", "genId": "g-shared" }
+        ],
+        "selected": "s", "rev": 0
+    });
+    assert_eq!(
+        send(&a, "PUT", "/api/v1/projects/alice-rec", &[alice, CSRF], Some(json!({ "project": recs, "known": [] })))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let r = send(&a, "GET", "/api/v1/projects/alice-rec/records", &[alice], None).await;
+    assert_eq!(r.body["generations"].as_object().unwrap().len(), 1, "only her own row: {:?}", r.body);
+    assert_eq!(r.body["generations"]["g-alice"]["id"], "g-alice");
+    let r = send(&a, "GET", "/api/v1/projects/alice-rec/records", &[op], None).await;
+    assert_eq!(r.body["generations"].as_object().unwrap().len(), 2, "the operator sees both");
+    let r = send(&a, "GET", "/api/v1/projects/shared/records", &[alice], None).await;
+    assert_eq!((r.status, r.code()), (StatusCode::NOT_FOUND, "not_found"));
+
+    // The account's projects go with the account when the operator deletes it.
+    let alice_id = send(&tl, "GET", "/api/v1/users", &[t], None)
+        .await
+        .body["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["name"] == "alice")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = send(&tl, "DELETE", &format!("/api/v1/users/{alice_id}"), &[t, CSRF], None).await;
+    assert_eq!(r.body["deleted"], "alice");
+    assert_eq!(r.body["projects_removed"], 3, "{:?}", r.body);
+    let g = send(&tl, "GET", "/api/v1/projects", &[t], None).await;
+    let ids: Vec<&str> = g
+        .body["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["meta"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["shared"], "{ids:?}");
+    assert_eq!(
+        send(&a, "GET", "/api/v1/auth/session", &[alice], None).await.body["signed_in"],
+        false
+    );
 }
