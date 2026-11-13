@@ -217,7 +217,28 @@ and on the box.
   owner. Proof: the 50-assertion harness grows a project block (per-user
   create; cross-user 404s on get/put/delete/records; the
   stuffed-reference filter; the import namespacing; the event filter),
-  and the box check does the same against its 9 shared projects.
+  and the box check does the same against its 9 shared projects. Why not
+  the database (owner's question, 2026-11-13): `projects.json` is the
+  product's user-visible persistence format, and the stock path must stay
+  byte-identical — the only change allowed is a key that disappears while
+  empty, which makes the parallel map the minimal shape. The alternatives
+  each break a rule: (a) moving projects into gallery.db breaks the format
+  (a stock user's file loses its content; an upgrade from an upstream
+  install loses projects), (b) a DB ownership table beside the file is two
+  sources of truth for one entity — a sync problem, not a fix, (c) `owner`
+  inside each `Project` would move the wire shape (the contract this fix
+  kept: `Project` unchanged, the UI caller-transparent, no client change)
+  and put an owner field on every project object (null for the majority)
+  — not a security issue, since a named caller never receives another's
+  `Project` JSON, but the shape the stock UI was written against, (d)
+  restructuring the existing `projects` key is a byte change to a stock
+  file. SQLite buys nothing here: one writer (the service process, atomic
+  temp+rename like every Kokon file) and small bounded data (the box: 9,
+  a few KB) — the row-scale data is the gallery, already in the DB. If
+  multi-user projects ever outgrow read-the-whole-file (cross-account
+  search, thousands per user), the evolution is a schema-versioned
+  `projects` table with a file-compat shim (as the gallery went to schema
+  15) — that is the trigger, not today.
 
 ## progress
 
