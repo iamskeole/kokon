@@ -1,8 +1,9 @@
 #!/bin/bash
-# Multi-user (D-MU12): the real service against the mock gateway, with two named accounts
-# signing in through cookie jars (like browsers): both logins, one job each, gallery and
-# file scoping, cross-user 404s, the per-user job list and SSE filter, the operator's
-# filter, and the account lifecycle (delete, gate off). No GPU: the mock is the engine.
+# Multi-user (D-MU12/D-MU13): the real service against the mock gateway, with two named
+# accounts signing in through cookie jars (like browsers): both logins, one job each, gallery
+# and file scoping, per-user projects (create, cross-user 404s, the stuffed-reference filter,
+# the import namespacing, the stream filter), the operator's filter, and the account
+# lifecycle (delete, gate off). No GPU: the mock is the engine.
 # See run_test.sh for the single-user variant.
 set -u
 D=${QLS_MU_TEST_DIR:-/tmp/qls-mu-test}
@@ -134,16 +135,55 @@ check "operator's ?user=bob" 2 "$(curl -s -b "$JAR_O" "$S/gallery?user=bob" | py
 check "operator's ?user=me (no owner rows left)" 0 "$(curl -s -b "$JAR_O" "$S/gallery?user=me" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['items']))")"
 check "named account managing accounts: 403" "403" "$(jc -b "$JAR_A" $S/users)"
 
-echo "=== 7. deleting bob takes his rows, his files and his session ==="
+echo "=== 7. projects are per user (D-MU13) ==="
+# One shared project (the machine's list) and one per account; the items reference the
+# owner's own row, so the records checks have something to filter.
+curl -s -X PUT -H "$H" -H "$CS" -H 'Content-Type: application/json' $S/projects/p-op \
+  -d '{"project":{"meta":{"id":"p-op","title":"op","updatedAt":1,"cover":null,"count":0},"items":[],"selected":null,"rev":0},"known":[]}' > /dev/null
+curl -s -b "$JAR_A" -X PUT -H "$CS" -H 'Content-Type: application/json' $S/projects/p-alice \
+  -d "{\"project\":{\"meta\":{\"id\":\"p-alice\",\"title\":\"a\",\"updatedAt\":1,\"cover\":null,\"count\":1},\"items\":[{\"key\":\"a\",\"kind\":\"gen\",\"genId\":\"$ALICEIMG\"}],\"selected\":\"a\",\"rev\":0},\"known\":[]}" > /dev/null
+curl -s -b "$JAR_B" -X PUT -H "$CS" -H 'Content-Type: application/json' $S/projects/p-bob \
+  -d "{\"project\":{\"meta\":{\"id\":\"p-bob\",\"title\":\"b\",\"updatedAt\":1,\"cover\":null,\"count\":1},\"items\":[{\"key\":\"b\",\"kind\":\"gen\",\"genId\":\"$BOBIMG\"}],\"selected\":\"b\",\"rev\":0},\"known\":[]}" > /dev/null
+check "the token lists all three" 3 "$(curl -s -H "$H" $S/projects | python3 -c "import json,sys;print(len(json.load(sys.stdin)['projects']))")"
+check "alice lists exactly her project" "p-alice" "$(curl -s -b "$JAR_A" $S/projects | python3 -c "import json,sys;print(','.join(p['meta']['id'] for p in json.load(sys.stdin)['projects']))")"
+check "bob lists exactly his project" "p-bob" "$(curl -s -b "$JAR_B" $S/projects | python3 -c "import json,sys;print(','.join(p['meta']['id'] for p in json.load(sys.stdin)['projects']))")"
+check "the operator lists all three" 3 "$(curl -s -b "$JAR_O" $S/projects | python3 -c "import json,sys;print(len(json.load(sys.stdin)['projects']))")"
+check "alice opening the shared project: 404" "404" "$(jc -b "$JAR_A" $S/projects/p-op)"
+check "alice opening bob's project: 404" "404" "$(jc -b "$JAR_A" $S/projects/p-bob)"
+check "alice editing the shared project: 404" "404" "$(jc -b "$JAR_A" -X PUT -H "$CS" -H 'Content-Type: application/json' -d '{"project":{"meta":{"id":"p-op","title":"x","updatedAt":2,"cover":null,"count":0},"items":[],"selected":null,"rev":0},"known":[]}' $S/projects/p-op)"
+check "alice deleting bob's project: 404" "404" "$(jc -b "$JAR_A" -X DELETE -H "$CS" $S/projects/p-bob)"
+check "alice's records: her own row only" 1 "$(curl -s -b "$JAR_A" $S/projects/p-alice/records | python3 -c "import json,sys;print(len(json.load(sys.stdin)['generations']))")"
+# Stuffing: she can reference bob's row in her items, but the record never comes back.
+curl -s -b "$JAR_A" -X PUT -H "$CS" -H 'Content-Type: application/json' $S/projects/p-alice \
+  -d "{\"project\":{\"meta\":{\"id\":\"p-alice\",\"title\":\"a\",\"updatedAt\":3,\"cover\":null,\"count\":2},\"items\":[{\"key\":\"a\",\"kind\":\"gen\",\"genId\":\"$ALICEIMG\"},{\"key\":\"s\",\"kind\":\"gen\",\"genId\":\"$BOBIMG\"}],\"selected\":\"s\",\"rev\":1},\"known\":[\"a\"]}" > /dev/null
+check "the stuffed reference gets no record for her" 1 "$(curl -s -b "$JAR_A" $S/projects/p-alice/records | python3 -c "import json,sys;print(len(json.load(sys.stdin)['generations']))")"
+check "the operator's records: both rows" 2 "$(curl -s -b "$JAR_O" $S/projects/p-alice/records | python3 -c "import json,sys;print(len(json.load(sys.stdin)['generations']))")"
+check "alice reading bob's records: 404" "404" "$(jc -b "$JAR_A" $S/projects/p-bob/records)"
+# The first-launch import is namespaced: hers merges and creates, the rest is left alone.
+R=$(curl -s -b "$JAR_A" -X POST -H "$CS" -H 'Content-Type: application/json' $S/projects/import -d '{"projects":[{"meta":{"id":"p-op","title":"op","updatedAt":1,"cover":null,"count":0},"items":[],"selected":null,"rev":0},{"meta":{"id":"p-bob","title":"b","updatedAt":1,"cover":null,"count":1},"items":[],"selected":null,"rev":0},{"meta":{"id":"p-alice2","title":"a2","updatedAt":1,"cover":null,"count":0},"items":[],"selected":null,"rev":0}]}')
+check "the import created only her new project" 1 "$(echo "$R" | python3 -c "import json,sys;print(json.load(sys.stdin)['changed'])")"
+check "the import left the shared and bob's projects" 4 "$(curl -s -H "$H" $S/projects | python3 -c "import json,sys;print(len(json.load(sys.stdin)['projects']))")"
+# The stream: alice hears her project's news, not bob's.
+(timeout 8 curl -sN -b "$JAR_A" $S/events > "$D/sse-projects.log" 2>/dev/null || true) &
+SSEP2=$!
+sleep 1
+curl -s -b "$JAR_B" -X PUT -H "$CS" -H 'Content-Type: application/json' $S/projects/p-bob -d '{"project":{"meta":{"id":"p-bob","title":"b","updatedAt":9,"cover":null,"count":1},"items":[{"key":"b","kind":"gen","genId":"'"$BOBIMG"'"}],"selected":"b","rev":2},"known":["b"]}' > /dev/null
+curl -s -b "$JAR_A" -X PUT -H "$CS" -H 'Content-Type: application/json' $S/projects/p-alice -d '{"project":{"meta":{"id":"p-alice","title":"a","updatedAt":4,"cover":null,"count":2},"items":[{"key":"a","kind":"gen","genId":"'"$ALICEIMG"'"},{"key":"s","kind":"gen","genId":"'"$BOBIMG"'"}],"selected":"s","rev":3},"known":["a","s"]}' > /dev/null
+wait $SSEP2 2>/dev/null; sleep 0.3
+grep -q '"type":"projects","id":"p-alice"' "$D/sse-projects.log" && { echo "PASS: alice's stream carries her project"; pass=$((pass+1)); } || { echo "FAIL: alice's stream lacks her project"; fail=$((fail+1)); }
+grep -q '"id":"p-bob"' "$D/sse-projects.log" && { echo "FAIL: alice's stream carries bob's project"; fail=$((fail+1)); } || { echo "PASS: alice's stream drops bob's project"; pass=$((pass+1)); }
+
+echo "=== 8. deleting bob takes his rows, his files, his project and his session ==="
 R=$(curl -s -H "$H" -X DELETE $S/users/$BOBID)
-check "bob deleted, his two rows removed" "bob 2" "$(echo "$R" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['deleted'], d['rows_removed'], sep=' ')")"
+check "bob deleted, his two rows and his project removed" "bob 2 1" "$(echo "$R" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['deleted'], d['rows_removed'], d['projects_removed'], sep=' ')")"
+check "bob's project is gone from the list" 3 "$(curl -s -H "$H" $S/projects | python3 -c "import json,sys;print(len(json.load(sys.stdin)['projects']))")"
 check "bob is signed out" false "$(curl -s -b "$JAR_B" $S/auth/session | jb "['signed_in']")"
 check "alice still sees her two rows" 2 "$(curl -s -b "$JAR_A" $S/gallery | python3 -c "import json,sys;print(len(json.load(sys.stdin)['items']))")"
 check "bob's rows are gone for the operator" 2 "$(curl -s -b "$JAR_O" $S/gallery | python3 -c "import json,sys;print(len(json.load(sys.stdin)['items']))")"
 N=$(find "$D/gallery/bob" -type f 2>/dev/null | wc -l)
 check "bob's files are gone from disk" 0 "$N"
 
-echo "=== 8. the gate off: named logins stop, named sessions end ==="
+echo "=== 9. the gate off: named logins stop, named sessions end ==="
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' $S/users/enable -d '{"on": false}' > /dev/null
 check "multi_user off" false "$(curl -s -H "$H" $S/remote | jb "['multi_user']")"
 check "alice's session ended" false "$(curl -s -b "$JAR_A" $S/auth/session | jb "['signed_in']")"
