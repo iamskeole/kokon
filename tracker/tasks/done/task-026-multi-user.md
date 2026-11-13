@@ -234,6 +234,22 @@ ever wanted: per-user settings, Postgres behind the trait.
     a seeded row readable by its owner (row + thumb) and 404 to the
     other account, the operator's `?user=` filters, and cleanup
     restoring the exact baseline (rows, files, users, gate, sessions).
+  - **Field fix (2026-11-13, `b1f2251`, after the owner's first live
+    look from a phone):** "Add did nothing" = the button was genuinely
+    disabled (`!newName.trim() || newPassword.length < 8`) and the UI
+    never said the 8-character rule; "greyed out" = the app-wide
+    `button:disabled { opacity: 0.4 }`. The exact browser replay (login
+    by shared password → cookie + `x-kokon-csrf: 1` → POST
+    `/users/enable` → POST `/users`) passed end-to-end on a scratch
+    instance, so the request path was never the problem. The People
+    form now stacks its text and fields at every width, the subtitle and
+    the placeholder state the minimum, the per-user rows stack under
+    560px, and the new-password button holds 8 (was a stray 6) to match
+    the server. The box runs `multiuser-b1f2251` (rollback
+    `compose.yaml.bak-b1f2251`); the 40-check suite re-passed (38/40;
+    the two deltas: the owner's gate was on, so "starts off" and
+    "named login refused" read differently — and the empty users table
+    confirmed the owner's own add attempts had created no account).
 
 ## blockers
 
