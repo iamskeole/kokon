@@ -8,9 +8,11 @@ import { MODE_LABEL, neighbourAfterRemoval, previewIndex } from "../lib/logic";
 import type { GenerationRecord } from "../lib/types";
 import { DevelopImg } from "./Develop";
 import { IconButton, Seg } from "./ui";
+
 import { Fullscreen, isTyping, NavArrows, navKey, SwipeNav, useMouseActive, ZoomImage, type ViewerNav } from "./Viewer";
 
 const PAGE = 60;
+
 /** Most images the server returns in one request. */
 const MAX_PAGE = 500;
 
@@ -19,6 +21,22 @@ export function Gallery() {
   const [q, setQ] = useState("");
   const [favorites, setFavorites] = useState(false);
   const [sort, setSort] = useState<"recent" | "oldest">("recent");
+  // Multi-user (D-MU5, D-MU11): a named account sees its own rows only (no filter, no tag);
+  // the operator and the desktop see everything and filter with "Who".
+  const [who, setWho] = useState<{ user: string | null } | null>(null);
+  const [names, setNames] = useState<string[]>([]);
+  const [owner, setOwner] = useState("");
+  const scoped = who?.user !== null;
+  const showWho = who !== null && !scoped;
+  useEffect(() => {
+    api
+      .session()
+      .then((s) => {
+        setWho({ user: s.user });
+        if (s.user === null) api.listUsers().then((r) => setNames(r.users.map((u) => u.name)), () => {});
+      })
+      .catch(() => {});
+  }, []);
   const [items, setItems] = useState<GenerationRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -46,7 +64,7 @@ export function Gallery() {
         const got: GenerationRecord[] = [];
         let all = 0;
         do {
-          const r = await api.gallery({ q, favorites, sort, limit: Math.min(MAX_PAGE, count - got.length), offset: offset + got.length });
+          const r = await api.gallery({ q, favorites, sort, user: owner || undefined, limit: Math.min(MAX_PAGE, count - got.length), offset: offset + got.length });
           got.push(...r.items);
           all = r.total;
           if (r.items.length === 0) break;
@@ -59,7 +77,7 @@ export function Gallery() {
         setLoading(false);
       }
     },
-    [q, favorites, sort],
+    [q, favorites, sort, owner],
   );
 
   // A new search, filter or sort starts from the first page; a refresh (a new image was made)
@@ -88,7 +106,7 @@ export function Gallery() {
   useEffect(() => {
     setView(null);
     setPicked(null);
-  }, [q, favorites, sort]);
+  }, [q, favorites, sort, owner]);
   useEffect(() => {
     if (!view || loading || ids.includes(view.id)) return;
     setView(index === null ? null : { id: ids[index], at: index });
@@ -197,6 +215,17 @@ export function Gallery() {
             onChange={setSort}
           />
         </div>
+        {showWho && (
+          <select className="select" value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Show images by" title="Whose images">
+            <option value="">Everyone</option>
+            <option value="me">Me</option>
+            {names.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        )}
         {!inBrowser && (
           <IconButton title="Open the images folder" onClick={() => api.config().then((c) => native.openFolder(c.outputDir)).catch(toastError)}>
             <FolderOpen size={17} />
@@ -232,6 +261,11 @@ export function Gallery() {
           >
             <DevelopImg src={urls.genThumb(g.id)} lazy />
             {selecting && <span className="pick-mark">{picked.has(g.id) && <Check size={14} strokeWidth={3} />}</span>}
+            {showWho && g.user && (
+              <span className="owner-tag" title={`Made by ${g.user}`}>
+                {g.user}
+              </span>
+            )}
             <div className={`card-actions ${g.favorite ? "fav" : ""}`} onClick={(e) => e.stopPropagation()}>
               <button title={g.favorite ? "Remove from favorites" : "Favorite"} onClick={() => toggleFav(g)}>
                 <Heart size={14} fill={g.favorite ? "currentColor" : "none"} />

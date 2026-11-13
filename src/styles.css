@@ -558,6 +558,7 @@ pre.diag { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font
 .card .card-actions button { width: 28px; height: 28px; border-radius: 8px; background: var(--scrim); display: grid; place-items: center; color: var(--text); }
 .card .card-meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 8px 6px; font-size: 11px; color: #fff; background: linear-gradient(transparent, rgba(0,0,0,0.6)); display: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card:hover .card-meta { display: block; }
+.card .owner-tag { position: absolute; left: 6px; top: 6px; z-index: 1; padding: 1px 7px; border-radius: 9px; background: rgba(0,0,0,0.6); color: #fff; font-size: 10px; font-weight: 600; line-height: 16px; }
 
 /* editors */
 .editor-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px 24px; position: relative; overflow: hidden; }

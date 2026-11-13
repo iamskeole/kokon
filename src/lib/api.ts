@@ -8,7 +8,7 @@ import type { ProjectData } from "./store";
 import type {
   GpuBackend,
   AppConfig, AppErrorBody, ExternalEngine, GenerationRecord, GenerationRequest, HardwareReport, InputRecord, InstallStatus, JobView, LoraItem, LutEntry, MacBenchState, ModelFileInfo, ModelScan, ModelSlot, ModelsStatus, Plan,
-  ServiceEvent, SetupReport, StatusResponse, UpscalerItem,
+  ServiceEvent, SetupReport, StatusResponse, UpscalerItem, UserRecord,
 } from "./types";
 
 export class ApiError extends Error {
@@ -199,13 +199,16 @@ export const api = {
   importPath: (path: string) => call<InputRecord>(`/inputs/import${privateQuery()}`, { method: "POST", body: json({ path }) }),
   clearPrivate: () => call<{ cleared: number }>("/private/clear", { method: "POST" }),
   input: (id: string) => call<InputRecord>(`/inputs/${id}`),
-  gallery: (q: { q?: string; favorites?: boolean; limit?: number; offset?: number; sort?: string }) => {
+  gallery: (q: { q?: string; favorites?: boolean; limit?: number; offset?: number; sort?: string; user?: string }) => {
     const p = new URLSearchParams();
     if (q.q) p.set("q", q.q);
     if (q.favorites) p.set("favorites", "true");
     if (q.limit) p.set("limit", String(q.limit));
     if (q.offset) p.set("offset", String(q.offset));
     if (q.sort) p.set("sort", q.sort);
+    // Whose rows (the operator's filter, D-MU5): "all" (the default), "me" (the ownerless
+    // rows) or a name; a named account's list ignores it (its rows only).
+    if (q.user) p.set("user", q.user);
     return call<{ items: GenerationRecord[]; total: number }>(`/gallery?${p}`);
   },
   generation: (id: string) => call<GenerationRecord>(`/gallery/${id}`),
@@ -244,10 +247,25 @@ export const api = {
   deleteProject: (id: string) => call<{ deleted: string }>(`/projects/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** This app's list from before 0.11 (browser storage), merged in once. */
   importProjects: (projects: ProjectData[]) => call<{ changed: number }>("/projects/import", { method: "POST", body: json({ projects }) }),
-  /** Browser sign-in (see crates/qls-service/src/remote.rs). */
-  session: () => call<{ signed_in: boolean; password_set: boolean }>("/auth/session"),
-  login: (password: string) => call<{ signed_in: boolean }>("/auth/login", { method: "POST", body: json({ password }) }),
+  /** Browser sign-in (see crates/qls-service/src/remote.rs). `user` and `multi_user`
+   * drive the login screen's name field and the Settings -> People tab. */
+  session: () =>
+    call<{ signed_in: boolean; password_set: boolean; user: string | null; multi_user: boolean }>("/auth/session"),
+  login: (password: string, username?: string) =>
+    call<{ signed_in: boolean }>("/auth/login", {
+      method: "POST",
+      body: json(username ? { password, username } : { password }),
+    }),
   logout: () => call<{ signed_in: boolean }>("/auth/logout", { method: "POST" }),
+  /** The named accounts (multi-user): the operator and the desktop manage them (D-MU7).
+   * A signed-in named account gets a 403. */
+  listUsers: () => call<{ users: UserRecord[]; multi_user: boolean }>("/users"),
+  createUser: (name: string, password: string) =>
+    call<UserRecord>("/users", { method: "POST", body: json({ name, password }) }),
+  deleteUser: (id: string) => call<{ deleted: string; rows_removed: number }>(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  setUserPassword: (id: string, password: string) =>
+    call<{ reset: string }>(`/users/${encodeURIComponent(id)}/password`, { method: "POST", body: json({ password }) }),
+  setMultiUser: (on: boolean) => call<{ enabled: boolean }>("/users/enable", { method: "POST", body: json({ on }) }),
   /** Access from other devices (desktop app only). */
   remote: () => call<RemoteStatus>("/remote"),
   setRemote: (enabled: boolean, port?: number) => call<RemoteStatus>("/remote", { method: "POST", body: json({ enabled, port }) }),

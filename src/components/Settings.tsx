@@ -1,8 +1,9 @@
-import { Activity, Copy, Cpu, Download, FolderOpen, HardDrive, Heart, Layers, MonitorSmartphone, RefreshCw, RotateCcw, Settings2, Trash2, X } from "lucide-react";
+import { Activity, Copy, Cpu, Download, FolderOpen, HardDrive, Heart, Layers, MonitorSmartphone, RefreshCw, RotateCcw, Settings2, Trash2, Users, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { api } from "../lib/api";
 import { AiMarkingCard } from "./AiCheck";
+import { People } from "./People";
 import { native } from "../lib/native";
 import { inBrowser } from "../lib/platform";
 import { getState, openModelSetup, refreshStatus, setState, startTour, toastError, toastInfo, useStore } from "../lib/store";
@@ -65,8 +66,8 @@ function GitHubMark() {
   );
 }
 
-type Tab = "general" | "models" | "lora" | "performance" | "devices" | "diagnostics";
-const TABS: Tab[] = ["general", "models", "lora", "performance", "devices", "diagnostics"];
+type Tab = "general" | "models" | "lora" | "performance" | "devices" | "people" | "diagnostics";
+const TABS: Tab[] = ["general", "models", "lora", "performance", "devices", "people", "diagnostics"];
 
 /** Browser: what the computer running Kokon has set (only its desktop app changes folders and files). */
 function PathField(props: { label: string; value: string; onChange: (v: string) => void; folder?: boolean; extensions?: string[]; open?: boolean }) {
@@ -285,6 +286,10 @@ export function Settings() {
     window.requestAnimationFrame(() => el.scrollIntoView({ block: "start", behavior: "smooth" }));
   }, [cfg, tab]);
   const [devices, setDevices] = useState<[string, string][]>([]);
+  // Who is looking: the named account's name (null = the operator or the desktop), and
+  // whether a remote password is set. Both come from the session endpoint, which the
+  // desktop calls with its token (no cookie, so `user` is null there).
+  const [who, setWho] = useState<{ user: string | null; password_set: boolean } | null>(null);
   const [upscaler, setUpscaler] = useState<Check | null>(null);
   // The saved model setup: what is missing, whether the official files are downloaded.
   const [ms, setMs] = useState<ModelsStatus | null>(null);
@@ -296,6 +301,7 @@ export function Settings() {
 
   useEffect(() => {
     api.config().then(setCfg, toastError);
+    api.session().then(setWho, () => {});
     api.enhancerDefaults().then(setEnhancerDefaults, () => {});
     api.setup().then(
       (r: SetupReport) => {
@@ -409,6 +415,9 @@ export function Settings() {
     ["performance", "Performance", <Cpu size={16} key="p" />],
     // Only the computer running Kokon decides who else can use it.
     ...(inBrowser ? [] : ([["devices", "Other devices", <MonitorSmartphone size={16} key="o" />]] as [Tab, string, React.ReactNode][])),
+    // Named accounts: shown where a password is set and the viewer is not one of the
+    // accounts themselves (D-MU11); named accounts get today's settings, without it.
+    ...(who && !who.user && who.password_set ? ([["people", "People", <Users size={16} key="pe" />]] as [Tab, string, React.ReactNode][]) : []),
     ["diagnostics", "Diagnostics", <Activity size={16} key="d" />],
   ];
 
@@ -422,7 +431,7 @@ export function Settings() {
             </button>
           ))}
           <span style={{ flex: 1 }} />
-          {tab !== "diagnostics" && tab !== "lora" && tab !== "devices" && (
+          {tab !== "diagnostics" && tab !== "lora" && tab !== "devices" && tab !== "people" && (
             <button className="btn primary nav-save" style={{ justifyContent: "center" }} disabled={!dirty} onClick={save}>
               Save
             </button>
@@ -548,6 +557,7 @@ export function Settings() {
           )}
 
           {tab === "devices" && <RemoteAccess />}
+          {tab === "people" && <People />}
 
           {tab === "models" && (
             <>
@@ -873,7 +883,7 @@ export function Settings() {
           {tab === "lora" && <LoraSettings />}
           {tab === "diagnostics" && <Diagnostics />}
           {/* On a phone Save sits at the foot of the page (the tabs scroll sideways). */}
-          {tab !== "diagnostics" && tab !== "lora" && tab !== "devices" && (
+          {tab !== "diagnostics" && tab !== "lora" && tab !== "devices" && tab !== "people" && (
             <div className="modal-save">
               <button className="btn primary" disabled={!dirty} onClick={save}>
                 Save

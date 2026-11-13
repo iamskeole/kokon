@@ -172,6 +172,15 @@ export interface GenerationRecord {
   pipeline?: PipelineRecord | null;
   /** Left out of the gallery list (a layers lab step). */
   hidden?: boolean;
+  /** The owner (multi-user): the account's name; absent for the operator and pre-accounts rows. */
+  user?: string | null;
+}
+
+/** A named account (multi-user; managed in Settings -> People). */
+export interface UserRecord {
+  id: string;
+  name: string;
+  created_at: string;
 }
 
 /** A LoRA as an image used it. */
