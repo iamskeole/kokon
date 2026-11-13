@@ -32,7 +32,10 @@ pub const DEFAULT_REMOTE_PORT: u16 = 39152;
 /// pipeline (and on the active engine): image-grounded PUP calls (edit, area, outpaint,
 /// multi-reference, compose) go there when named, falling back to `vlm`; t2i jobs always use
 /// `vlm`. A pipeline that names no second door behaves exactly as before.
-const SCHEMA_VERSION: u32 = 14;
+/// Schema 15 (2026-11-12): additive `multiUser` (default false): named accounts with their own
+/// gallery on top of the single-user service. Off, the service behaves exactly as before;
+/// it is set only by the users endpoints, never by a settings save.
+const SCHEMA_VERSION: u32 = 15;
 /// `upscaler_model` value for a plain Lanczos resize (no model).
 pub const LANCZOS: &str = "lanczos";
 /// Upscalers offered in Settings: (file stem, label). Superscale-SP is a setup download, MoSR is
@@ -492,6 +495,11 @@ pub struct AppConfig {
     /// whole-config save keeps the current values (`Engine::set_config`).
     pub remote_access: bool,
     pub remote_port: u16,
+    /// Named accounts (multi-user): browsers sign in with a name and a password of their own
+    /// and see and save only their own gallery; the shared password stays the operator. Set
+    /// only by the users endpoints (the service keeps the stored value through every settings
+    /// save), off by default: with it off the service behaves exactly as before.
+    pub multi_user: bool,
     pub active_profile: String,
     pub profiles: Vec<ModelProfile>,
     /// ggml device name for diffusion + VAE, e.g. "cuda0" (see `sd-server --list-devices`).
@@ -590,6 +598,7 @@ impl Default for AppConfig {
             service_port: DEFAULT_SERVICE_PORT,
             remote_access: false,
             remote_port: DEFAULT_REMOTE_PORT,
+            multi_user: false,
             device: "cuda0".into(),
             text_encoder_placement: TextEncoderPlacement::Ram,
             vram_reserve_gib: 1.0,
@@ -838,6 +847,11 @@ impl AppConfig {
                         // second VLM endpoint, `vlmVision`, for image-grounded jobs; old
                         // files read with it unset and behave exactly as before.
                         tracing::debug!("config migrated to schema 14 (vlmVision for image-grounded PUP calls)");
+                    }
+                    if c.schema_version < 15 {
+                        // Additive: the multi-user gate (named accounts with their own
+                        // gallery). Old files read it as off, which is the stock behaviour.
+                        tracing::debug!("config migrated to schema 15 (multi-user gate)");
                     }
                     // The official weights are always available as a profile, built for the
                     // configured folder and preset; the active one stays as it is.
@@ -1333,6 +1347,7 @@ impl AppConfig {
         self.service_port = current.service_port;
         self.remote_access = current.remote_access;
         self.remote_port = current.remote_port;
+        self.multi_user = current.multi_user;
     }
 
     pub fn validate(&self) -> Result<(), AppError> {
@@ -2014,7 +2029,7 @@ mod tests {
         c.models[0].vlm_vision = Some(vision.clone());
         c.external_engine.as_mut().unwrap().vlm_vision = Some(vision);
         let saved = serde_json::to_string(&c).unwrap();
-        assert!(saved.contains("\"schemaVersion\":14"), "the first save writes 14");
+        assert!(saved.contains("\"schemaVersion\":15"), "the load migrated it, the save writes the current schema");
         assert!(saved.contains("\"vlmVision\""));
         std::fs::write(&p, &saved).unwrap();
         let r = AppConfig::load_from(&p);

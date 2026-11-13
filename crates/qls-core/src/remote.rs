@@ -58,15 +58,7 @@ pub fn load_hash(file: &Path) -> Option<String> {
 
 /// Hashes `password` and writes it to `file` (readable by the owner only on Unix).
 pub fn set_password(file: &Path, password: &str) -> AppResult<String> {
-    if password.chars().count() < MIN_PASSWORD_CHARS {
-        return Err(AppError::invalid(format!(
-            "Use at least {MIN_PASSWORD_CHARS} characters."
-        )));
-    }
-    let hash = Argon2::default()
-        .hash_password(password.as_bytes())
-        .map_err(AppError::internal)?
-        .to_string();
+    let hash = hash_password(password)?;
     let body = serde_json::to_string_pretty(&AuthFile {
         password_hash: hash.clone(),
     })
@@ -80,6 +72,22 @@ pub fn set_password(file: &Path, password: &str) -> AppResult<String> {
     }
     std::fs::rename(&tmp, file).map_err(|e| AppError::io("save the password", file, e))?;
     Ok(hash)
+}
+
+/// Argon2id of a password, refusing the short ones (the shared password and the named
+/// accounts use the same minimum).
+pub fn hash_password(password: &str) -> AppResult<String> {
+    if password.chars().count() < MIN_PASSWORD_CHARS {
+        return Err(AppError::invalid(format!(
+            "Use at least {MIN_PASSWORD_CHARS} characters."
+        )));
+    }
+    Ok(
+        Argon2::default()
+            .hash_password(password.as_bytes())
+            .map_err(AppError::internal)?
+            .to_string(),
+    )
 }
 
 /// Removes the password (access from other devices then stays closed).
@@ -173,8 +181,36 @@ fn unix_secs(t: SystemTime) -> u64 {
 #[derive(Serialize, Deserialize, Default)]
 struct SessionsFile {
     password: String,
-    /// SHA-256 of the cookie value → expiry (seconds since 1970).
-    sessions: HashMap<String, u64>,
+    /// SHA-256 of the cookie value → who it is and when it expires (seconds since 1970).
+    sessions: HashMap<String, SessionEntry>,
+}
+
+/// One stored session. The operator (the shared password) is a bare expiry — the exact shape
+/// the file had before named accounts, so an existing file reads without migration. A named
+/// account (multi-user) adds its name; an older service that met such a file would drop the
+/// whole file (no sessions) rather than sign anyone in, which is the safe direction.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+enum SessionEntry {
+    Op(u64),
+    User { user: String, exp: u64 },
+}
+
+impl SessionEntry {
+    fn exp(&self) -> u64 {
+        match self {
+            SessionEntry::Op(t) => *t,
+            SessionEntry::User { exp, .. } => *exp,
+        }
+    }
+}
+
+/// Who a signed-in browser is (multi-user): the operator (the shared password) or a named
+/// account (its name, the `users` table's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionOwner {
+    Operator,
+    Named(String),
 }
 
 /// Signed-in browsers. Wall-clock expiry, so it means the same after a restart.
@@ -205,12 +241,16 @@ impl Sessions {
         {
             let n = f.sessions.len();
             let t = unix_secs(now);
-            st.sessions = f.sessions.into_iter().filter(|(_, exp)| *exp > t).collect();
+            st.sessions = f
+                .sessions
+                .into_iter()
+                .filter(|(_, e)| e.exp() > t)
+                .collect();
             if st.sessions.len() > MAX_SESSIONS {
-                let mut by_exp: Vec<u64> = st.sessions.values().copied().collect();
+                let mut by_exp: Vec<u64> = st.sessions.values().map(|e| e.exp()).collect();
                 by_exp.sort_unstable();
                 let keep_from = by_exp[by_exp.len() - MAX_SESSIONS];
-                st.sessions.retain(|_, exp| *exp >= keep_from);
+                st.sessions.retain(|_, e| e.exp() >= keep_from);
             }
             changed = st.sessions.len() != n || st.sessions.is_empty();
         }
@@ -261,41 +301,80 @@ impl Sessions {
     }
 
     pub fn create(&self, now: SystemTime) -> String {
+        self.create_for(None, now)
+    }
+
+    /// Opens a session for `user` (the `users` table's name; `None` = the operator).
+    pub fn create_for(&self, user: Option<&str>, now: SystemTime) -> String {
         let id = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
         let t = unix_secs(now);
+        let entry = match user {
+            Some(u) => SessionEntry::User {
+                user: u.to_string(),
+                exp: t + SESSION_TTL.as_secs(),
+            },
+            None => SessionEntry::Op(t + SESSION_TTL.as_secs()),
+        };
         let mut st = self.state.lock().unwrap();
-        st.sessions.retain(|_, exp| *exp > t);
+        st.sessions.retain(|_, e| e.exp() > t);
         if st.sessions.len() >= MAX_SESSIONS
             && let Some(oldest) = st
                 .sessions
                 .iter()
-                .min_by_key(|(_, exp)| **exp)
+                .min_by_key(|(_, e)| e.exp())
                 .map(|(k, _)| k.clone())
         {
             st.sessions.remove(&oldest);
         }
-        st.sessions
-            .insert(sha256_hex(&id), t + SESSION_TTL.as_secs());
+        st.sessions.insert(sha256_hex(&id), entry);
         self.save(&st);
         id
     }
 
     pub fn valid(&self, id: &str, now: SystemTime) -> bool {
-        self.state
-            .lock()
-            .unwrap()
-            .sessions
-            .get(&sha256_hex(id))
-            .is_some_and(|exp| *exp > unix_secs(now))
+        self.owner_of(id, now).is_some()
+    }
+
+    /// Who this session belongs to, or none (unknown or expired — the two must not be told
+    /// apart: either way the browser signs in again).
+    pub fn owner_of(&self, id: &str, now: SystemTime) -> Option<SessionOwner> {
+        let t = unix_secs(now);
+        match self.state.lock().unwrap().sessions.get(&sha256_hex(id)) {
+            Some(SessionEntry::Op(exp)) if *exp > t => Some(SessionOwner::Operator),
+            Some(SessionEntry::User { user, exp }) if *exp > t => Some(SessionOwner::Named(user.clone())),
+            _ => None,
+        }
     }
 
     pub fn remove(&self, id: &str) {
         let mut st = self.state.lock().unwrap();
         if st.sessions.remove(&sha256_hex(id)).is_some() {
+            self.save(&st);
+        }
+    }
+
+    /// Ends every named user's session (multi-user turned off); the operator keeps theirs.
+    pub fn clear_named(&self) {
+        let mut st = self.state.lock().unwrap();
+        let n = st.sessions.len();
+        st.sessions.retain(|_, e| matches!(e, SessionEntry::Op(_)));
+        if st.sessions.len() != n {
+            self.save(&st);
+        }
+    }
+
+    /// Ends every session of one named user (their password changed or the account went);
+    /// the other owners keep theirs.
+    pub fn remove_user(&self, name: &str) {
+        let mut st = self.state.lock().unwrap();
+        let n = st.sessions.len();
+        st.sessions
+            .retain(|_, e| !matches!(e, SessionEntry::User { user, .. } if user == name));
+        if st.sessions.len() != n {
             self.save(&st);
         }
     }
@@ -343,6 +422,11 @@ pub fn browser_allowed(method: &str, path: &str) -> bool {
         ("POST", ["upscalers", _, "download"]) => true,
         ("POST", ["backend", "start" | "stop" | "restart"]) => true,
         ("POST", ["plan" | "jobs" | "inputs" | "examples"] | ["projects", "import"]) => true,
+        // The people list (the operator's Settings): the named accounts may not touch it
+        // (the handler refuses them with a 403).
+        ("GET", ["users"]) => true,
+        ("POST", ["users"] | ["users", "enable"] | ["users", _, "password"]) => true,
+        ("DELETE", ["users", _]) => true,
         ("POST", ["jobs", _, "cancel"]) => true,
         ("POST", ["private", "clear"]) => true,
         ("POST", ["luts", _, "apply"]) => true,
@@ -521,12 +605,47 @@ mod tests {
     }
 
     #[test]
+    fn sessions_carry_their_owner_and_read_old_files()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let f = sessions_file(dir.path());
+        let t = SystemTime::now();
+        let s = Sessions::open(f.clone(), Some("h"), t);
+        let op = s.create(t);
+        let anna = s.create_for(Some("anna"), t);
+        assert_eq!(s.owner_of(&op, t), Some(SessionOwner::Operator));
+        assert_eq!(s.owner_of(&anna, t), Some(SessionOwner::Named("anna".into())));
+        assert_eq!(s.owner_of("nope", t), None);
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("anna"));
+        assert!(!text.contains(&op), "the cookie value is still never written");
+        drop(s);
+        // Restart: both owners come back. A file written before named accounts (bare numbers)
+        // reads as the operator's.
+        let s = Sessions::open(f.clone(), Some("h"), t + Duration::from_secs(3600));
+        assert_eq!(s.owner_of(&op, t), Some(SessionOwner::Operator));
+        assert_eq!(s.owner_of(&anna, t + Duration::from_secs(3600)), Some(SessionOwner::Named("anna".into())));
+        let old = (0..3).map(|i| (sha256_hex(&format!("{i}")), SessionEntry::Op(1234))).collect();
+        std::fs::write(
+            &f,
+            serde_json::to_string(&SessionsFile { password: sha256_hex("h"), sessions: old }).unwrap(),
+        )
+        .unwrap();
+        let s = Sessions::open(f.clone(), Some("h"), SystemTime::UNIX_EPOCH);
+        assert_eq!(s.owner_of("0", SystemTime::UNIX_EPOCH), Some(SessionOwner::Operator), "a pre-accounts file is the operator's");
+        // A new password ends every session, owner or not (D-MU9).
+        let s = Sessions::open(f.clone(), Some("changed"), t);
+        assert_eq!(s.owner_of(&op, t), None);
+        assert_eq!(s.owner_of(&anna, t), None);
+    }
+
+    #[test]
     fn at_most_max_sessions_are_loaded() {
         let dir = tempfile::tempdir().unwrap();
         let f = sessions_file(dir.path());
         let t = SystemTime::now();
         let sessions = (0..MAX_SESSIONS as u64 + 5)
-            .map(|i| (format!("{i}"), unix_secs(t) + 1000 + i))
+            .map(|i| (format!("{i}"), SessionEntry::Op(unix_secs(t) + 1000 + i)))
             .collect();
         std::fs::write(
             &f,

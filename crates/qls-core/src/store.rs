@@ -102,10 +102,41 @@ pub struct GenerationRecord {
     /// it is shown). The project still opens it by id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// The owner (multi-user): the name from the `users` table; absent = the operator and the
+    /// rows from before accounts existed. The database's `user` column is the source of
+    /// ownership; this copy is for display and PNG provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     /// The IPTC Digital Source Type when it is not the one of its mode (provenance.rs): an upscale
     /// or a LUT of an imported image that was already AI-made stays marked as AI-made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
+}
+
+/// A named account (multi-user): `name` is the identity — what a browser signs in with and the
+/// folder the user's results are kept in — so it is unique (case-insensitively) and
+/// filesystem-safe; the password lives only as an Argon2id hash.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UserRecord {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+/// A user name: 1–20 letters, digits or ` .-_` (a browser signs in with it; the gallery keeps the
+/// user's results in a folder of that name, so it must stay filesystem-safe).
+pub fn validate_user_name(name: &str) -> AppResult<String> {
+    let t = name.trim();
+    let ok = (1..=20).contains(&t.chars().count())
+        && t.chars().any(|c| c.is_ascii_alphanumeric())
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'));
+    if !ok {
+        return Err(AppError::invalid(
+            "The name is 1 to 20 letters, digits or space, dot, dash or underscore, with at least one letter or digit.",
+        ));
+    }
+    Ok(t.to_string())
 }
 
 impl GenerationRecord {
@@ -206,11 +237,28 @@ pub struct ListQuery {
     /// "recent" (default) or "oldest".
     #[serde(default)]
     pub sort: Option<String>,
+    /// Whose rows (the operator's filter, D-MU5): "all" (default) or "me" (the ownerless
+    /// rows) or a user's name. A named account's own list ignores it (its rows only).
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 pub struct Store {
     conn: Mutex<Connection>,
     pub data_dir: PathBuf,
+}
+
+/// Which rows the caller may see (multi-user). `All` is the stock query (the token, the
+/// operator, and single-user mode): the ownership column plays no part, so the result is
+/// exactly what it was before accounts existed.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum OwnerFilter {
+    #[default]
+    All,
+    /// Only the rows with no owner (the operator's and the pre-account ones).
+    Own,
+    /// Only this user's rows (the `users` table's name).
+    User(String),
 }
 
 fn db_err(e: rusqlite::Error) -> AppError {
@@ -256,7 +304,14 @@ impl Store {
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
                 record TEXT NOT NULL
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS users_name ON users(lower(name));",
         )
         .map_err(db_err)?;
         // 0.12: `hidden` (layers lab steps). Added when missing; an older app ignores the column
@@ -268,7 +323,16 @@ impl Store {
         if !has_hidden {
             conn.execute_batch("ALTER TABLE generations ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;").map_err(db_err)?;
         }
-        conn.pragma_update(None, "user_version", 1).map_err(db_err)?;
+        // Multi-user: the row's owner (the `users` table's name); NULL = the operator and the
+        // rows made before accounts existed. Older apps ignore the column.
+        let has_user = conn
+            .prepare("SELECT 1 FROM pragma_table_info('generations') WHERE name = 'user'")
+            .and_then(|mut st| st.exists([]))
+            .map_err(db_err)?;
+        if !has_user {
+            conn.execute_batch("ALTER TABLE generations ADD COLUMN user TEXT;").map_err(db_err)?;
+        }
+        conn.pragma_update(None, "user_version", 2).map_err(db_err)?;
         Ok(Self { conn: Mutex::new(conn), data_dir: data_dir.to_path_buf() })
     }
 
@@ -302,24 +366,32 @@ impl Store {
             .lock()
             .unwrap()
             .execute(
-                "INSERT OR REPLACE INTO generations (id, created_at, prompt, mode, favorite, file_path, record, hidden) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![r.id, r.created_at, r.prompt, r.mode, r.favorite as i32, r.file_path, json, r.hidden as i32],
+                "INSERT OR REPLACE INTO generations (id, created_at, prompt, mode, favorite, file_path, record, hidden, user) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![r.id, r.created_at, r.prompt, r.mode, r.favorite as i32, r.file_path, json, r.hidden as i32, r.user],
             )
             .map_err(db_err)?;
         Ok(())
     }
 
     pub fn get_generation(&self, id: &str) -> AppResult<GenerationRecord> {
-        let json: Option<String> = self
+        let Some((json, fav, user)) = self
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT record FROM generations WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT record, favorite, user FROM generations WHERE id = ?1",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?, r.get::<_, Option<String>>(2)?)),
+            )
             .optional()
-            .map_err(db_err)?;
-        let json = json.ok_or_else(|| AppError::new(ErrorCode::NotFound, "That image is no longer in the gallery."))?;
+            .map_err(db_err)?
+        else {
+            return Err(AppError::new(ErrorCode::NotFound, "That image is no longer in the gallery."));
+        };
         let mut rec: GenerationRecord = serde_json::from_str(&json).map_err(AppError::internal)?;
-        rec.favorite = self.is_favorite(id)?;
+        rec.favorite = fav != 0;
+        // The column is the source of ownership (the record JSON is a copy).
+        rec.user = user;
         Ok(rec)
     }
 
@@ -336,18 +408,7 @@ impl Store {
         Ok(json.and_then(|j| serde_json::from_str::<GenerationRecord>(&j).ok()).map(|r| r.seed))
     }
 
-    fn is_favorite(&self, id: &str) -> AppResult<bool> {
-        let v: Option<i32> = self
-            .conn
-            .lock()
-            .unwrap()
-            .query_row("SELECT favorite FROM generations WHERE id = ?1", [id], |r| r.get(0))
-            .optional()
-            .map_err(db_err)?;
-        Ok(v.unwrap_or(0) != 0)
-    }
-
-    pub fn list_generations(&self, q: &ListQuery) -> AppResult<(Vec<GenerationRecord>, u64)> {
+    pub fn list_generations(&self, q: &ListQuery, owner: &OwnerFilter) -> AppResult<(Vec<GenerationRecord>, u64)> {
         let limit = q.limit.unwrap_or(60).clamp(1, 500);
         let offset = q.offset.unwrap_or(0);
         let order = if q.sort.as_deref() == Some("oldest") { "ASC" } else { "DESC" };
@@ -355,22 +416,54 @@ impl Store {
             let esc = s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
             format!("%{esc}%")
         });
-        let where_ = "WHERE (?1 IS NULL OR prompt LIKE ?1 ESCAPE '\\' OR mode LIKE ?1 ESCAPE '\\') AND (?2 = 0 OR favorite = 1) AND hidden = 0";
+        // `All` adds no ownership clause at all (the stock query); `Own` only the ownerless
+        // rows; `User` that user's.
+        let (owner_sql, owner_param) = match owner {
+            OwnerFilter::All => (String::new(), None),
+            OwnerFilter::Own => (String::from(" AND user IS NULL"), None),
+            OwnerFilter::User(n) => (String::from(" AND user = ?3"), Some(n.clone())),
+        };
+        let where_ = format!(
+            "WHERE (?1 IS NULL OR prompt LIKE ?1 ESCAPE '\\' OR mode LIKE ?1 ESCAPE '\\') AND (?2 = 0 OR favorite = 1) AND hidden = 0{owner_sql}"
+        );
+        // The parameters shift when the ownership clause takes ?3: build a list in order.
+        // The COUNT query has no LIMIT/OFFSET, so it gets the same list without them.
+        let params = |with_limits: bool| {
+            let mut v: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(pattern.clone()), Box::new(q.favorites as i32)];
+            if let Some(o) = &owner_param {
+                v.push(Box::new(o.clone()));
+            }
+            if with_limits {
+                v.push(Box::new(limit));
+                v.push(Box::new(offset));
+            }
+            v
+        };
+        let n = if owner_param.is_some() { 3 } else { 2 };
         let conn = self.conn.lock().unwrap();
         let total: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM generations {where_}"), params![pattern, q.favorites as i32], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM generations {where_}"),
+                rusqlite::params_from_iter(params(false)),
+                |r| r.get(0),
+            )
             .map_err(db_err)?;
         let mut stmt = conn
-            .prepare(&format!("SELECT record, favorite FROM generations {where_} ORDER BY created_at {order}, id {order} LIMIT ?3 OFFSET ?4"))
+            .prepare(&format!(
+                "SELECT record, favorite, user FROM generations {where_} ORDER BY created_at {order}, id {order} LIMIT ?{} OFFSET ?{}",
+                n + 1,
+                n + 2
+            ))
             .map_err(db_err)?;
         let rows = stmt
-            .query_map(params![pattern, q.favorites as i32, limit, offset], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?)))
+            .query_map(rusqlite::params_from_iter(params(true)), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?, r.get::<_, Option<String>>(2)?)))
             .map_err(db_err)?;
         let mut out = Vec::new();
         for row in rows {
-            let (json, fav) = row.map_err(db_err)?;
+            let (json, fav, user) = row.map_err(db_err)?;
             if let Ok(mut rec) = serde_json::from_str::<GenerationRecord>(&json) {
                 rec.favorite = fav != 0;
+                rec.user = user;
                 out.push(rec);
             }
         }
@@ -499,6 +592,140 @@ impl Store {
     pub fn input_display_path(&self, id: &str) -> PathBuf {
         self.data_dir.join("inputs").join(format!("{id}.display.jpg"))
     }
+
+    // ---- users (multi-user) ------------------------------------------------------------
+
+    /// Creates a named account. The password is stored only as an Argon2id hash; the name is
+    /// unique case-insensitively (the database enforces it on `lower(name)`).
+    pub fn create_user(&self, name: &str, password: &str) -> AppResult<UserRecord> {
+        let name = validate_user_name(name)?;
+        let hash = crate::remote::hash_password(password)?;
+        let id = format!("user_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        let created_at = now_rfc3339();
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO users (id, name, password_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![id, name, hash, created_at],
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => {
+                    AppError::new(ErrorCode::InvalidInput, "A user with that name already exists.")
+                }
+                e => db_err(e),
+            })?;
+        Ok(UserRecord { id, name, created_at })
+    }
+
+    pub fn list_users(&self) -> AppResult<Vec<UserRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, name, created_at FROM users ORDER BY lower(name)")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok(UserRecord { id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)? }))
+            .map_err(db_err)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?)
+    }
+
+    pub fn user_by_name(&self, name: &str) -> AppResult<Option<UserRecord>> {
+        let r: Option<(String, String, String)> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id, name, created_at FROM users WHERE lower(name) = lower(?1)",
+                [name.trim()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(r.map(|(id, name, created_at)| UserRecord { id, name, created_at }))
+    }
+
+    pub fn user_by_id(&self, id: &str) -> AppResult<Option<UserRecord>> {
+        let r: Option<(String, String, String)> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id, name, created_at FROM users WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(r.map(|(id, name, created_at)| UserRecord { id, name, created_at }))
+    }
+
+    /// Verifies a password against the named user. Slow (Argon2id): call it off the async
+    /// runtime. The service tells a missing user from a wrong password with [`user_by_name`].
+    pub fn verify_user_password(&self, name: &str, password: &str) -> bool {
+        let hash: Option<String> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT password_hash FROM users WHERE lower(name) = lower(?1)", [name.trim()], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten();
+        hash.is_some_and(|h| crate::remote::verify(&h, password))
+    }
+
+    /// Replaces the user's password hash (their sessions end; the caller does that).
+    pub fn set_user_password(&self, id: &str, password: &str) -> AppResult<()> {
+        let hash = crate::remote::hash_password(password)?;
+        let n = self
+            .conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET password_hash = ?2 WHERE id = ?1", params![id, hash])
+            .map_err(db_err)?;
+        if n == 0 {
+            return Err(AppError::new(ErrorCode::NotFound, "Unknown user."));
+        }
+        Ok(())
+    }
+
+    /// Deletes the account row (the caller removes the user's gallery rows first,
+    /// [`delete_user_rows`], and ends their sessions).
+    pub fn delete_user(&self, id: &str) -> AppResult<UserRecord> {
+        let u = self.user_by_id(id)?.ok_or_else(|| AppError::new(ErrorCode::NotFound, "Unknown user."))?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM users WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        Ok(u)
+    }
+
+    /// Deletes every gallery row owned by `user` (including the hidden ones), with their files
+    /// when they are inside `output_root` (as [`delete_generation`]).
+    pub fn delete_user_rows(&self, user: &str, output_root: &Path) -> AppResult<usize> {
+        let mut removed = 0;
+        loop {
+            let ids: Vec<String> = {
+                let conn = self.conn.lock().unwrap();
+                let mut stmt = conn
+                    .prepare("SELECT id FROM generations WHERE user = ?1 LIMIT 500")
+                    .map_err(db_err)?;
+                stmt.query_map([user], |r| r.get(0))
+                    .map_err(db_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db_err)?
+            };
+            if ids.is_empty() {
+                break;
+            }
+            let n = ids.len();
+            for id in ids {
+                self.delete_generation(&id, output_root)?;
+            }
+            removed += n;
+        }
+        Ok(removed)
+    }
 }
 
 /// Long side of the screen-sized copy a browser shows on the stage. A phone's stage is about
@@ -580,6 +807,7 @@ mod tests {
             request: serde_json::json!({"prompt": prompt}),
             pipeline: None,
             hidden: false,
+            user: None,
             source_type: None,
         }
     }
@@ -661,17 +889,17 @@ mod tests {
         s.insert_generation(&rec("a", "a red fox", "2026-10-06T10:00:00.000Z")).unwrap();
         s.insert_generation(&rec("b", "blue whale 100%", "2026-10-06T11:00:00.000Z")).unwrap();
         s.insert_generation(&rec("c", "red car", "2026-10-06T12:00:00.000Z")).unwrap();
-        let (all, total) = s.list_generations(&ListQuery::default()).unwrap();
+        let (all, total) = s.list_generations(&ListQuery::default(), &OwnerFilter::All).unwrap();
         assert_eq!(total, 3);
         assert_eq!(all.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["c", "b", "a"]);
-        let (red, _) = s.list_generations(&ListQuery { q: Some("red".into()), ..Default::default() }).unwrap();
+        let (red, _) = s.list_generations(&ListQuery { q: Some("red".into()), ..Default::default() }, &OwnerFilter::All).unwrap();
         assert_eq!(red.len(), 2);
-        let (pct, _) = s.list_generations(&ListQuery { q: Some("100%".into()), ..Default::default() }).unwrap();
+        let (pct, _) = s.list_generations(&ListQuery { q: Some("100%".into()), ..Default::default() }, &OwnerFilter::All).unwrap();
         assert_eq!(pct.len(), 1, "LIKE wildcards are escaped");
         s.set_favorite("a", true).unwrap();
-        let (fav, n) = s.list_generations(&ListQuery { favorites: true, ..Default::default() }).unwrap();
+        let (fav, n) = s.list_generations(&ListQuery { favorites: true, ..Default::default() }, &OwnerFilter::All).unwrap();
         assert_eq!((fav.len(), n, fav[0].favorite), (1, 1, true));
-        let (old, _) = s.list_generations(&ListQuery { sort: Some("oldest".into()), limit: Some(1), ..Default::default() }).unwrap();
+        let (old, _) = s.list_generations(&ListQuery { sort: Some("oldest".into()), limit: Some(1), ..Default::default() }, &OwnerFilter::All).unwrap();
         assert_eq!(old[0].id, "a");
         assert!(s.get_generation("a").unwrap().favorite);
         s.delete_generation("a", dir.path()).unwrap();
@@ -680,7 +908,7 @@ mod tests {
         // Reopen persists.
         drop(s);
         let s = Store::open(dir.path()).unwrap();
-        assert_eq!(s.list_generations(&ListQuery::default()).unwrap().1, 2);
+        assert_eq!(s.list_generations(&ListQuery::default(), &OwnerFilter::All).unwrap().1, 2);
         assert_eq!(s.get_generation("c").unwrap().references[0].input_id, "abc");
     }
 
@@ -697,13 +925,13 @@ mod tests {
         let s = Store::open(dir.path()).unwrap();
         s.insert_generation(&rec("a", "a step", "2026-10-06T10:00:00.000Z")).unwrap();
         s.insert_generation(&GenerationRecord { hidden: true, ..rec("b", "a lab step", "2026-10-06T11:00:00.000Z") }).unwrap();
-        let ids = |s: &Store| s.list_generations(&ListQuery::default()).unwrap().0.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        let ids = |s: &Store| s.list_generations(&ListQuery::default(), &OwnerFilter::All).unwrap().0.into_iter().map(|r| r.id).collect::<Vec<_>>();
         assert_eq!(ids(&s), vec!["a", "old"]);
         assert!(s.get_generation("b").unwrap().hidden, "a project still opens it");
         s.set_hidden("a", true).unwrap();
         s.set_hidden("b", false).unwrap();
         assert_eq!(ids(&s), vec!["b", "old"]);
-        assert_eq!(s.list_generations(&ListQuery::default()).unwrap().1, 2);
+        assert_eq!(s.list_generations(&ListQuery::default(), &OwnerFilter::All).unwrap().1, 2);
         assert!(s.set_hidden("zzz", true).is_err());
         // The record leaves `hidden` out unless set (older apps read the same JSON).
         assert!(serde_json::to_value(rec("x", "p", "t")).unwrap().get("hidden").is_none());
@@ -760,5 +988,153 @@ mod tests {
         s.insert_generation(&r).unwrap();
         s.delete_generation("g1", &dir.path().join("out")).unwrap();
         assert!(!dir.path().join("thumbs").join("g1.preview.jpg").exists());
+    }
+
+    #[test]
+    fn users_are_stored_as_hashes_and_unique_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        assert!(s.list_users().unwrap().is_empty());
+        let a = s.create_user("Anna", "correct horse").unwrap();
+        assert_eq!(a.name, "Anna");
+        assert!(a.id.starts_with("user_"));
+        // The password never lands in the file. The row may sit in the WAL until a
+        // checkpoint, so read the database and its WAL.
+        let db = dir.path().join("gallery.db");
+        let mut text = String::new();
+        for f in [db.clone(), db.with_extension("db-wal")] {
+            if f.is_file() {
+                text.push_str(&String::from_utf8_lossy(&std::fs::read(&f).unwrap()));
+            }
+        }
+        assert!(!text.contains("correct horse"));
+        assert!(text.contains("$argon2id$"));
+        // The same name is taken, any casing, and only once.
+        assert_eq!(
+            s.create_user("anna", "another door").unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(s.user_by_name("ANNA").unwrap().unwrap().id, a.id);
+        // The name rules: a filesystem-safe word, 1 to 20 characters.
+        let too_long = "x".repeat(21);
+        for bad in ["", "-", too_long.as_str(), "a b/c", "a\nb", "..", "日本語"] {
+            assert!(validate_user_name(bad).is_err(), "{bad:?}");
+        }
+        let max_len = "x".repeat(20);
+        for good in ["a", max_len.as_str(), "Anna B", "a.b-c_d 12"] {
+            assert_eq!(validate_user_name(good).unwrap(), good.trim(), "{good:?}");
+        }
+        // The password keeps the shared one's minimum length.
+        assert!(s.create_user("Ben", "short").is_err());
+        let b = s.create_user("ben", "a long enough password").unwrap();
+        assert!(s.verify_user_password("BEN", "a long enough password"));
+        assert!(!s.verify_user_password("BEN", "nope"));
+        assert!(!s.verify_user_password("nobody", "a long enough password"));
+        assert_eq!(
+            s.list_users().unwrap().iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
+            vec!["Anna", "ben"],
+            "the list is case-insensitively sorted"
+        );
+        s.set_user_password(&b.id, "a fresh password").unwrap();
+        assert!(s.verify_user_password("ben", "a fresh password"));
+        s.delete_user(&b.id).unwrap();
+        assert_eq!(s.user_by_id(&b.id).unwrap(), None);
+        assert_eq!(s.delete_user("zzz").unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn gallery_rows_are_scoped_by_their_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let mut anna = rec("a1", "a red fox", "2026-11-01T10:00:00.000Z");
+        anna.user = Some("Anna".into());
+        let mut ben = rec("b1", "a blue whale", "2026-11-01T11:00:00.000Z");
+        ben.user = Some("ben".into());
+        let op = rec("o1", "an operator image", "2026-11-01T12:00:00.000Z");
+        for r in [&anna, &ben, &op] {
+            s.insert_generation(r).unwrap();
+        }
+        let ids = |f: &OwnerFilter| s.list_generations(&ListQuery::default(), f).unwrap().0.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(&OwnerFilter::All), vec!["o1", "b1", "a1"]);
+        assert_eq!(ids(&OwnerFilter::Own), vec!["o1"], "ownerless = the operator and the legacy rows");
+        assert_eq!(ids(&OwnerFilter::User("Anna".into())), vec!["a1"]);
+        assert_eq!(ids(&OwnerFilter::User("ben".into())), vec!["b1"]);
+        assert!(ids(&OwnerFilter::User("nobody".into())).is_empty());
+        // The owner survives the round-trip: the column is the source, the record copies it.
+        let mut anna2 = s.get_generation("a1").unwrap();
+        assert_eq!(anna2.user.as_deref(), Some("Anna"));
+        assert_eq!(s.get_generation("o1").unwrap().user, None);
+        // The owner filter composes with search, favourites and the hidden rows.
+        let (red, total) = s
+            .list_generations(&ListQuery { q: Some("red".into()), ..Default::default() }, &OwnerFilter::User("Anna".into()))
+            .unwrap();
+        assert_eq!((red.len(), total), (1, 1));
+        // A record written before the field existed reads with no owner.
+        let v = serde_json::to_value(rec("old", "x", "t")).unwrap();
+        assert!(v.get("user").is_none(), "the stock JSON keeps its shape");
+    }
+
+    #[test]
+    fn an_old_gallery_db_gains_the_user_column_and_the_users_table() {
+        let dir = tempfile::tempdir().unwrap();
+        // The 0.12 table (with `hidden`, without `user`) and a row already in it.
+        {
+            let c = Connection::open(dir.path().join("gallery.db")).unwrap();
+            c.execute_batch(
+                "CREATE TABLE generations (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, prompt TEXT NOT NULL, mode TEXT NOT NULL, favorite INTEGER NOT NULL DEFAULT 0, file_path TEXT NOT NULL, record TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE inputs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, record TEXT NOT NULL);",
+            )
+            .unwrap();
+            let r = rec("old", "kept", "2026-11-01T09:00:00.000Z");
+            c.execute(
+                "INSERT INTO generations (id, created_at, prompt, mode, favorite, file_path, record, hidden) VALUES (?1,?2,?3,?4,0,?5,?6,0)",
+                params![r.id, r.created_at, r.prompt, r.mode, r.file_path, serde_json::to_string(&r).unwrap()],
+            )
+            .unwrap();
+        }
+        let s = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            s.list_generations(&ListQuery::default(), &OwnerFilter::All).unwrap().0.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["old"]
+        );
+        assert!(s.get_generation("old").unwrap().user.is_none(), "the legacy row stays the operator's");
+        // And the users table is there for the first account.
+        let u = s.create_user("anna", "a long enough password").unwrap();
+        assert_eq!(s.user_by_id(&u.id).unwrap().unwrap().name, "anna");
+    }
+
+    #[test]
+    fn deleting_a_user_removes_only_their_rows_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let s = Store::open(dir.path()).unwrap();
+        let u = s.create_user("anna", "a long enough password").unwrap();
+        let mut anna = rec("a1", "a red fox", "2026-11-01T10:00:00.000Z");
+        anna.user = Some(u.name.clone());
+        anna.file_path = out.join("Anna").join("2026-11-01").join("a1.png").to_string_lossy().into_owned();
+        let mut hidden = rec("a2", "a lab step", "2026-11-01T10:30:00.000Z");
+        hidden.user = Some(u.name.clone());
+        hidden.hidden = true;
+        hidden.file_path = out.join("Anna").join("2026-11-01").join("a2.png").to_string_lossy().into_owned();
+        let mut ben = rec("b1", "a blue whale", "2026-11-01T11:00:00.000Z");
+        ben.file_path = out.join("2026-11-01").join("b1.png").to_string_lossy().into_owned();
+        let mut op = rec("o1", "an operator image", "2026-11-01T12:00:00.000Z");
+        op.file_path = out.join("2026-11-01").join("o1.png").to_string_lossy().into_owned();
+        let anna_file = anna.file_path.clone();
+        let hidden_file = hidden.file_path.clone();
+        for r in [&anna, &hidden, &ben, &op] {
+            std::fs::create_dir_all(Path::new(&r.file_path).parent().unwrap()).unwrap();
+            std::fs::write(&r.file_path, b"png").unwrap();
+            s.insert_generation(r).unwrap();
+        }
+        // The hidden row goes too (it is not in the list, so it is counted straight from the table).
+        assert_eq!(s.delete_user_rows(&u.name, &out).unwrap(), 2);
+        assert!(!Path::new(&anna_file).exists() && !Path::new(&hidden_file).exists());
+        s.delete_user(&u.id).unwrap();
+        assert_eq!(s.user_by_id(&u.id).unwrap(), None);
+        // Ben's and the operator's rows and files are untouched.
+        let left = s.list_generations(&ListQuery::default(), &OwnerFilter::All).unwrap().0.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(left, vec!["o1", "b1"]);
+        assert!(Path::new(&ben.file_path).exists() && Path::new(&op.file_path).exists());
     }
 }
