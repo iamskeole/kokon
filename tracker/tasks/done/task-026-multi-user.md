@@ -90,13 +90,16 @@ ever wanted: per-user settings, Postgres behind the trait.
   (the existing store, extended).
 - **D-MU2 — Storage: the existing SQLite, extended.** A `users` table in
   `gallery.db` (`id` UUID, `name` unique case-insensitively, Argon2id
-  `password_hash`, `created_at`); `generations` gains a nullable
-  `user_id` (the users.id of the owner; NULL = operator/legacy — the
-  stock rows). The session file (`remote-sessions.json`) entries gain an
-  optional `user` name — a bare expiry number stays valid (the operator),
-  so an existing file reads without migration; the `GenerationRecord`
-  gains `user` (the display name; the column carries the id). Zero new
-  dependencies (rusqlite + argon2 are already in the tree).
+  `password_hash`, `created_at`); `generations` gains a nullable `user`
+  column (the owner's *name*; NULL = operator/legacy — the stock rows).
+  The name, not the UUID, is the ownership key everywhere (sessions,
+  records, the column): there is no rename (D-MU7), so the name is
+  stable, and it keeps one identity instead of two. The session file
+  (`remote-sessions.json`) entries gain an optional `user` name — a bare
+  expiry number stays valid (the operator), so an existing file reads
+  without migration; the `GenerationRecord` gains `user` (the same name;
+  it lands in the PNG provenance too). Zero new dependencies (rusqlite +
+  argon2 are already in the tree).
 - **D-MU3 — The gate.** A config field `multiUser` (schema 15,
   additive, default false). Off: behaviour is exactly today's (a login
   that carries a name is refused with a clear error; no scoping; the
@@ -112,14 +115,15 @@ ever wanted: per-user settings, Postgres behind the trait.
   password → same per-IP limiter, "Wrong password". One session created
   either way.
 - **D-MU5 — Gallery scoping.** Named users list/get/patch/delete only
-  rows whose `user_id` is theirs — anything else is 404 (no existence
-  leak). The operator (and the token) sees everything, with an optional
-  `?user=` filter: `all` (default), `me` (the NULL rows) or a name. File
-  layout: a named user's results land in `<output_dir>/<name>/<date>/`
-  (the name is validated to a filesystem-safe charset at creation; the
-  subfolder is their "Pictures folder"); the operator keeps
-  `<output_dir>/<date>/` exactly as today, and single-user mode's
-  layout is untouched. The DB is the source of ownership.
+  rows whose `user` is their own name — anything else is 404 (no
+  existence leak). The operator (and the token) sees everything, with an
+  optional `?user=` filter: `all` (default), `me` (the NULL rows) or a
+  name. File layout: a named user's results land in
+  `<output_dir>/<name>/<date>/` (the name is validated to a
+  filesystem-safe charset at creation; the subfolder is their "Pictures
+  folder"); the operator keeps `<output_dir>/<date>/` exactly as today,
+  and single-user mode's layout is untouched. The DB is the source of
+  ownership.
 - **D-MU6 — Jobs.** `Job`/`JobView` gain `user` (the owner's name; null
   = operator/token job). In multi-user mode a named user lists/
   gets/waits/cancels only its own jobs (others 404) and the `/events`
@@ -174,6 +178,62 @@ ever wanted: per-user settings, Postgres behind the trait.
 ## progress
 
 - 2026-11-12 (autonomous run, the owner driving):
+  - **Core (all D-MU decided and done):** `store.rs` — `users` table +
+    user CRUD (create/list/by-name/by-id/verify/set-password/delete,
+    `delete_user_rows` cascade) + `generations.user` column +
+    `OwnerFilter`/`ListQuery.user` scoping; `remote.rs` — `SessionEntry`
+    (bare `u64` operator / `{user,exp}` named) + `owner_of`/`remove_user`/
+    `clear_named`; `config.rs` — `multi_user` (schema 15, preserved on
+    every save); `engine.rs` — `JobView.user`, submit/`preview_plan`
+    share `check_source_ownership`, `apply_lut`/`save_layers` take the
+    owner, per-user output folder `<output_dir>/<name>/<date>/`,
+    `set_multi_user`.
+  - **Service:** `Caller { Local, Operator, User(name) }` in the auth
+    middleware; login handles named users (gate check, distinct
+    "Unknown name."/"Wrong password.", the per-IP limiter counts both);
+    `/auth/session` reports `user` + `multi_user`; the user-management
+    endpoints (D-MU7) guarded by `require_operator`;
+    **job scoping (D-MU6): `list_jobs`/`get_job`/`wait_job`/`cancel_job`
+    filter for named callers (another's job = "Unknown job.")** in
+    addition to the `/events` job-event filter; every gallery handler
+    (`list/get/patch/delete/image/original/thumb/preview/export`,
+    `save_layers`, `luts apply`) runs `ensure_sees` (a wrong-owner row is
+    the stock "That image is no longer in the gallery.").
+  - **Tests:** qls-core 404 ok; qls-service 19 ok (new
+    `named_accounts_see_only_their_own_rows`: both named logins, the
+    session's identity, the distinct login errors, per-owner gallery
+    scoping with fake rows, cross-user 404s (row/thumb/image/patch/plan),
+    the operator's `?user=` filters, the 403 on user management, the
+    delete cascade (rows + session), the gate off (named sessions end,
+    named logins refused, the operator's survives)); UI `vitest` 231 ok.
+  - **UI:** `Login.tsx` (the name field only when `multi_user` — the
+    stock screen unchanged); `Gallery.tsx` (the Who filter for the
+    operator/desktop — Everyone/Me/each name — and the small owner tag
+    on tagged rows; named users get neither); `Settings.tsx` + new
+    `People.tsx` (the People tab: visible when a password is set and
+    the viewer is not a named account — the on/off switch, create,
+    new-password, delete); `api.ts` (the users endpoints, the login
+    name, the `?user=` gallery param, `session()` type) + `UserRecord`
+    in `types.ts`.
+  - **Proof (D-MU12, no GPU):** the new
+    `tests/external-engine/run_multiuser_test.sh` — real service + mock
+    gateway + two cookie-jar identities — **50/50 pass** (both logins,
+    one job each, per-user job list/get/cancel/wait 404s, the SSE stream
+    carrying own and dropping the other's job events, gallery + file
+    scoping to the owner's folder, cross-user 404s, the `?user=`
+    filters, the 403 on user management, the delete cascade including
+    files off disk, the gate off). The original single-user external
+    harness still passes 16/16 (its config bumped to schema 15).
+  - **Box check (D-MU12, done the same day, no GPU):** the box took the
+    image `ghcr.io/iamskeole/kokon:multiuser-e59cb70` (rollback in
+    `compose.yaml.bak-e59cb70`) and **40/40** passed against the live
+    service: the real 88-row gallery migrated to schema 15 untouched
+    (every row ownerless, every file present), gate off → named logins
+    refused, gate on → two test accounts signing in (with the distinct
+    wrong/unknown errors and the named account refused user management),
+    a seeded row readable by its owner (row + thumb) and 404 to the
+    other account, the operator's `?user=` filters, and cleanup
+    restoring the exact baseline (rows, files, users, gate, sessions).
 
 ## blockers
 
