@@ -9,6 +9,10 @@
 //! know (added elsewhere since) are kept, while versions it knew and left out were removed by it.
 //! Removed projects leave a tombstone, so a device that had not heard yet cannot bring them back.
 //! Stored in `<data>/projects.json`.
+//!
+//! Multi-user (D-MU13): an `owner` map records which named account each project belongs to
+//! (absent = the machine's shared list, the pre-multi-user one). The service decides it from
+//! the caller — it never travels in a `Project` and a client cannot set it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -76,6 +80,11 @@ struct File {
     /// Removed project id → when (ms).
     #[serde(default)]
     deleted: HashMap<String, f64>,
+    /// Project id → the named account that owns it (D-MU13). Absent = the machine's shared
+    /// project (the pre-multi-user list). Skipped while empty: a single-user file — where
+    /// no named account can exist — never gains the key and stays byte-identical.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    owner: HashMap<String, String>,
 }
 
 /// The gallery and input records of a project's versions, sent in one answer to a browser
@@ -93,6 +102,9 @@ pub struct Change {
     pub id: String,
     pub rev: u64,
     pub deleted: bool,
+    /// The owner name (D-MU13): the event's filter reaches only that account's devices.
+    /// None = the shared project (the machine and the operator hear it).
+    pub user: Option<String>,
 }
 
 pub struct ProjectStore {
@@ -237,14 +249,22 @@ impl ProjectStore {
         std::fs::rename(&tmp, path).map_err(|e| AppError::io("save the project list", path, e))
     }
 
-    /// Every project, most recent first.
+    /// Every project, most recent first — the machine's view (the token, the operator).
     pub fn list(&self) -> Vec<Project> {
-        let mut v: Vec<Project> = self
-            .data
-            .lock()
-            .unwrap()
+        self.list_for(None)
+    }
+
+    /// Every project this caller sees, most recent first (D-MU13): a named account only
+    /// its own; the token and the operator everything.
+    pub fn list_for(&self, user: Option<&str>) -> Vec<Project> {
+        let f = self.data.lock().unwrap();
+        let mut v: Vec<Project> = f
             .projects
             .values()
+            .filter(|p| match user {
+                Some(u) => f.owner.get(p.meta.id.as_str()) == Some(&u.to_string()),
+                None => true,
+            })
             .cloned()
             .collect();
         v.sort_by(|a, b| b.meta.updated_at.total_cmp(&a.meta.updated_at));
@@ -255,13 +275,36 @@ impl ProjectStore {
         self.data.lock().unwrap().projects.get(id).cloned()
     }
 
-    /// Saves a device's copy of project `id`, merged with what is stored. A removed project
-    /// stays removed (NotFound).
+    /// The owner name (D-MU13); None = the machine's shared project.
+    pub fn owner_of(&self, id: &str) -> Option<String> {
+        self.data.lock().unwrap().owner.get(id).cloned()
+    }
+
+    /// The project, if this caller may see it (D-MU13): a named account only its own —
+    /// shared, another's and absent are all the same absence to it (no existence leak);
+    /// the token and the operator everything.
+    pub fn get_for(&self, id: &str, user: Option<&str>) -> Option<Project> {
+        let f = self.data.lock().unwrap();
+        let p = f.projects.get(id)?;
+        if let Some(u) = user
+            && f.owner.get(id).map(String::as_str) != Some(u)
+        {
+            return None;
+        }
+        Some(p.clone())
+    }
+
+    /// Saves a device's copy of project `id`, merged with what is stored, as this caller
+    /// (D-MU13): a named account writes only its own (shared and another's are absent to
+    /// it — the stock 404); the token and the operator write everything, and a merge keeps
+    /// the project's owner. A new project is owned by the caller (shared for the machine
+    /// and the operator). A removed project stays removed (NotFound).
     pub fn put(
         &self,
         id: &str,
         mut incoming: Project,
         known: &HashSet<String>,
+        user: Option<&str>,
     ) -> AppResult<(Project, Change)> {
         let mut f = self.data.lock().unwrap();
         if f.deleted.contains_key(id) {
@@ -270,34 +313,58 @@ impl ProjectStore {
                 "This project was removed on another device.",
             ));
         }
+        let existing = f.projects.get(id);
+        if let Some(u) = user
+            && existing.is_some()
+            && f.owner.get(id).map(String::as_str) != Some(u)
+        {
+            return Err(AppError::new(ErrorCode::NotFound, "No such project."));
+        }
         incoming.meta.id = id.to_string();
-        let merged = merge(f.projects.get(id), incoming, known);
+        let merged = merge(existing, incoming, known);
+        if existing.is_none()
+            && let Some(u) = user
+        {
+            f.owner.insert(id.to_string(), u.to_string());
+        }
         f.projects.insert(id.to_string(), merged.clone());
         self.save(&f)?;
         let change = Change {
             id: id.to_string(),
             rev: merged.rev,
             deleted: false,
+            user: f.owner.get(id).cloned(),
         };
         Ok((merged, change))
     }
 
-    pub fn delete(&self, id: &str, now_ms: f64) -> AppResult<Change> {
+    /// Removes the project (as this caller — a named account only its own, D-MU13) and
+    /// leaves a tombstone, so a device that had not heard yet cannot bring it back.
+    pub fn delete(&self, id: &str, now_ms: f64, user: Option<&str>) -> AppResult<Change> {
         let mut f = self.data.lock().unwrap();
+        if let Some(u) = user
+            && f.owner.get(id).map(String::as_str) != Some(u)
+        {
+            return Err(AppError::new(ErrorCode::NotFound, "No such project."));
+        }
         f.projects.remove(id);
+        let owner = f.owner.remove(id);
         f.deleted.insert(id.to_string(), now_ms);
         self.save(&f)?;
         Ok(Change {
             id: id.to_string(),
             rev: 0,
             deleted: true,
+            user: owner,
         })
     }
 
-    /// A device's list from before 0.11 (its browser storage). Projects not here are added,
-    /// ones here are merged (nothing of either copy is lost), removed ones stay removed.
+    /// A device's list from before 0.11 (its browser storage), merged in once — as this
+    /// caller (D-MU13): a named account merges into and creates only its own; projects it
+    /// may not see (the shared list, another's) are skipped, untouched. The machine and the
+    /// operator merge into the shared ones and create shared.
     /// Sending the same list again changes nothing.
-    pub fn import(&self, list: Vec<Project>) -> AppResult<Vec<Change>> {
+    pub fn import(&self, list: Vec<Project>, user: Option<&str>) -> AppResult<Vec<Change>> {
         let mut f = self.data.lock().unwrap();
         let mut changes = Vec::new();
         for p in list {
@@ -306,17 +373,66 @@ impl ProjectStore {
                 continue;
             }
             let stored = f.projects.get(&id);
+            // D-MU13: the import is namespaced by the caller. An existing project is
+            // merged only if the caller may see it — its own; for the machine and the
+            // operator, everything (the shared list is not a named account's). A new id
+            // is created under the caller.
+            let visible = match (user, stored, f.owner.get(&id).as_deref()) {
+                (Some(u), Some(_), Some(o)) => o == u,
+                (Some(_), Some(_), None) => false,
+                (None, _, _) => true,
+                (Some(_), None, _) => true,
+            };
+            if !visible {
+                continue;
+            }
             let merged = merge(stored, p, &HashSet::new());
             if stored.is_some_and(|s| merged.items == s.items && merged.meta.title == s.meta.title)
             {
                 continue;
             }
+            if stored.is_none()
+                && let Some(u) = user
+            {
+                f.owner.insert(id.clone(), u.to_string());
+            }
             changes.push(Change {
                 id: id.clone(),
                 rev: merged.rev,
                 deleted: false,
+                user: f.owner.get(&id).cloned(),
             });
             f.projects.insert(id, merged);
+        }
+        if !changes.is_empty() {
+            self.save(&f)?;
+        }
+        Ok(changes)
+    }
+
+    /// All projects owned by a deleted account (D-MU13): they reference its rows, and the
+    /// machine's list would otherwise grow a ghost owner. Returns the changes to emit.
+    pub fn delete_user_projects(&self, user: &str) -> AppResult<Vec<Change>> {
+        let mut f = self.data.lock().unwrap();
+        let now = crate::engine::now_ms();
+        let ids: Vec<String> = f
+            .owner
+            .iter()
+            .filter(|(_, o)| o.as_str() == user)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut changes = Vec::new();
+        for id in ids {
+            if let Some(p) = f.projects.remove(&id) {
+                f.owner.remove(&id);
+                f.deleted.insert(id.clone(), now);
+                changes.push(Change {
+                    id,
+                    rev: p.rev,
+                    deleted: true,
+                    user: Some(user.to_string()),
+                });
+            }
         }
         if !changes.is_empty() {
             self.save(&f)?;
@@ -367,9 +483,13 @@ impl ProjectStore {
                 id: p.meta.id.clone(),
                 rev: p.rev,
                 deleted: false,
+                user: None,
             });
         }
         if !changes.is_empty() {
+            for c in &mut changes {
+                c.user = f.owner.get(c.id.as_str()).cloned();
+            }
             self.save(&f)?;
         }
         Ok(changes)
@@ -432,7 +552,9 @@ mod tests {
     fn the_cover_is_never_a_layers_lab_step() {
         let mut p = project("p", vec![img("a"), img("b")]);
         p.extra.insert("lab".into(), serde_json::json!({ "v": 2, "docs": [], "made": ["gen:gb"] }));
-        let (p, _) = ProjectStore::in_memory().put("p", p, &known(&[])).unwrap();
+        let (p, _) = ProjectStore::in_memory()
+            .put("p", p, &known(&[]), None)
+            .unwrap();
         assert_eq!(p.meta.cover.as_deref(), Some("gen:ga"));
         assert_eq!(p.meta.count, 2);
     }
@@ -445,6 +567,7 @@ mod tests {
                 "p",
                 project("p", vec![img("a"), job("b", "j1")]),
                 &known(&[]),
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -452,7 +575,8 @@ mod tests {
             Change {
                 id: "p".into(),
                 rev: 1,
-                deleted: false
+                deleted: false,
+                user: None
             }
         );
         assert_eq!(p.meta.cover.as_deref(), Some("gen:ga"));
@@ -462,13 +586,18 @@ mod tests {
     #[test]
     fn versions_added_on_two_devices_are_both_kept() {
         let s = ProjectStore::in_memory();
-        s.put("p", project("p", vec![img("a")]), &known(&[]))
+        s.put("p", project("p", vec![img("a")]), &known(&[]), None)
             .unwrap();
         // The phone adds b, the computer (which only knew a) adds c.
-        s.put("p", project("p", vec![img("a"), img("b")]), &known(&["a"]))
+        s.put("p", project("p", vec![img("a"), img("b")]), &known(&["a"]), None)
             .unwrap();
         let (p, _) = s
-            .put("p", project("p", vec![img("a"), img("c")]), &known(&["a"]))
+            .put(
+                "p",
+                project("p", vec![img("a"), img("c")]),
+                &known(&["a"]),
+                None,
+            )
             .unwrap();
         assert_eq!(keys(&p), ["a", "b", "c"]);
         assert_eq!(p.rev, 3);
@@ -477,10 +606,15 @@ mod tests {
     #[test]
     fn a_version_removed_by_a_device_that_knew_it_stays_removed() {
         let s = ProjectStore::in_memory();
-        s.put("p", project("p", vec![img("a"), img("b")]), &known(&[]))
+        s.put("p", project("p", vec![img("a"), img("b")]), &known(&[]), None)
             .unwrap();
         let (p, _) = s
-            .put("p", project("p", vec![img("a")]), &known(&["a", "b"]))
+            .put(
+                "p",
+                project("p", vec![img("a")]),
+                &known(&["a", "b"]),
+                None,
+            )
             .unwrap();
         assert_eq!(keys(&p), ["a"]);
     }
@@ -503,6 +637,7 @@ mod tests {
             "p",
             project("p", vec![img("a"), job("k", "j1")]),
             &known(&[]),
+            None,
         )
         .unwrap();
         let ch = s.job_done("j1", &["g1".into(), "g2".into()], 5.0).unwrap();
@@ -528,6 +663,7 @@ mod tests {
                     ],
                 ),
                 &known(&["a", "k"]),
+                None,
             )
             .unwrap();
         assert_eq!(keys(&p), ["a", "r-g1", "r-g2"]);
@@ -553,15 +689,15 @@ mod tests {
     #[test]
     fn removed_projects_stay_removed() {
         let s = ProjectStore::in_memory();
-        s.put("p", project("p", vec![img("a")]), &known(&[]))
+        s.put("p", project("p", vec![img("a")]), &known(&[]), None)
             .unwrap();
-        s.delete("p", 2.0).unwrap();
+        s.delete("p", 2.0, None).unwrap();
         assert!(
-            s.put("p", project("p", vec![img("a")]), &known(&[]))
+            s.put("p", project("p", vec![img("a")]), &known(&[]), None)
                 .is_err()
         );
         assert!(
-            s.import(vec![project("p", vec![img("a")])])
+            s.import(vec![project("p", vec![img("a")])], None)
                 .unwrap()
                 .is_empty()
         );
@@ -571,15 +707,15 @@ mod tests {
     #[test]
     fn importing_merges_lists_and_twice_changes_nothing() {
         let s = ProjectStore::in_memory();
-        s.put("p", project("p", vec![img("a")]), &known(&[]))
+        s.put("p", project("p", vec![img("a")]), &known(&[]), None)
             .unwrap();
         let phone = vec![
             project("p", vec![img("a"), img("b")]),
             project("q", vec![img("c")]),
         ];
-        assert_eq!(s.import(phone.clone()).unwrap().len(), 2);
+        assert_eq!(s.import(phone.clone(), None).unwrap().len(), 2);
         assert_eq!(keys(&s.get("p").unwrap()), ["a", "b"]);
-        assert!(s.import(phone).unwrap().is_empty());
+        assert!(s.import(phone, None).unwrap().is_empty());
         assert_eq!(s.list().len(), 2);
     }
 
@@ -589,7 +725,7 @@ mod tests {
         let s = ProjectStore::open(dir.path());
         let mut p = project("p", vec![img("a")]);
         p.items[0].extra.insert("future".into(), Value::from(1));
-        s.put("p", p, &known(&[])).unwrap();
+        s.put("p", p, &known(&[]), None).unwrap();
         let again = ProjectStore::open(dir.path());
         assert_eq!(
             again.get("p").unwrap().items[0].extra.get("future"),
@@ -629,5 +765,122 @@ mod tests {
         let back = serde_json::to_value(&v).unwrap();
         assert_eq!(back["items"][0]["genId"], "g1");
         assert_eq!(back["meta"]["updatedAt"], 1700000000000.0);
+    }
+
+    #[test]
+    fn projects_are_per_user_and_the_shared_list_stays_the_machines() {
+        let s = ProjectStore::in_memory();
+        // A pre-multi-user file (no owner key) is the machine's shared list.
+        let (_, ch) = s
+            .put("shared", project("shared", vec![img("a")]), &known(&[]), None)
+            .unwrap();
+        assert_eq!(ch.user, None);
+        // A named account creates its own and sees exactly that one.
+        s.put("alice", project("alice", vec![img("a")]), &known(&[]), Some("alice"))
+            .unwrap();
+        s.put("bob", project("bob", vec![img("b")]), &known(&[]), Some("bob"))
+            .unwrap();
+        assert_eq!(
+            s.list_for(Some("alice"))
+                .iter()
+                .map(|p| p.meta.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+        assert_eq!(s.list_for(Some("bob")).len(), 1);
+        // The machine and the operator see everything, as before.
+        assert_eq!(s.list().len(), 3);
+        // Anything that is not its own is an identical absence: shared, another's, absent.
+        assert!(s.get_for("shared", Some("alice")).is_none());
+        assert!(s.get_for("bob", Some("alice")).is_none());
+        assert!(s.get_for("nope", Some("alice")).is_none());
+        assert_eq!(s.get_for("alice", Some("alice")).unwrap().meta.id, "alice");
+        assert_eq!(s.get_for("shared", None).unwrap().meta.id, "shared");
+        // A named account cannot write into the shared list or into another's project —
+        // and a client cannot claim ownership: there is no owner field to send.
+        assert!(
+            s.put("shared", project("shared", vec![img("a")]), &known(&[]), Some("alice"))
+                .is_err()
+        );
+        assert!(
+            s.put("bob", project("bob", vec![img("b")]), &known(&[]), Some("alice")).is_err()
+        );
+        assert!(s.delete("shared", 9.0, Some("alice")).is_err());
+        assert!(s.delete("bob", 9.0, Some("alice")).is_err());
+        // ... but it edits and deletes its own, and the owner travels in the change (the
+        // event's filter), while a machine merge keeps it.
+        let (_, ch) = s
+            .put(
+                "alice",
+                project("alice", vec![img("a"), img("b")]),
+                &known(&["a"]),
+                Some("alice"),
+            )
+            .unwrap();
+        assert_eq!(ch.user.as_deref(), Some("alice"));
+        let (p, _) = s
+            .put("alice", project("alice", vec![img("b")]), &known(&["a", "b"]), None)
+            .unwrap();
+        assert_eq!(p.meta.id, "alice");
+        assert_eq!(s.owner_of("alice"), Some("alice".into()));
+        // The import is namespaced the same way: a named account merges into and creates
+        // its own, and leaves the shared list and another's untouched.
+        let ch = s
+            .import(
+                vec![
+                    project("shared", vec![img("a"), img("c")]),
+                    project("bob", vec![img("b")]),
+                    project("alice2", vec![img("d")]),
+                ],
+                Some("alice"),
+            )
+            .unwrap();
+        assert_eq!(
+            ch.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["alice2"]
+        );
+        assert_eq!(ch[0].user.as_deref(), Some("alice"));
+        assert_eq!(keys(&s.get("shared").unwrap()), ["a"]); // the shared merge did not run
+        assert_eq!(keys(&s.get("bob").unwrap()), ["b"]); // nor bob's
+        assert_eq!(s.list_for(Some("alice")).len(), 2);
+        // The machine's import still merges into the shared one and creates shared.
+        let ch = s
+            .import(
+                vec![
+                    project("shared", vec![img("a"), img("c")]),
+                    project("m2", vec![img("e")]),
+                ],
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            ch.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["shared", "m2"]
+        );
+        assert!(ch.iter().all(|c| c.user.is_none()));
+        assert_eq!(keys(&s.get("shared").unwrap()), ["a", "c"]);
+        assert_eq!(s.owner_of("m2"), None);
+                // A deleted project's owner entry goes with it (the tombstone stays).
+        let ch = s.delete("alice", 10.0, Some("alice")).unwrap();
+        assert_eq!(ch.user.as_deref(), Some("alice"));
+        assert_eq!(s.owner_of("alice"), None);
+        assert!(s.get("alice").is_none());
+        assert!(s.delete("alice", 11.0, None).is_ok());
+        // An account's projects go with the account (the operator deletes it).
+        let ch = s.delete_user_projects("bob").unwrap();
+        assert_eq!(ch.len(), 1);
+        assert_eq!(ch[0].user.as_deref(), Some("bob"));
+        assert!(s.get("bob").is_none());
+        assert_eq!(s.owner_of("bob"), None);
+    }
+
+    #[test]
+    fn a_single_user_file_never_gains_the_owner_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ProjectStore::open(dir.path());
+        s.put("p", project("p", vec![img("a")]), &known(&[]), None)
+            .unwrap();
+        let text = std::fs::read_to_string(dir.path().join("projects.json")).unwrap();
+        assert!(!text.contains("\"owner\""), "the key must stay out: {text}");
     }
 }
