@@ -238,7 +238,10 @@ and on the box.
   multi-user projects ever outgrow read-the-whole-file (cross-account
   search, thousands per user), the evolution is a schema-versioned
   `projects` table with a file-compat shim (as the gallery went to schema
-  15) — that is the trigger, not today.
+  15). Owner-refined trigger (2026-11-13): either that, or the fork
+  dropping its shadow of upstream (D-RB — when there is no stock format
+  left to stay byte-identical to, the file constraint disappears and the
+  DB is the straight answer); until then the JSON stays.
 
 ## progress
 
