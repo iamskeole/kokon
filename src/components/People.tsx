@@ -12,6 +12,9 @@ import { toastError, toastInfo } from "../lib/store";
 import { Switch } from "./ui";
 
 export function People() {
+  // The server enforces the minimum (crates/qls-core/src/remote.rs MIN_PASSWORD_CHARS):
+  // the buttons below disable under it, so the hint must say the same number.
+  const MIN_PW = 8;
   const [users, setUsers] = useState<UserRecord[] | null>(null);
   const [multiUser, setMultiUser] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -112,75 +115,85 @@ export function People() {
         <Switch on={multiUser} onChange={toggle} label={multiUser ? "On" : "Off"} />
       </div>
 
-      <form className="setting-card" onSubmit={create}>
+      <form className="setting-card people-form" onSubmit={create}>
         <div className="setting-card-text">
           <strong>Add an account</strong>
-          <span className="muted">The name is 1–20 characters and stays the same on every device.</span>
+          <span className="muted">
+            The name is 1–20 characters and stays the same on every device; the password is {MIN_PW} or more characters. The person signs in with it and sees only their own images.
+          </span>
         </div>
-        <input
-          className="input"
-          type="text"
-          placeholder="Name"
-          aria-label="Account name"
-          style={{ width: 140 }}
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-        />
-        <input
-          className="input"
-          type="password"
-          placeholder="Password"
-          aria-label="Account password"
-          style={{ width: 160 }}
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-        />
-        <button className="btn primary" type="submit" disabled={creating || !newName.trim() || newPassword.length < 8}>
-          <UserPlus size={15} /> Add
-        </button>
+        <div className="people-row-fields">
+          <input
+            className="input"
+            type="text"
+            placeholder="Name"
+            aria-label="Account name"
+            style={{ flex: "1 1 150px" }}
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            spellCheck={false}
+          />
+          <input
+            className="input"
+            type="password"
+            placeholder={`Password (${MIN_PW}+ characters)`}
+            aria-label="Account password"
+            style={{ flex: "1 1 150px" }}
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+          />
+          <button className="btn primary" type="submit" disabled={creating || !newName.trim() || newPassword.length < MIN_PW}>
+            <UserPlus size={15} /> Add
+          </button>
+        </div>
       </form>
 
       {users.length === 0 ? (
         <p className="muted">No accounts yet.</p>
       ) : (
         users.map((u) => (
-          <div className="setting-card" key={u.id}>
+          <div className="setting-card people-row" key={u.id}>
             <div className="setting-card-text">
               <strong>{u.name}</strong>
               <span className="muted">added {new Date(u.created_at).toLocaleDateString()}</span>
             </div>
-            <button
-              className="btn"
-              onClick={() => {
-                setResetId(resetId === u.id ? null : u.id);
-                setResetPassword("");
-              }}
-            >
-              <KeyRound size={14} /> New password
-            </button>
-            <button className="btn danger" disabled={busyRow === u.id} onClick={() => remove(u)}>
-              <Trash2 size={14} /> Delete
-            </button>
+            <div className="row-btns">
+              <button
+                className="btn"
+                onClick={() => {
+                  setResetId(resetId === u.id ? null : u.id);
+                  setResetPassword("");
+                }}
+              >
+                <KeyRound size={14} /> New password
+              </button>
+              <button className="btn danger" disabled={busyRow === u.id} onClick={() => remove(u)}>
+                <Trash2 size={14} /> Delete
+              </button>
+            </div>
           </div>
         ))
       )}
       {resetId !== null && (
-        <div className="setting-card">
+        <div className="setting-card people-form">
           <div className="setting-card-text">
             <strong>New password for {users.find((u) => u.id === resetId)?.name}</strong>
+            <span className="muted">At least {MIN_PW} characters. The person signs in again with it.</span>
           </div>
-          <input
-            className="input"
-            type="password"
-            placeholder="New password"
-            aria-label="New password"
-            style={{ width: 200 }}
-            value={resetPassword}
-            onChange={(e) => setResetPassword(e.target.value)}
-          />
-          <button className="btn primary" disabled={busyRow === resetId || resetPassword.length < 6} onClick={() => reset(users.find((u) => u.id === resetId)!)}>
-            Set
-          </button>
+          <div className="people-row-fields">
+            <input
+              className="input"
+              type="password"
+              placeholder={`New password (${MIN_PW}+ characters)`}
+              aria-label="New password"
+              style={{ flex: "1 1 200px" }}
+              value={resetPassword}
+              onChange={(e) => setResetPassword(e.target.value)}
+            />
+            <button className="btn primary" disabled={busyRow === resetId || resetPassword.length < MIN_PW} onClick={() => reset(users.find((u) => u.id === resetId)!)}>
+              Set
+            </button>
+          </div>
         </div>
       )}
       <p className="muted" style={{ fontSize: 12 }}>

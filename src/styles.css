@@ -498,6 +498,18 @@ svg { display: block; flex: none; }
 .setting-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .setting-card-text strong { font-size: 13.5px; font-weight: 600; }
 .setting-card .btn { flex: none; white-space: nowrap; }
+/* People (the multi-user settings): the add-account form carries two inputs, so its text and
+   its fields stack at every width; the per-user rows stack on a phone, where name, date and two
+   buttons no longer fit in one line (the fixed-width inputs used to squeeze the text to a
+   narrow column and clip the row).
+.people-form { align-items: flex-start; flex-wrap: wrap; }
+.people-form > .setting-card-text { flex-basis: 100%; }
+.people-row-fields { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
+@media (max-width: 560px) {
+  .people-row { align-items: flex-start; flex-wrap: wrap; }
+  .people-row > .setting-card-text { flex-basis: 100%; }
+  .people-row .row-btns { margin-left: auto; }
+}
 .input, .select { height: 32px; border-radius: 10px; border: 1px solid var(--border-2); background: var(--bg); padding: 0 10px; outline: none; min-width: 0; }
 .input:focus, .select:focus { border-color: var(--text-3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 8%, transparent); }
 textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 60px; }
