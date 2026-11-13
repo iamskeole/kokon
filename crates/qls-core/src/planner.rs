@@ -268,6 +268,12 @@ pub struct GenerationRequest {
     pub output_path: Option<String>,
     #[serde(default)]
     pub client: Option<String>,
+    /// The owner (multi-user): the `users` table's name — who this job is. The service sets it
+    /// for a named account's browser session; it is absent for the operator, the token and a
+    /// stock install. The results' files land in the gallery's `<name>` folder, and the user
+    /// may reference as `gen:` only rows that carry the same name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     #[serde(default)]
     pub parent_id: Option<String>,
     /// Target for `mode: upscale`.

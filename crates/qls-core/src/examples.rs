@@ -174,6 +174,7 @@ impl Engine {
                     app_version: APP_VERSION.into(),
                     backend_version: None,
                     client: Some("example".into()),
+                    user: None,
                     request: serde_json::to_value(&request).unwrap_or_default(),
                     pipeline: None,
                     hidden: false,

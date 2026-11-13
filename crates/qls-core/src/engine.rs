@@ -101,6 +101,10 @@ pub struct JobView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scene: Option<crate::scene::SceneReading>,
     pub client: Option<String>,
+    /// The owner (multi-user): the `users` table's name; None = the operator's or a token's
+    /// job. A named account sees and touches only the jobs carrying its own name (D-MU6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     pub plan: Option<Plan>,
     pub seed: Option<i64>,
     pub results: Vec<GenerationRecord>,
@@ -371,6 +375,15 @@ impl Engine {
     }
 
     /// Replaces the configuration. Returns true when the backend must restart.
+    /// The multi-user gate (D-MU3): set by the users endpoints only — every settings save
+    /// keeps the stored value (see [`Self::set_config`]).
+    pub fn set_multi_user(&self, on: bool) -> AppResult<()> {
+        let mut cfg = self.cfg.write().unwrap();
+        cfg.multi_user = on;
+        cfg.save()?;
+        Ok(())
+    }
+
     pub fn set_config(&self, mut new: AppConfig) -> AppResult<bool> {
         // LoRAs change only through `set_loras`, network access only through `set_remote`,
         // and the gateway/VLM keys never through the UI (a Settings save may carry older or
@@ -380,6 +393,9 @@ impl Engine {
             new.loras = cur.loras.clone();
             new.remote_access = cur.remote_access;
             new.remote_port = cur.remote_port;
+            // The multi-user gate is set only by the users endpoints (D-MU3); a settings save
+            // keeps the stored value.
+            new.multi_user = cur.multi_user;
             new.absorb_secrets(&cur);
         }
         // The official profile follows the folder and preset; see `AppConfig::normalize`.
@@ -675,10 +691,13 @@ impl Engine {
     pub fn clear_private(&self) -> AppResult<usize> {
         let (items, _) = self
             .private_store
-            .list_generations(&crate::store::ListQuery {
-                limit: Some(500),
-                ..Default::default()
-            })?;
+            .list_generations(
+                &crate::store::ListQuery {
+                    limit: Some(500),
+                    ..Default::default()
+                },
+                &crate::store::OwnerFilter::All,
+            )?;
         self.private_store.clear()?;
         let mut removed = 0;
         for sub in ["inputs", "thumbs", "out"] {
@@ -937,6 +956,33 @@ impl Engine {
 
     /// Validates cheaply and enqueues. `workspace` is the caller's project folder (MCP),
     /// used to resolve relative paths and as an allowed output root.
+    /// Multi-user (D-MU8): a named account's job references as `gen:` only rows that carry
+    /// its own name (another's is a 404, no existence leak); the operator's and a token's
+    /// jobs (no user) reference anything.
+    fn check_source_ownership(&self, request: &GenerationRequest) -> AppResult<()> {
+        if self.config().multi_user
+            && let Some(u) = request.user.as_deref()
+        {
+            let gens = request
+                .images
+                .iter()
+                .chain(request.mask.iter())
+                .chain(request.marks.iter())
+                .chain(request.parent_id.iter())
+                .filter_map(|s| s.strip_prefix("gen:"));
+            for id in gens {
+                let rec = self.gen_store(id).get_generation(id)?;
+                if rec.user.as_deref() != Some(u) {
+                    return Err(AppError::new(
+                        ErrorCode::NotFound,
+                        "That image is no longer in the gallery.",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn submit(
         &self,
         mut request: GenerationRequest,
@@ -970,6 +1016,10 @@ impl Engine {
         {
             request.seed = None;
         }
+        // Multi-user (D-MU8): a named account's job. Its results go to its own folder, and it
+        // may reference as `gen:` only rows that carry its own name (another's is a 404, no
+        // existence leak). Operator and token jobs (no user) reference anything.
+        self.check_source_ownership(&request)?;
         let id = format!("job_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
         let view = JobView {
             id: id.clone(),
@@ -991,6 +1041,7 @@ impl Engine {
             suggested_ratio: None,
             scene: None,
             client: request.client.clone(),
+            user: request.user.clone(),
             plan: None,
             seed: request.seed,
             results: vec![],
@@ -1273,6 +1324,7 @@ impl Engine {
         name: &str,
         intensity: f32,
         private: bool,
+        user: Option<&str>,
     ) -> AppResult<GenerationRecord> {
         let started = Instant::now();
         let library = self.luts();
@@ -1287,6 +1339,16 @@ impl Engine {
                 ));
             }
         };
+        // Multi-user (D-MU8): a named account applies its LUT to its own results only.
+        if let Some(u) = user
+            && let Some(p) = &parent
+            && p.user.as_deref() != Some(u)
+        {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "That image is no longer in the gallery.",
+            ));
+        }
         let source_private = match (&parent, src.strip_prefix("input:")) {
             (Some(p), _) => Arc::ptr_eq(self.gen_store(&p.id), &self.private_store),
             (None, Some(id)) => Arc::ptr_eq(self.input_store(id), &self.private_store),
@@ -1313,7 +1375,10 @@ impl Engine {
         let dir = if private {
             self.private_dir.join("out")
         } else {
-            cfg.output_dir.join(now.format("%Y-%m-%d").to_string())
+            let base = user
+                .map(|u| cfg.output_dir.join(u))
+                .unwrap_or_else(|| cfg.output_dir.clone());
+            base.join(now.format("%Y-%m-%d").to_string())
         };
         std::fs::create_dir_all(&dir)
             .map_err(|e| AppError::io("create the output folder", &dir, e))?;
@@ -1378,6 +1443,7 @@ impl Engine {
             app_version: APP_VERSION.into(),
             backend_version: None,
             client: None,
+            user: user.map(str::to_owned),
             request: serde_json::json!({
                 "mode": "lut",
                 "images": [src],
@@ -1406,12 +1472,22 @@ impl Engine {
     /// Saves the layers lab's flattened image (`image`, an "input:" upload) as a gallery result
     /// made from `from` (the image that was split): mode "layers", PNG. Private when asked or
     /// when `from` is private.
-    pub fn save_layers(&self, image: &str, from: Option<&str>, private: bool) -> AppResult<GenerationRecord> {
+    pub fn save_layers(&self, image: &str, from: Option<&str>, private: bool, user: Option<&str>) -> AppResult<GenerationRecord> {
         let parent = match from.and_then(|f| f.strip_prefix("gen:")) {
             Some(id) => self.gen_store(id).get_generation(id).ok(),
             None => None,
         };
         let private = private || parent.as_ref().is_some_and(|p| Arc::ptr_eq(self.gen_store(&p.id), &self.private_store));
+        // Multi-user (D-MU8): the image the lab was opened on must be the user's own.
+        if let Some(u) = user
+            && let Some(p) = &parent
+            && p.user.as_deref() != Some(u)
+        {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "That image is no longer in the gallery.",
+            ));
+        }
         let (img, flat) = self.resolve_source(image, None, private)?;
         // Compare's "before" is the photo the lab was opened on, not the saved image itself.
         let input = from.and_then(|f| self.resolve_source(f, None, private).ok()).map(|(_, r)| r).unwrap_or(flat);
@@ -1419,7 +1495,14 @@ impl Engine {
         let id = new_id();
         let now = chrono::Local::now();
         let store = if private { &self.private_store } else { &self.store };
-        let dir = if private { self.private_dir.join("out") } else { cfg.output_dir.join(now.format("%Y-%m-%d").to_string()) };
+        let dir = if private {
+            self.private_dir.join("out")
+        } else {
+            let base = user
+                .map(|u| cfg.output_dir.join(u))
+                .unwrap_or_else(|| cfg.output_dir.clone());
+            base.join(now.format("%Y-%m-%d").to_string())
+        };
         std::fs::create_dir_all(&dir).map_err(|e| AppError::io("create the output folder", &dir, e))?;
         let file = paths::unique_path(dir.join(format!("{}-layers.png", now.format("%H%M%S"))), &[]);
         let out = img.pixels;
@@ -1458,6 +1541,7 @@ impl Engine {
             app_version: APP_VERSION.into(),
             backend_version: None,
             client: None,
+            user: user.map(str::to_owned),
             // `images`: what it was made from, as for other versions (the project's lineage).
             request: serde_json::json!({ "mode": "layers", "images": [from.unwrap_or(image)], "layers_image": image, "parent_id": parent.as_ref().map(|p| p.id.clone()), "private": private }),
             pipeline: None,
@@ -1503,6 +1587,8 @@ impl Engine {
         sizes: Vec<Size>,
         mask: Option<(Size, Option<crate::geometry::Rect>, f64)>,
     ) -> AppResult<Plan> {
+        // Multi-user (D-MU8): the dry run obeys the same ownership rule as the submit.
+        self.check_source_ownership(req)?;
         let cfg = self.config();
         let vram = self.planning_vram(&cfg);
         let mut inputs = plan_inputs(&cfg, sizes, mask, vram);
@@ -2804,7 +2890,14 @@ impl Engine {
         let dir = if req.private {
             self.private_dir.join("out")
         } else {
-            cfg.output_dir.join(now.format("%Y-%m-%d").to_string())
+            // Multi-user (D-MU5): the user's own folder in the gallery — "their Pictures"; the
+            // database is the source of ownership, this is where their files live.
+            let base = req
+                .user
+                .as_ref()
+                .map(|u| cfg.output_dir.join(u))
+                .unwrap_or_else(|| cfg.output_dir.clone());
+            base.join(now.format("%Y-%m-%d").to_string())
         };
         std::fs::create_dir_all(&dir)
             .map_err(|e| AppError::io("create the output folder", &dir, e))?;
@@ -2923,6 +3016,7 @@ impl Engine {
             app_version: APP_VERSION.into(),
             backend_version: self.backend_version.get(),
             client: req.client.clone(),
+            user: req.user.clone(),
             request: serde_json::to_value(req).unwrap_or_default(),
             pipeline,
             hidden: req.hidden,
@@ -4056,7 +4150,7 @@ mod tests {
         let e = Engine::new(cfg, dir.path()).unwrap();
         let img = image::RgbaImage::from_fn(400, 300, |x, y| image::Rgba([(x / 2) as u8, (y / 2) as u8, 90, 255]));
         let input = e.store.put_input(&imaging::encode_png(&img, &[], None, false).unwrap(), Some("lab.png"), None).unwrap();
-        let rec = e.save_layers(&format!("input:{}", input.id), None, false).unwrap();
+        let rec = e.save_layers(&format!("input:{}", input.id), None, false, None).unwrap();
         let bytes = std::fs::read(&rec.file_path).unwrap();
         assert_eq!(crate::provenance::declared_ai_type(&bytes), Some("compositeWithTrainedAlgorithmicMedia"));
         let saved = imaging::decode_image(&bytes).unwrap().pixels;
@@ -4106,18 +4200,18 @@ mod tests {
         let preview = e.lut_preview(&src, &lut.name, 1024).unwrap();
         assert_eq!(preview.1, "image/jpeg");
 
-        let rec = e.apply_lut(&src, &lut.name, 0.5, false).unwrap();
+        let rec = e.apply_lut(&src, &lut.name, 0.5, false, None).unwrap();
         assert_eq!((rec.mode.as_str(), rec.width, rec.height), ("lut", 16, 8));
         // A LUT of a camera photo is not AI-made (XMP "enhanced", no watermark), nor is a LUT of that.
         assert!(!crate::provenance::is_ai(&rec) && rec.source_type.is_none());
         assert_eq!(crate::provenance::declared_ai_type(&std::fs::read(&rec.file_path).unwrap()), None);
-        let twice = e.apply_lut(&format!("gen:{}", rec.id), &lut.name, 0.5, false).unwrap();
+        let twice = e.apply_lut(&format!("gen:{}", rec.id), &lut.name, 0.5, false, None).unwrap();
         assert_eq!((twice.source_type.as_deref(), crate::provenance::is_ai(&twice)), (Some("algorithmicallyEnhanced"), false));
         // An imported image that says it was AI-made stays marked so (the Code's Measure 1.2).
         let ai_rec = test_record("ai", 1, "ai.jpg");
         let ai = crate::provenance::jpeg_with_xmp(&imaging::encode_jpeg(&image::RgbaImage::from_pixel(16, 8, image::Rgba([9, 9, 9, 255])), 90).unwrap(), &crate::provenance::xmp(&GenerationRecord { mode: "generate".into(), ..ai_rec }));
         let ai_input = e.store.put_input(&ai, Some("from-another-app.jpg"), None).unwrap();
-        let kept = e.apply_lut(&format!("input:{}", ai_input.id), &lut.name, 0.5, false).unwrap();
+        let kept = e.apply_lut(&format!("input:{}", ai_input.id), &lut.name, 0.5, false, None).unwrap();
         assert_eq!(kept.source_type.as_deref(), Some("trainedAlgorithmicMedia"));
         assert_eq!(crate::provenance::declared_ai_type(&std::fs::read(&kept.file_path).unwrap()), Some("trainedAlgorithmicMedia"));
         assert_eq!(rec.request["images"][0], src.as_str(), "made from the source (timeline link)");
@@ -4143,7 +4237,7 @@ mod tests {
 
         // A result of a result keeps its format and parent; private sources stay private.
         let again = e
-            .apply_lut(&format!("gen:{}", rec.id), &lut.name, 1.0, false)
+            .apply_lut(&format!("gen:{}", rec.id), &lut.name, 1.0, false, None)
             .unwrap();
         assert_eq!(again.parent_id.as_deref(), Some(rec.id.as_str()));
         let other = imaging::encode_png(
@@ -4158,14 +4252,14 @@ mod tests {
             .put_input(&other, Some("secret.png"), None)
             .unwrap();
         let p = e
-            .apply_lut(&format!("input:{}", secret.id), &lut.name, 1.0, false)
+            .apply_lut(&format!("input:{}", secret.id), &lut.name, 1.0, false, None)
             .unwrap();
         assert!(
             e.store.get_generation(&p.id).is_err() && e.private_store.get_generation(&p.id).is_ok()
         );
         assert!(Path::new(&p.file_path).starts_with(dir.path().join("private")));
-        assert!(e.apply_lut("C:/x.png", &lut.name, 1.0, false).is_err());
-        assert!(e.apply_lut(&src, "missing", 1.0, false).is_err());
+        assert!(e.apply_lut("C:/x.png", &lut.name, 1.0, false, None).is_err());
+        assert!(e.apply_lut(&src, "missing", 1.0, false, None).is_err());
     }
 
     #[test]
