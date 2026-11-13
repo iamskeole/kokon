@@ -92,7 +92,9 @@ pub struct ExampleProject {
 impl Engine {
     /// Adds the example projects to the gallery (again, if they were deleted) and returns
     /// them. Ids are fixed, so calling this twice does not duplicate anything.
-    pub fn install_examples(&self) -> AppResult<Vec<ExampleProject>> {
+    /// `user` is the caller (multi-user, D-MU13): the gallery rows it seeds belong to that
+    /// named account (its private tour); None keeps them shared (the machine's tour).
+    pub fn install_examples(&self, user: Option<&str>) -> AppResult<Vec<ExampleProject>> {
         let store = &self.store;
         let dir = store.examples_dir();
         std::fs::create_dir_all(&dir).map_err(|e| AppError::io("create the examples folder", &dir, e))?;
@@ -174,7 +176,7 @@ impl Engine {
                     app_version: APP_VERSION.into(),
                     backend_version: None,
                     client: Some("example".into()),
-                    user: None,
+                    user: user.map(str::to_owned),
                     request: serde_json::to_value(&request).unwrap_or_default(),
                     pipeline: None,
                     hidden: false,
