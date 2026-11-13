@@ -250,6 +250,33 @@ ever wanted: per-user settings, Postgres behind the trait.
     the two deltas: the owner's gate was on, so "starts off" and
     "named login refused" read differently — and the empty users table
     confirmed the owner's own add attempts had created no account).
+  - **CSS field fix (2026-11-13, `1899739`, the phone's second look):** the
+    field fix's own comment block in `src/styles.css` was opened with `/*`
+    and never closed, so the CSS minifier read it as one comment running to
+    the next `*/` (the overlays heading) and dropped everything between —
+    the `.people-form` / `.people-row` stacking plus the block's `.input`,
+    `.btn`, `.muted`, `.switch` and `.seg` bases. No build error: to the
+    parser it was just a comment, so the image built and the 40-checks
+    passed (they are API-level); only the phone's render showed it (one
+    word per line, browser-default controls).
+  - **Image closeout (same day, autonomous job `mu-1899739`, all CPU —
+    vllm never touched, digest in `/tmp/mu1899739/`):** the box now runs
+    `ghcr.io/iamskeole/kokon:multiuser-1899739` (rollback
+    `compose.yaml.bak-1899739` = the b1f2251 compose). Proof, all at the
+    bytes a browser receives: the served CSS of the new image carries
+    `people-form` ×2 + `people-row-fields` + the `.muted` / `.switch`
+    bases, while the same probe against the old b1f2251 image (a scratch
+    container on scratch ports) shows `people-form` = 0 — the regression,
+    then the fix. The gate-aware 44-check box suite (the 40-check D-MU12
+    suite adjusted to the owner's gate-on state + 4 served-CSS checks)
+    passed **44/44 with zero deltas** — it restores the gate to as-found
+    instead of forcing it off, so the owner's sessions were never at risk.
+    The 50-assertion multi-user harness re-passed **50/50** against the mock
+    gateway (host debug build; the job had to supply the linuxbrew
+    openssl@4 env — `PKG_CONFIG_PATH` + `LD_LIBRARY_PATH`, what
+    `brew shellenv` in `.profile` gives the interactive shells — because
+    the debug binary links against `libssl.so.4`; the pre-existing 09:50
+    debug binary is linked the same way).
 
 ## blockers
 
