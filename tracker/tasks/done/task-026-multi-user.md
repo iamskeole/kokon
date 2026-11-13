@@ -221,9 +221,32 @@ and on the box.
 
 ## progress
 
-- 2026-11-13 (reopened, the owner driving): the projects leak fixed per
-  D-MU13 — in progress; the proof record completes this entry when the
-  image is on the box.
+- 2026-11-13 (reopened, the owner driving): **the projects leak fixed per
+  D-MU13 — done the same day, all-CPU.** Commits `631eee8…7c3cb37` (the
+  store's owner map + scoped put/get/delete/import + the account sweep;
+  the scoped records + the event's owner + the per-caller examples; the
+  caller-scoped handlers + the stream filter + the users-delete sweep +
+  the new `projects_are_per_user` security test; the harness's projects
+  section). Green: qls-core **406** (incl. the new ownership tests, among
+  them that a single-user file never gains the owner key), service **20**
+  (incl. the new projects test), UI **231** unchanged (the wire shape
+  moved nothing), mcp green with the host's openssl env, the multi-user
+  harness **67/67** (17 new: per-user create/list, the cross-user 404s
+  on get/put/delete/records, the stuffed-reference filter, the import
+  namespacing, the stream filter, the account-deletion sweep), the
+  single-user harness **16/16** (the stock path). Image
+  `multiuser-7c3cb37` on the box in 150 s (job `/tmp/mu7c3cb37/`,
+  rollback `compose.yaml.bak-7c3cb37` = the 1899739 compose): the 44 D-MU12
+  checks + the 15 live project checks passed **59/59** against the real
+  state as found (the owner's account `p`, the gate on, the 9 shared
+  projects) — a fresh named account now sees **no** projects (the
+  complaint), sees and creates only its own, the shared list and
+  another's are the identical 404, a stuffed reference gets no record
+  for its author, the operator sees everything, and deleting the test
+  accounts swept their projects with the owner key gone from
+  `projects.json` again; vllm never evicted (same pid/RAM, the engine
+  doors idle as found; one `check26-p` tombstone stays in the file's
+  deleted map — the design, same as any single-user delete).
 
 - 2026-11-12 (autonomous run, the owner driving):
   - **Core (all D-MU decided and done):** `store.rs` — `users` table +
