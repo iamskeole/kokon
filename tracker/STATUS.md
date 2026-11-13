@@ -35,6 +35,31 @@ Keep this file current at the end of every task.
 [x] WP6 stock-cleanup — task-020 done 11-04, reopened 11-05, **re-land COMPLETE and closed this span** — the 11-04 record (stock-016 live, deferral proven in both directions, chat-priority the product fact) stands as the provenance of the invariants; the 11-05 re-land: layout surgery (pure stock trees; `_scripts`/`_configs`/`_jobs` homes; 10 pure-boot scripts; **no `cmdStop` anywhere**; `.last-good` + reload semantics; `logToStdout: both`), the owner's handover to the daemon-owned vllm, the pre-window daemon restart (journal mirror engaged; the P3 bind-handover race found + gated), and the **w020r window PASSED 223 s** (vllm 4-s group stop with `EngineCore` in the journal, llama.cpp 2-s, every set eviction per the stock-017 sets, vllm restored last, DONE marker last). Record: `done/task-020.md`.
 
 ## Current
+**task-026 multi-user — REOPENED 2026-11-13 (the projects leak) — the DONE record below stands; the fix is in progress.**
+The owner's live report from the running image: a logged-in (named) user sees
+other people's projects even though they see none of the images. The cause is
+the design, not one place: D-MU8 deferred per-user projects to Stage 2 and
+left `data/projects.json` machine-level, so a named account's browser lists
+and writes the one shared list (on the box: the owner's 9 projects) while
+D-MU5/6 404 every image inside it — and a named account's `import`/`put` could
+merge into another's project and, through a stuffed `gen:` reference, read its
+records. **D-MU13** closes it: the same semantics as the gallery, at project
+granularity — an `owner` map in `projects.json` (absent = the machine's shared
+list; the key is skipped while empty, so a single-user file stays
+byte-identical), the ownership decided by the service from the caller only
+(never in a request body), a named account seeing/creating/editing/deleting
+only its own (anything else the stock 404 — no existence leak), the operator
+and the token keeping today's whole list, `Project`'s wire shape unchanged
+(the UI is caller-transparent, no client change), the records endpoint giving
+a named caller only the rows it owns, the first-launch import namespaced by
+the caller, the `Event::Projects` owner so a named account hears only its own
+projects' news, `POST /examples` seeding the caller's own rows (a named tour
+is private), and a deleted account's projects going with it. Proof: qls-core
++ service tests, the multi-user harness grown to 67 assertions (17 new
+projects checks), the single-user harness unchanged, then the image on the
+box (the 44-check suite + a live project check against the real 9 shared
+projects). The DONE state of 2026-11-12:
+
 **task-026 multi-user — DONE on master (2026-11-12, autonomous run; the owner driving the day, no GPU window).**
 Per-user accounts on the deliberately single-user service: a `users` table
 (name + Argon2id, in the existing `gallery.db`) and a `user` column on

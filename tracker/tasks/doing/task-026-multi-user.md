@@ -79,6 +79,21 @@ mock-gateway harness, and a live two-browser check on the box).
 Stage 2 (per-user jobs/history, the MCP mapping). Stage 3, only if
 ever wanted: per-user settings, Postgres behind the trait.
 
+## Reopened 2026-11-13 — the projects leak
+
+The owner's live report: a logged-in (named) user sees other people's
+projects even though they see none of the images. The cause is the design,
+not one place: D-MU8 deferred per-user projects to Stage 2 and left
+`<data>/projects.json` machine-level, so a named account's browser lists
+and writes the one shared project list (on the box: 9 projects, the
+operator's own work) while D-MU5/6 404 every image inside it. Titles
+without images is worse than nothing — and a named account's `import` /
+`put` could merge into another's project and, through a stuffed `gen:`
+reference in its items, read that person's records from
+`GET /projects/{id}/records`. D-MU13 closes it (per-user projects, the
+gallery's semantics). The task stays open until the fix is built, proven
+and on the box.
+
 ## decisions (2026-11-12, at start)
 
 - **D-MU1 — Three identities.** (1) the Bearer token = `Local`: the
@@ -174,8 +189,41 @@ ever wanted: per-user settings, Postgres behind the trait.
   scoping, the UI page) with no engine job — the owner is driving and
   vllm is resident, so the day's live proof stops short of a
   generation (recorded here as the residual).
+- **D-MU13 — Per-user projects (2026-11-13; D-MU8's Stage-2 item, pulled
+  forward because the leak is live).** `projects.json` gains an `owner`
+  map (project id → named account; absent = the machine's shared project,
+  the pre-multi-user list; the field is skipped while empty, so a
+  single-user file stays byte-identical). Ownership is decided by the
+  service from the caller only — never from a request field — and is
+  preserved across every merge. A named account sees, creates, edits and
+  deletes only projects whose owner is its name; anything else (shared,
+  another's, absent) is the stock 404 (no existence leak, D-MU5). The
+  operator and the token see everything — the shared list is exactly
+  today's for them, and the single-user path (no named account can exist
+  while the gate is off) is byte-identical. `Project`'s wire shape is
+  unchanged (the owner never travels in it) — the UI is caller-transparent,
+  no client change. `GET /projects/{id}/records` gives a named caller only
+  the rows it owns (a project's items are a client-controlled list of
+  references — a stuffed `gen:` id must not surface another's record; the
+  inputs stay shared, D-MU8; the UI already skips versions whose record is
+  gone). `Event::Projects` carries the owner, and a named account hears
+  only its own projects' changes (as with its jobs, D-MU6), so its own
+  second devices still live-update. The first-launch import (a browser's
+  pre-0.11 local list) is namespaced by the caller: a named import
+  merges/creates only its own, and ids it may not see are skipped,
+  untouched. `POST /examples` (the first-launch tour) seeds its gallery
+  rows with the caller's owner — a named tour is private, a fresh phone
+  gets its own samples; already-present rows (idempotent) keep their
+  owner. Proof: the 50-assertion harness grows a project block (per-user
+  create; cross-user 404s on get/put/delete/records; the
+  stuffed-reference filter; the import namespacing; the event filter),
+  and the box check does the same against its 9 shared projects.
 
 ## progress
+
+- 2026-11-13 (reopened, the owner driving): the projects leak fixed per
+  D-MU13 — in progress; the proof record completes this entry when the
+  image is on the box.
 
 - 2026-11-12 (autonomous run, the owner driving):
   - **Core (all D-MU decided and done):** `store.rs` — `users` table +
