@@ -1,3 +1,5 @@
+> **Status (2026-11-17): this fork is archived.** The project it led is now a standalone repository: **[iamskeole/kokon-ee](https://github.com/iamskeole/kokon-ee)** — the same full history (this fork's work included) with its own name and identity. [Kokon](https://github.com/GabrieleLozupone/kokon) remains the upstream; the divergence is discussed in [kokon#52](https://github.com/GabrieleLozupone/kokon/discussions/52).
+
 
 <p align="center">
   <picture>
